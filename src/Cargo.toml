@@ -1,0 +1,65 @@
+[package]
+name = "synergy-testbeta"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# Core dependencies from workspace
+rocksdb = { workspace = true }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+bincode = { workspace = true }
+hex = { workspace = true }
+sha3 = { workspace = true }
+lazy_static = { workspace = true }
+
+# Additional dependencies
+md5 = "0.7.0"
+reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+toml = "0.8.20"
+rmp-serde = "1.3.0"
+serde_cbor = "0.11.2"
+base64 = "0.22.1"
+serde_yaml = "0.9.34"
+blake3 = "1.8.1"
+k256 = { version = "0.13", features = ["sha256"] }
+chrono = "0.4"
+
+# Post-Quantum Cryptography
+aegis-pqvm = { path = "../aegis-pqvm" }
+pqcrypto-traits = { workspace = true }
+pqrust-traits = { path = "../aegis-pqvm/vendor/pqcrypto-traits" }
+pqcrypto-falcon = "0.3"
+pqcrypto-hqc = "0.2.2"
+pqcrypto-mlkem = { workspace = true }
+pqcrypto-sphincsplus = "0.7.2"
+rand = "0.8"
+bech32 = "0.9"
+aes-gcm = "0.10"
+
+# WebAssembly VM
+wasmtime = { workspace = true }
+
+# Signal handling
+ctrlc = "3.4"
+
+[lib]
+name = "synergy_testbeta"
+path = "lib.rs"
+
+[[bin]]
+name = "synergy-testbeta"
+path = "main.rs"
+
+[[bin]]
+name = "generate-node-keys"
+path = "../tools/generate_node_keys.rs"
+
+[[bin]]
+name = "synergy-address-engine"
+path = "synergy-address-engine/src/main.rs"
+
+[[bin]]
+name = "wallet-pqc-cli"
+path = "bin/wallet_pqc_cli.rs"

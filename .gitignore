@@ -1,0 +1,58 @@
+# Dependency and build directories
+node_modules/
+target/
+target 2/
+tmp/
+.tmp-docx-venv/
+.venv-docs/
+
+# Runtime data
+data/*
+!data/.gitkeep
+logs/
+**/logs/
+
+# Generated secrets and machine-local config
+config/**/*.key
+config/**/*.pem
+config/**/identity.json
+config/testbeta_wallets.json
+testbeta/lean15/keys/*
+!testbeta/lean15/keys/README.md
+testbeta/lean15/hosts.env
+testbeta/lean15/installers/
+testbeta/lean15/reports/
+
+# Local workspace copies and nested app builds
+tools/control-panel-workspace-files-copies/
+tools/devnet-control-panel/
+
+# Build artifacts
+*.o
+*.so
+*.a
+*.dylib
+*.dll
+*.exe
+
+# Temporary files
+*.log
+*.log.*
+*.tmp
+*.swp
+.DS_Store
+
+# Editor settings
+.vscode/
+
+# Docker and env files
+docker-compose.override.yml
+.env
+
+# Databases
+db.sqlite
+*.db
+
+# Compiled Solidity artifacts
+artifacts/
+cache/

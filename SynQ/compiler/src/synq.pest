@@ -1,0 +1,22 @@
+// SynQ Language Grammar (pest)
+
+WHITESPACE = _{ " " | "\t" | "\r" | "\n" }
+COMMENT    = _{ "//" ~ (!"\n" ~ ANY)* ~ ("\n" | EOI) }
+
+source_file = { SOI ~ item* ~ EOI }
+item = { struct_definition | contract_definition }
+
+struct_definition = { "struct" ~ IDENT ~ "{" ~ struct_field* ~ "}" }
+struct_field = { IDENT ~ ":" ~ type_decl ~ ";" }
+
+contract_definition = { "contract" ~ IDENT ~ "{" ~ contract_part* ~ "}" }
+contract_part = { state_variable_declaration | function_definition }
+
+state_variable_declaration = { IDENT ~ ":" ~ type_decl ~ ("public"?) ~ ";" }
+
+function_definition = { "function" ~ IDENT ~ "(" ~ (param ~ ("," ~ param)*)? ~ ")" ~ block }
+param = { IDENT ~ ":" ~ type_decl }
+block = { "{" ~ "}" } // Empty block for now
+
+type_decl = { IDENT }
+IDENT = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }

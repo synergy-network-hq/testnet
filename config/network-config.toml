@@ -1,0 +1,39 @@
+[network]
+id = 338639
+name = "Synergy Testnet Beta"
+p2p_port = 38638
+rpc_port = 48638
+ws_port = 58638
+max_peers = 50
+bootnodes = [
+  "snr://synv11lylxla8qjcrk3ef8gjlyyhew3z4mjswwwsn6zv@bootnode1.synergy-network.io:38638"
+]
+
+[rpc]
+bind_address = "0.0.0.0:48638"
+external_http = "https://testbeta-core-rpc.synergy-network.io"
+external_ws = "wss://testbeta-core-ws.synergy-network.io"
+
+[network.listen]
+p2p = "0.0.0.0:38638"
+rpc = "0.0.0.0:48638"
+ws  = "0.0.0.0:58638"
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = true
+pruning_interval = 86400
+
+[api]
+enable_http = true
+http_port = 48638
+enable_ws = true
+ws_port = 58638
+enable_grpc = true
+grpc_port = 50051

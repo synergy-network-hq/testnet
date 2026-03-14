@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "vm",
+    "compiler",
+    "cli",
+    "pqc-shims",
+]
+resolver = "2"

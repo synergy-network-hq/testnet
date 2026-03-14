@@ -1,0 +1,29 @@
+{
+  "bootnodes": [
+    {
+      "name": "Bootnode 1",
+      "address": "replace-with-testbeta-bootnode-address",
+      "allocation": "replace-with-allocation",
+      "stake": "replace-with-stake",
+      "keys_location": "config/bootnode1/identity.json",
+      "p2p_endpoint": "replace-with-snr-endpoint",
+      "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io"
+    }
+  ],
+  "cluster": {
+    "cluster_id": "replace-with-testbeta-cluster-id",
+    "name": "Testnet Beta Bootstrap Cluster",
+    "class": 1
+  },
+  "faucet": {
+    "address": "replace-with-testbeta-faucet-address",
+    "allocation": "replace-with-allocation",
+    "keys_location": "config/faucet/identity.json"
+  },
+  "treasury": {
+    "address": "replace-with-testbeta-treasury-address",
+    "allocation": "replace-with-allocation",
+    "keys_location": "config/treasury/identity.json"
+  },
+  "notes": "Copy to config/testbeta_wallets.json only after generating fresh testbeta identities."
+}

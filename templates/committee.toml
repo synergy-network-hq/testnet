@@ -1,0 +1,61 @@
+[network]
+id = 338639
+name = "synergy-testbeta-closed"
+p2p_port = 38638
+rpc_port = 48638
+ws_port = 58638
+max_peers = 50
+bootnodes = ["snr://bootstrap@10.50.0.1:38638", "snr://bootstrap@10.50.0.2:38639"]
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[consensus]
+algorithm = "Proof of Synergy"
+block_time_secs = 5
+epoch_length = 30000
+validator_cluster_size = 7
+max_validators = 21
+synergy_score_decay_rate = 0.05
+vrf_enabled = true
+vrf_seed_epoch_interval = 1000
+max_synergy_points_per_epoch = 100
+max_tasks_per_validator = 10
+
+[consensus.reward_weighting]
+task_accuracy = 0.5
+uptime = 0.3
+collaboration = 0.2
+
+[logging]
+log_level = "info"
+log_file = "data/logs/committee.log"
+enable_console = true
+max_file_size = 10485760
+max_files = 5
+
+[rpc]
+enable_http = true
+http_port = 48638
+enable_ws = true
+ws_port = 58638
+enable_grpc = true
+grpc_port = 48638
+cors_enabled = false
+cors_origins = []
+
+[p2p]
+listen_address = "127.0.0.1:38638"
+public_address = "127.0.0.1:30306"
+node_name = "committee-node-01"
+enable_discovery = false
+discovery_port = 30304
+heartbeat_interval = 30
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = false
+pruning_interval = 86400

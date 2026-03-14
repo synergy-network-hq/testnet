@@ -1,0 +1,706 @@
+use crate::address::{generate_wallet_address, is_valid_address as address_is_valid};
+use crate::crypto::pqc::{PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey};
+use crate::transaction::Transaction;
+use crate::{info, warn};
+use base64::{engine::general_purpose, Engine as _};
+use hex;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Wallet {
+    pub address: String,
+    pub public_key: String,
+    pub private_key: Option<String>, // Only stored for testing, never in production
+    pub kem_public_key: Option<String>,
+    pub kem_private_key: Option<String>,
+    pub balance: HashMap<String, u64>, // token_symbol -> balance
+    pub staked_balance: HashMap<String, u64>, // token_symbol -> staked amount
+    pub nonce: u64,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletManager {
+    wallets: HashMap<String, Wallet>,
+    keypairs: HashMap<String, (String, String)>, // address -> (public_key, private_key)
+    kem_keypairs: HashMap<String, (String, String)>, // address -> (kem_public, kem_private)
+}
+
+impl Wallet {
+    pub fn new(address: String, public_key: String) -> Self {
+        Wallet {
+            address,
+            public_key,
+            private_key: None,
+            kem_public_key: None,
+            kem_private_key: None,
+            balance: HashMap::new(),
+            staked_balance: HashMap::new(),
+            nonce: 0,
+            created_at: Self::current_timestamp(),
+        }
+    }
+
+    pub fn with_private_key(address: String, public_key: String, private_key: String) -> Self {
+        let mut wallet = Self::new(address, public_key);
+        wallet.private_key = Some(private_key);
+        wallet
+    }
+
+    pub fn update_balance(&mut self, token_symbol: String, amount: u64) {
+        *self.balance.entry(token_symbol).or_insert(0) = amount;
+    }
+
+    pub fn get_balance(&self, token_symbol: &str) -> u64 {
+        self.balance.get(token_symbol).copied().unwrap_or(0)
+    }
+
+    pub fn increment_nonce(&mut self) {
+        self.nonce += 1;
+    }
+
+    fn current_timestamp() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+}
+
+impl WalletManager {
+    pub fn new() -> Self {
+        WalletManager {
+            wallets: HashMap::new(),
+            keypairs: HashMap::new(),
+            kem_keypairs: HashMap::new(),
+        }
+    }
+
+    pub fn generate_keypair() -> Result<(String, String, String, String, String), String> {
+        let mut pqc_manager = PQCManager::new();
+        let (sign_public, sign_private) = pqc_manager.generate_keypair(PQCAlgorithm::FNDSA)?;
+        let (kem_public, kem_private) = pqc_manager.generate_keypair(PQCAlgorithm::MLKEM1024)?;
+
+        let address = generate_wallet_address(&hex::encode(&sign_public.key_data));
+
+        Ok((
+            address,
+            hex::encode(sign_public.key_data),
+            hex::encode(sign_private.key_data),
+            hex::encode(kem_public.key_data),
+            hex::encode(kem_private.key_data),
+        ))
+    }
+
+    fn generate_mlkem_keypair() -> Result<(String, String), String> {
+        let mut pqc_manager = PQCManager::new();
+        let (kem_public, kem_private) = pqc_manager.generate_keypair(PQCAlgorithm::MLKEM1024)?;
+        Ok((
+            hex::encode(kem_public.key_data),
+            hex::encode(kem_private.key_data),
+        ))
+    }
+
+    pub fn generate_address(public_key: &str) -> String {
+        // Delegate wallet address generation to the address module for
+        // consistent formatting.
+        generate_wallet_address(public_key)
+    }
+
+    pub fn create_wallet(&mut self) -> Result<String, String> {
+        let (address, public_key, private_key, kem_public, kem_private) = Self::generate_keypair()?;
+
+        let mut wallet =
+            Wallet::with_private_key(address.clone(), public_key.clone(), private_key.clone());
+        wallet.kem_public_key = Some(kem_public.clone());
+        wallet.kem_private_key = Some(kem_private.clone());
+
+        self.wallets.insert(address.clone(), wallet);
+        self.keypairs
+            .insert(address.clone(), (public_key, private_key));
+        self.kem_keypairs
+            .insert(address.clone(), (kem_public, kem_private));
+
+        Ok(address)
+    }
+
+    pub fn create_wallet_from_keypair(
+        &mut self,
+        public_key: String,
+        private_key: String,
+    ) -> Result<String, String> {
+        let address = Self::generate_address(&public_key);
+        let (kem_public, kem_private) = Self::generate_mlkem_keypair()?;
+
+        let mut wallet =
+            Wallet::with_private_key(address.clone(), public_key.clone(), private_key.clone());
+        wallet.kem_public_key = Some(kem_public.clone());
+        wallet.kem_private_key = Some(kem_private.clone());
+
+        self.wallets.insert(address.clone(), wallet);
+        self.keypairs
+            .insert(address.clone(), (public_key, private_key));
+        self.kem_keypairs
+            .insert(address.clone(), (kem_public, kem_private));
+
+        Ok(address)
+    }
+
+    /// Import a wallet under an explicit address (used for testnet-beta/system identities).
+    pub fn import_wallet(
+        &mut self,
+        address: String,
+        public_key: String,
+        private_key: String,
+    ) -> Result<String, String> {
+        let (kem_public, kem_private) = Self::generate_mlkem_keypair()?;
+
+        let mut wallet =
+            Wallet::with_private_key(address.clone(), public_key.clone(), private_key.clone());
+        wallet.kem_public_key = Some(kem_public.clone());
+        wallet.kem_private_key = Some(kem_private.clone());
+
+        self.wallets.insert(address.clone(), wallet);
+        self.keypairs
+            .insert(address.clone(), (public_key, private_key));
+        self.kem_keypairs
+            .insert(address.clone(), (kem_public, kem_private));
+
+        Ok(address)
+    }
+
+    pub fn get_wallet(&self, address: &str) -> Option<&Wallet> {
+        self.wallets.get(address)
+    }
+
+    pub fn get_wallet_mut(&mut self, address: &str) -> Option<&mut Wallet> {
+        self.wallets.get_mut(address)
+    }
+
+    pub fn sign_transaction(&self, address: &str, tx: &mut Transaction) -> Result<String, String> {
+        if let Some(keypair) = self.keypairs.get(address) {
+            let (public_key, private_key) = keypair;
+
+            let private_key_bytes = decode_key_material(private_key)
+                .map_err(|e| format!("Invalid private key format: {}", e))?;
+            let _ = decode_key_material(public_key)
+                .map_err(|e| format!("Invalid public key format: {}", e))?;
+
+            let pqc_private_key = PQCPrivateKey {
+                algorithm: PQCAlgorithm::FNDSA,
+                key_data: private_key_bytes,
+                public_key_id: address.to_string(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            };
+
+            let mut pqc_manager = PQCManager::new();
+            tx.sign(&pqc_private_key, &mut pqc_manager)?;
+            tx.sender = address.to_string();
+
+            Ok("Transaction signed successfully".to_string())
+        } else {
+            Err("Wallet not found or no private key available".to_string())
+        }
+    }
+
+    pub fn verify_signature(&self, tx: &Transaction) -> bool {
+        if let Some(keypair) = self.keypairs.get(&tx.sender) {
+            let (public_key, _) = keypair;
+            let public_key_bytes = match decode_key_material(public_key) {
+                Ok(bytes) => bytes,
+                Err(_) => return false,
+            };
+            let message_hash = match hex::decode(tx.raw_hash()) {
+                Ok(bytes) => bytes,
+                Err(_) => return false,
+            };
+            let algorithm = match parse_signature_algorithm(&tx.signature_algorithm) {
+                Ok(algorithm) => algorithm,
+                Err(_) => return false,
+            };
+
+            let pqc_public_key = crate::crypto::pqc::PQCPublicKey {
+                algorithm: algorithm.clone(),
+                key_data: public_key_bytes,
+                key_id: tx.sender.clone(),
+                created_at: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs(),
+            };
+            let signature = crate::crypto::pqc::PQCSignature {
+                algorithm,
+                signature_data: tx.signature.clone(),
+                message_hash: message_hash.clone(),
+                public_key_id: tx.sender.clone(),
+                created_at: tx.timestamp,
+            };
+
+            let pqc_manager = crate::crypto::pqc::PQCManager::new();
+            pqc_manager
+                .verify(&pqc_public_key, &signature, &message_hash)
+                .unwrap_or(false)
+        } else {
+            false
+        }
+    }
+
+    pub fn send_tokens(
+        &mut self,
+        from: &str,
+        to: &str,
+        token_symbol: &str,
+        amount: u64,
+        token_manager: &crate::token::TokenManager,
+    ) -> Result<Transaction, String> {
+        // Check balance
+        let balance = token_manager.get_balance(from, token_symbol);
+        if balance < amount {
+            return Err("Insufficient balance".to_string());
+        }
+
+        // Create transaction
+        let mut tx = Transaction::new(
+            from.to_string(),
+            to.to_string(),
+            amount,
+            self.get_wallet(from).map_or(0, |w| w.nonce),
+            vec![], // signature will be added
+            1000,   // gas_price
+            21000,  // gas_limit
+            Some(format!(
+                "token_transfer:{{\"to\":\"{}\",\"token\":\"{}\",\"amount\":{}}}",
+                to, token_symbol, amount
+            )),
+            "fndsa".to_string(), // signature algorithm
+        );
+
+        // Sign transaction
+        self.sign_transaction(from, &mut tx)?;
+
+        // Update nonce
+        if let Some(wallet) = self.wallets.get_mut(from) {
+            wallet.increment_nonce();
+        }
+
+        Ok(tx)
+    }
+
+    pub fn stake_tokens(
+        &mut self,
+        staker: &str,
+        validator: &str,
+        token_symbol: &str,
+        amount: u64,
+        token_manager: &crate::token::TokenManager,
+    ) -> Result<Transaction, String> {
+        // Check balance
+        let balance = token_manager.get_balance(staker, token_symbol);
+        if balance < amount {
+            return Err("Insufficient balance for staking".to_string());
+        }
+
+        // Create staking transaction
+        let mut tx = Transaction::new(
+            staker.to_string(),
+            validator.to_string(),
+            amount,
+            self.get_wallet(staker).map_or(0, |w| w.nonce),
+            vec![], // signature will be added
+            1000,
+            21000,
+            Some(format!(
+                "stake:{{\"validator\":\"{}\",\"token\":\"{}\",\"amount\":{}}}",
+                validator, token_symbol, amount
+            )),
+            "fndsa".to_string(), // signature algorithm
+        );
+
+        // Sign transaction
+        self.sign_transaction(staker, &mut tx)?;
+
+        // Update nonce
+        if let Some(wallet) = self.wallets.get_mut(staker) {
+            wallet.increment_nonce();
+        }
+
+        Ok(tx)
+    }
+
+    pub fn encrypt_payload_with_mlkem1024(
+        &self,
+        sender: &str,
+        recipient: &str,
+        payload: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+        let _sender_wallet = self
+            .wallets
+            .get(sender)
+            .ok_or_else(|| format!("Sender wallet {} not found", sender))?;
+        let recipient_wallet = self
+            .wallets
+            .get(recipient)
+            .ok_or_else(|| format!("Recipient wallet {} not found", recipient))?;
+
+        let kem_public = self.get_kem_public_key_bytes(recipient)?;
+        let pqc_public_key = PQCPublicKey {
+            algorithm: PQCAlgorithm::MLKEM1024,
+            key_data: kem_public,
+            key_id: format!("kem_{}", recipient),
+            created_at: recipient_wallet.created_at,
+        };
+
+        let mut pqc_manager = PQCManager::new();
+        let (ciphertext_record, shared_secret_record) = pqc_manager.encapsulate(&pqc_public_key)?;
+        let encrypted_payload = Self::xor_with_shared_secret(payload, &shared_secret_record.secret);
+
+        Ok((
+            ciphertext_record.ciphertext.clone(),
+            encrypted_payload,
+            shared_secret_record.secret.clone(),
+        ))
+    }
+
+    pub fn decrypt_payload_with_mlkem1024(
+        &self,
+        recipient: &str,
+        ciphertext: &[u8],
+        encrypted_payload: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>), String> {
+        let recipient_wallet = self
+            .wallets
+            .get(recipient)
+            .ok_or_else(|| format!("Recipient wallet {} not found", recipient))?;
+        let kem_private = self.get_kem_private_key_bytes(recipient)?;
+
+        let pqc_private_key = PQCPrivateKey {
+            algorithm: PQCAlgorithm::MLKEM1024,
+            key_data: kem_private,
+            public_key_id: format!("kem_{}", recipient),
+            created_at: recipient_wallet.created_at,
+        };
+
+        let pqc_ciphertext = PQCCiphertext {
+            algorithm: PQCAlgorithm::MLKEM1024,
+            ciphertext: ciphertext.to_vec(),
+            encapsulated_key: Vec::new(),
+            public_key_id: pqc_private_key.public_key_id.clone(),
+            created_at: Wallet::current_timestamp(),
+        };
+
+        let mut pqc_manager = PQCManager::new();
+        let shared_secret = pqc_manager.decapsulate(&pqc_private_key, &pqc_ciphertext)?;
+        let plaintext = Self::xor_with_shared_secret(encrypted_payload, &shared_secret.secret);
+
+        Ok((plaintext, shared_secret.secret.clone()))
+    }
+
+    pub fn get_all_wallets(&self) -> Vec<&Wallet> {
+        self.wallets.values().collect()
+    }
+
+    fn get_kem_public_key_bytes(&self, address: &str) -> Result<Vec<u8>, String> {
+        self.kem_keypairs
+            .get(address)
+            .ok_or_else(|| format!("Wallet {} does not have an ML-KEM public key", address))
+            .and_then(|(public_hex, _)| {
+                hex::decode(public_hex)
+                    .map_err(|e| format!("Invalid ML-KEM public key for {}: {}", address, e))
+            })
+    }
+
+    fn get_kem_private_key_bytes(&self, address: &str) -> Result<Vec<u8>, String> {
+        self.kem_keypairs
+            .get(address)
+            .ok_or_else(|| format!("Wallet {} does not have an ML-KEM private key", address))
+            .and_then(|(_, private_hex)| {
+                hex::decode(private_hex)
+                    .map_err(|e| format!("Invalid ML-KEM private key for {}: {}", address, e))
+            })
+    }
+
+    fn xor_with_shared_secret(data: &[u8], shared_secret: &[u8]) -> Vec<u8> {
+        data.iter()
+            .zip(shared_secret.iter().cycle())
+            .map(|(a, b)| a ^ b)
+            .collect()
+    }
+
+    // Additional wallet utility functions
+    pub fn export_private_key(&self, address: &str, password: &str) -> Result<String, String> {
+        if let Some(keypair) = self.keypairs.get(address) {
+            let (_, private_key) = keypair;
+            // In production, this would encrypt the private key with the password
+            // For now, we'll just return the hex-encoded private key
+            Ok(private_key.clone())
+        } else {
+            Err("Wallet not found".to_string())
+        }
+    }
+
+    pub fn import_private_key(
+        &mut self,
+        private_key: &str,
+        password: &str,
+    ) -> Result<String, String> {
+        // In production, this would decrypt the private key with the password
+        // For now, we'll assume the private key is already decrypted
+
+        // Generate public key from private key (simplified)
+        let public_key = hex::encode(format!("pub_{}", private_key).as_bytes());
+        let address = Self::generate_address(&public_key);
+
+        // Create wallet from imported keypair
+        self.create_wallet_from_keypair(public_key, private_key.to_string())?;
+
+        Ok(address)
+    }
+
+    pub fn get_wallet_balance(
+        &self,
+        address: &str,
+        token_manager: &crate::token::TokenManager,
+    ) -> HashMap<String, u64> {
+        let mut balances = HashMap::new();
+
+        // Get balances for all tokens
+        let tokens = vec!["SNRG", "USDT", "USDC", "BTC", "ETH"];
+        for token in tokens {
+            let balance = token_manager.get_balance(address, token);
+            if balance > 0 {
+                balances.insert(token.to_string(), balance);
+            }
+        }
+
+        balances
+    }
+
+    pub fn get_transaction_history(&self, address: &str) -> Vec<String> {
+        // In production, this would query the blockchain for transaction history
+        // For now, return empty vector
+        vec![]
+    }
+
+    pub fn backup_wallet(&self, address: &str) -> Result<String, String> {
+        if let Some(wallet) = self.wallets.get(address) {
+            // Create wallet backup data
+            let backup_data = serde_json::json!({
+                "address": wallet.address,
+                "public_key": wallet.public_key,
+                "nonce": wallet.nonce,
+                "backup_timestamp": std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+            });
+
+            Ok(backup_data.to_string())
+        } else {
+            Err("Wallet not found".to_string())
+        }
+    }
+
+    pub fn restore_wallet(&mut self, backup_data: &str) -> Result<String, String> {
+        let backup: serde_json::Value =
+            serde_json::from_str(backup_data).map_err(|e| format!("Invalid backup data: {}", e))?;
+
+        let address = backup["address"]
+            .as_str()
+            .ok_or("Missing address in backup data")?;
+        let public_key = backup["public_key"]
+            .as_str()
+            .ok_or("Missing public key in backup data")?;
+
+        // Create wallet from backup data
+        let (kem_public, kem_private) = Self::generate_mlkem_keypair()?;
+        let mut wallet = Wallet::new(address.to_string(), public_key.to_string());
+        wallet.kem_public_key = Some(kem_public.clone());
+        wallet.kem_private_key = Some(kem_private.clone());
+
+        self.wallets.insert(address.to_string(), wallet);
+        self.kem_keypairs
+            .insert(address.to_string(), (kem_public, kem_private));
+
+        Ok(address.to_string())
+    }
+}
+
+// Global wallet manager instance
+lazy_static::lazy_static! {
+    pub static ref WALLET_MANAGER: std::sync::Mutex<WalletManager> = std::sync::Mutex::new(WalletManager::new());
+}
+
+/// Loads testnet beta system identities (faucet/treasury/bootnodes) into the in-memory wallet manager.
+/// This enables signing test transactions and validating known genesis identities.
+pub fn init_testbeta_wallets() {
+    let config_path = "config/testbeta_wallets.json";
+    let cfg = match std::fs::read_to_string(config_path) {
+        Ok(c) => c,
+        Err(_) => return, // optional
+    };
+
+    let json = match serde_json::from_str::<serde_json::Value>(&cfg) {
+        Ok(v) => v,
+        Err(e) => {
+            warn!("wallet", "Failed to parse testbeta_wallets.json", "error" => e.to_string());
+            return;
+        }
+    };
+
+    let mut identities: Vec<&serde_json::Value> = Vec::new();
+    if let Some(faucet) = json.get("faucet") {
+        identities.push(faucet);
+    }
+    if let Some(treasury) = json.get("treasury") {
+        identities.push(treasury);
+    }
+    if let Some(bootnodes) = json.get("bootnodes").and_then(|v| v.as_array()) {
+        for b in bootnodes {
+            identities.push(b);
+        }
+    }
+
+    let mut imported = 0u64;
+    for entry in identities {
+        let keys_location = entry.get("keys_location").and_then(|v| v.as_str());
+        if keys_location.is_none() {
+            continue;
+        }
+        let keys_location = keys_location.unwrap();
+        let identity_str = match std::fs::read_to_string(keys_location) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!("wallet", "Failed to read identity file", "path" => keys_location.to_string(), "error" => e.to_string());
+                continue;
+            }
+        };
+
+        let identity = match serde_json::from_str::<serde_json::Value>(&identity_str) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("wallet", "Failed to parse identity file", "path" => keys_location.to_string(), "error" => e.to_string());
+                continue;
+            }
+        };
+
+        let address = identity
+            .get("address")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let public_key = identity
+            .get("public_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let private_key = identity
+            .get("private_key")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if address.is_empty() || public_key.is_empty() || private_key.is_empty() {
+            continue;
+        }
+
+        if let Ok(mut wm) = WALLET_MANAGER.lock() {
+            // Import wallet under the explicit address from the identity file.
+            if wm
+                .import_wallet(address.clone(), public_key, private_key)
+                .is_ok()
+            {
+                imported += 1;
+            }
+        }
+    }
+
+    if imported > 0 {
+        info!("wallet", "Imported testnet beta identities", "count" => imported);
+    }
+}
+
+fn decode_key_material(s: &str) -> Result<Vec<u8>, String> {
+    // Try hex first (preferred internal representation), then base64 (identity.json format).
+    if let Ok(bytes) = hex::decode(s) {
+        return Ok(bytes);
+    }
+    general_purpose::STANDARD
+        .decode(s.as_bytes())
+        .map_err(|e| e.to_string())
+}
+
+fn parse_signature_algorithm(value: &str) -> Result<PQCAlgorithm, String> {
+    match value {
+        "mldsa" => Ok(PQCAlgorithm::MLDSA),
+        "fndsa" => Ok(PQCAlgorithm::FNDSA),
+        "slhdsa" => Ok(PQCAlgorithm::SLHDSA),
+        _ => Err(format!("Unsupported signature algorithm: {}", value)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::transaction::Transaction;
+
+    #[test]
+    fn wallet_signed_transaction_verifies_with_strict_pqc() {
+        let mut wallet_manager = WalletManager::new();
+        let sender = wallet_manager
+            .create_wallet()
+            .expect("wallet creation should succeed");
+        let mut tx = Transaction::new(
+            sender.clone(),
+            "receiver_test".to_string(),
+            1,
+            0,
+            vec![],
+            1,
+            21_000,
+            None,
+            "fndsa".to_string(),
+        );
+
+        wallet_manager
+            .sign_transaction(&sender, &mut tx)
+            .expect("transaction signing should succeed");
+
+        assert!(
+            wallet_manager.verify_signature(&tx),
+            "strict PQC verification should succeed for a wallet-signed transaction"
+        );
+    }
+
+    #[test]
+    fn wallet_rejects_unsupported_signature_algorithm() {
+        let mut wallet_manager = WalletManager::new();
+        let sender = wallet_manager
+            .create_wallet()
+            .expect("wallet creation should succeed");
+        let mut tx = Transaction::new(
+            sender.clone(),
+            "receiver_test".to_string(),
+            1,
+            0,
+            vec![],
+            1,
+            21_000,
+            None,
+            "fndsa".to_string(),
+        );
+
+        wallet_manager
+            .sign_transaction(&sender, &mut tx)
+            .expect("transaction signing should succeed");
+        tx.signature_algorithm = "unknown_algo".to_string();
+
+        assert!(
+            !wallet_manager.verify_signature(&tx),
+            "unknown signature algorithm should be rejected"
+        );
+    }
+}

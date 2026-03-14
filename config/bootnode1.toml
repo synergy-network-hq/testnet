@@ -1,0 +1,70 @@
+# Bootnode1 Configuration - Synergy Testnet Beta Validator
+# This bootnode acts as the first validator and network seed node
+
+[network]
+id = 338639
+name = "Synergy Testnet Beta"
+p2p_port = 38638
+rpc_port = 48638
+ws_port = 58638
+max_peers = 50
+bootnodes = []
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[consensus]
+algorithm = "Proof of Synergy"
+block_time_secs = 5
+epoch_length = 30000
+validator_cluster_size = 3
+max_validators = 21
+synergy_score_decay_rate = 0.05
+vrf_enabled = true
+vrf_seed_epoch_interval = 1000
+max_synergy_points_per_epoch = 100
+max_tasks_per_validator = 10
+
+[consensus.reward_weighting]
+task_accuracy = 0.5
+uptime = 0.3
+collaboration = 0.2
+
+[logging]
+log_level = "info"
+log_file = "logs/bootnode1.log"
+enable_console = true
+max_file_size = 10485760
+max_files = 5
+
+[rpc]
+enable_http = true
+http_port = 48638
+enable_ws = true
+ws_port = 58638
+enable_grpc = true
+grpc_port = 50051
+cors_enabled = true
+cors_origins = ["*"]
+external_http = "https://testbeta-core-rpc.synergy-network.io"
+external_ws = "wss://testbeta-core-ws.synergy-network.io"
+
+[p2p]
+listen_address = "0.0.0.0:38638"
+public_address = "bootnode1.synergy-network.io:38638"
+node_name = "bootnode1-validator"
+enable_discovery = true
+discovery_port = 38639
+heartbeat_interval = 30
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = true
+pruning_interval = 86400
+
+[node]
+# Enable auto-registration - bootnode should auto-register as validator on startup
+auto_register_validator = true

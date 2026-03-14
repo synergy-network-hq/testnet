@@ -1,0 +1,16 @@
+machine_id,node_id,role_group,role,node_type,address_class,p2p_port,rpc_port,ws_port,grpc_port,discovery_port,host,vpn_ip,auto_register_validator,enable_pruning,vrf_enabled
+machine-01,consensus-01,consensus,validator,validator,1,38638,48638,58638,50051,39638,10.50.0.1,10.50.0.1,true,false,true
+machine-02,consensus-02,consensus,validator,validator,1,38639,48639,58639,50052,39639,10.50.0.2,10.50.0.2,true,false,true
+machine-03,consensus-03,consensus,validator,validator,1,38640,48640,58640,50053,39640,10.50.0.3,10.50.0.3,true,false,true
+machine-04,consensus-04,consensus,validator,validator,1,38641,48641,58641,50054,39641,10.50.0.4,10.50.0.4,true,false,true
+machine-05,consensus-05,consensus,validator,validator,1,38642,48642,58642,50055,39642,10.50.0.5,10.50.0.5,true,false,true
+machine-06,interop-01,interop,relayer,relayer,4,38643,48643,58643,50056,39643,10.50.0.6,10.50.0.6,false,true,false
+machine-07,interop-02,interop,cross-chain-verifier,cross-chain-verifier,4,38644,48644,58644,50057,39644,10.50.0.7,10.50.0.7,false,true,false
+machine-08,interop-03,interop,oracle,oracle,4,38645,48645,58645,50058,39645,10.50.0.8,10.50.0.8,false,true,false
+machine-09,interop-04,interop,witness,witness,4,38646,48646,58646,50059,39646,10.50.0.9,10.50.0.9,false,true,false
+machine-10,governance-01,governance,committee,committee,3,38647,48647,58647,50060,39647,10.50.0.10,10.50.0.10,true,false,true
+machine-11,governance-02,governance,security-council,security-council,3,38648,48648,58648,50061,39648,10.50.0.11,10.50.0.11,true,false,true
+machine-12,pqc-01,pqc,pqc-crypto,pqc-crypto,2,38649,48649,58649,50062,39649,10.50.0.12,10.50.0.12,false,true,false
+machine-13,service-01,services,rpc-gateway,rpc-gateway,5,38650,48650,58650,50063,39650,10.50.0.13,10.50.0.13,false,true,false
+machine-14,service-02,services,indexer,indexer,5,38651,48651,58651,50064,39651,10.50.0.14,10.50.0.14,false,false,false
+machine-15,service-03,services,observer,observer,5,38652,48652,58652,50065,39652,10.50.0.15,10.50.0.15,false,false,false

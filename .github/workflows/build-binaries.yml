@@ -1,0 +1,90 @@
+name: Build Testbeta Binaries
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-amd64
+            bin_path: target/release/synergy-testbeta
+            binary_suffix: ""
+            archive_ext: tar.gz
+          - os: windows-latest
+            label: windows-amd64
+            bin_path: target/release/synergy-testbeta.exe
+            binary_suffix: .exe
+            archive_ext: zip
+          - os: macos-14
+            label: macos-arm64
+            bin_path: target/release/synergy-testbeta
+            binary_suffix: ""
+            archive_ext: tar.gz
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --locked -p synergy-testbeta --bin synergy-testbeta
+
+      - name: Package binary
+        id: package
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          asset_base="synergy-testbeta-${{ matrix.label }}"
+          staged_binary="dist/${asset_base}${{ matrix.binary_suffix }}"
+          cp "${{ matrix.bin_path }}" "$staged_binary"
+
+          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
+            7z a "dist/${asset_base}.zip" "$staged_binary" >/dev/null
+            package_path="dist/${asset_base}.zip"
+          else
+            tar -C dist -czf "dist/${asset_base}.tar.gz" "$(basename "$staged_binary")"
+            package_path="dist/${asset_base}.tar.gz"
+          fi
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$package_path" > "${package_path}.sha256"
+          else
+            shasum -a 256 "$package_path" > "${package_path}.sha256"
+          fi
+
+          echo "package_path=$package_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}
+          path: dist/*
+
+      - name: Upload release assets
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
