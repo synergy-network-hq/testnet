@@ -108,6 +108,9 @@ pub struct StorageConfig {
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct NodeSettings {
+    #[serde(default)]
+    pub bootstrap_only: bool,
+    #[serde(default)]
     pub auto_register_validator: bool,
     #[serde(default)]
     pub validator_address: String,
@@ -329,6 +332,15 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
         match normalized.as_str() {
             "1" | "true" | "yes" | "on" => config.node.auto_register_validator = true,
             "0" | "false" | "no" | "off" => config.node.auto_register_validator = false,
+            _ => {}
+        }
+    }
+
+    if let Ok(val) = env::var("SYNERGY_BOOTSTRAP_ONLY") {
+        let normalized = val.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "1" | "true" | "yes" | "on" => config.node.bootstrap_only = true,
+            "0" | "false" | "no" | "off" => config.node.bootstrap_only = false,
             _ => {}
         }
     }

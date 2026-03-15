@@ -66,6 +66,20 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
         .unwrap_or_else(|| config.p2p.node_name.clone())
 }
 
+fn announced_validator_address(config: &NodeConfig) -> Option<String> {
+    if config.node.bootstrap_only {
+        return None;
+    }
+
+    let resolved = resolve_local_validator_address(config);
+    let trimmed = resolved.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
     if !config.node.strict_validator_allowlist {
         return true;
@@ -358,14 +372,18 @@ impl P2PNetwork {
                 if network.config.p2p.enable_discovery {
                     network.request_peers();
                 }
-                network.request_peer_statuses();
+                if !network.config.node.bootstrap_only {
+                    network.request_peer_statuses();
+                }
 
                 // Try to sync missing blocks.
-                let from_height = {
-                    let chain = network.blockchain.lock().unwrap();
-                    chain.last().map(|b| b.block_index + 1).unwrap_or(0)
-                };
-                network.request_blocks(from_height, 200);
+                if !network.config.node.bootstrap_only {
+                    let from_height = {
+                        let chain = network.blockchain.lock().unwrap();
+                        chain.last().map(|b| b.block_index + 1).unwrap_or(0)
+                    };
+                    network.request_blocks(from_height, 200);
+                }
 
                 // Keep connections alive.
                 network.ping_peers();
@@ -461,7 +479,7 @@ fn handle_incoming_connection(
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
         public_address: Some(config.p2p.public_address.clone()),
-        validator_address: Some(resolve_local_validator_address(&config)),
+        validator_address: announced_validator_address(&config),
     };
 
     send_message(&mut writer, &handshake)?;
@@ -545,7 +563,7 @@ fn handle_outgoing_connection(
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
         public_address: Some(config.p2p.public_address.clone()),
-        validator_address: Some(resolve_local_validator_address(&config)),
+        validator_address: announced_validator_address(&config),
     };
 
     send_message(&mut writer, &handshake)?;
@@ -608,10 +626,12 @@ fn handle_messages(
                         public_address,
                         validator_address,
                     } => {
-                        let validator_address = validator_address
+                        let announced_validator_address = validator_address
                             .as_ref()
                             .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty())
+                            .filter(|value| !value.is_empty());
+                        let peer_identity = announced_validator_address
+                            .clone()
                             .unwrap_or_else(|| node_id.clone());
 
                         info!(
@@ -619,7 +639,7 @@ fn handle_messages(
                             "Handshake received",
                             "peer" => peer_address.clone(),
                             "node_id" => node_id.clone(),
-                            "validator_address" => validator_address.clone(),
+                            "validator_address" => announced_validator_address.clone().unwrap_or_default(),
                             "version" => version.clone(),
                             "public_address" => public_address.clone().unwrap_or_default()
                         );
@@ -659,7 +679,28 @@ fn handle_messages(
                         // and funds them with 1000 SNRG for staking
                         {
                             // Only auto-register if auto-registration is enabled in config
+                            if config.node.bootstrap_only {
+                                debug!(
+                                    "p2p",
+                                    "Bootstrap-only mode enabled; skipping validator auto-registration for peer",
+                                    "peer" => peer_address.clone(),
+                                    "peer_identity" => peer_identity.clone()
+                                );
+                                continue;
+                            }
+
                             if config.node.auto_register_validator {
+                                let Some(validator_address) = announced_validator_address.clone()
+                                else {
+                                    debug!(
+                                        "p2p",
+                                        "Peer did not advertise a validator address; skipping validator auto-registration",
+                                        "peer" => peer_address.clone(),
+                                        "peer_identity" => peer_identity.clone()
+                                    );
+                                    continue;
+                                };
+
                                 if !is_validator_allowed(&config, &validator_address) {
                                     warn!(
                                         "p2p",
@@ -784,6 +825,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Block { block_data } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block propagation",
+                                "peer" => peer_address.clone(),
+                                "height" => block_data.block_index
+                            );
+                            continue;
+                        }
+
                         info!("p2p", "Received block", "peer" => peer_address.clone());
 
                         // Update peer stats
@@ -814,6 +865,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Transaction { transaction_data } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring transaction propagation",
+                                "peer" => peer_address.clone(),
+                                "tx_hash" => transaction_data.hash()
+                            );
+                            continue;
+                        }
+
                         info!("p2p", "Received transaction", "peer" => peer_address.clone());
 
                         // Update peer stats
@@ -834,6 +895,24 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetBlocks { from_height, count } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node returning empty block response",
+                                "peer" => peer_address.clone(),
+                                "from_height" => from_height,
+                                "count" => count as u64
+                            );
+                            let response = NetworkMessage::Blocks { blocks: Vec::new() };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         info!(
                             "p2p",
                             "Block request",
@@ -870,6 +949,25 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetStatus => {
+                        if config.node.bootstrap_only {
+                            let status = NetworkMessage::Status {
+                                block_height: 0,
+                                best_block_hash: String::new(),
+                                genesis_hash: String::new(),
+                            };
+
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                peer.last_known_height = 0;
+                                peer.best_block_hash.clear();
+                                peer.genesis_hash.clear();
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &status);
+                                }
+                            }
+                            continue;
+                        }
+
                         let (block_height, best_block_hash, genesis_hash) = {
                             let chain = blockchain.lock().unwrap();
                             (
@@ -902,6 +1000,16 @@ fn handle_messages(
                         best_block_hash,
                         genesis_hash,
                     } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring remote chain status",
+                                "peer" => peer_address.clone(),
+                                "height" => block_height
+                            );
+                            continue;
+                        }
+
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             peer.last_known_height = block_height;
@@ -914,6 +1022,19 @@ fn handle_messages(
                         start_height,
                         count,
                     } => {
+                        if config.node.bootstrap_only {
+                            let response = NetworkMessage::BlockHeaders {
+                                headers: Vec::new(),
+                            };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         let headers = {
                             let chain = blockchain.lock().unwrap();
                             chain
@@ -933,9 +1054,30 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::BlockHeaders { headers } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block headers",
+                                "peer" => peer_address.clone(),
+                                "count" => headers.len()
+                            );
+                            continue;
+                        }
+
                         debug!("p2p", "Received block headers", "peer" => peer_address.clone(), "count" => headers.len());
                     }
                     NetworkMessage::GetBlockBodies { hashes } => {
+                        if config.node.bootstrap_only {
+                            let response = NetworkMessage::BlockBodies { blocks: Vec::new() };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         let blocks = {
                             let chain = blockchain.lock().unwrap();
                             hashes
@@ -958,6 +1100,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::BlockBodies { blocks } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block bodies",
+                                "peer" => peer_address.clone(),
+                                "count" => blocks.len()
+                            );
+                            continue;
+                        }
+
                         debug!("p2p", "Received block bodies", "peer" => peer_address.clone(), "count" => blocks.len());
                         for block in blocks {
                             let height = block.block_index;
@@ -967,6 +1119,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Blocks { blocks } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring bulk blocks",
+                                "peer" => peer_address.clone(),
+                                "count" => blocks.len()
+                            );
+                            continue;
+                        }
+
                         // Apply blocks received in bulk.
                         let mut applied = 0u64;
                         for block in blocks {

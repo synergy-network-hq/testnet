@@ -56,6 +56,11 @@ fn is_validator_allowed(
         .any(|allowed| allowed == validator_address)
 }
 
+fn should_start_rpc(config: &synergy_testbeta::config::NodeConfig) -> bool {
+    !config.node.bootstrap_only
+        && (config.rpc.enable_http || config.rpc.enable_ws || config.rpc.enable_grpc)
+}
+
 fn print_usage() {
     eprintln!("Synergy Testnet Beta Node - Multi-role blockchain node");
     eprintln!();
@@ -94,7 +99,9 @@ fn print_usage() {
     eprintln!("    synergy-testbeta list-templates");
     eprintln!("    synergy-testbeta keygen --type ml-dsa-65 --output ./keys --class 1");
     eprintln!("    synergy-testbeta register --config config/node.toml --address synv1... --key ./keys/private.key");
-    eprintln!("    synergy-testbeta sync --config config/node.toml --network testbeta --check-only");
+    eprintln!(
+        "    synergy-testbeta sync --config config/node.toml --network testbeta --check-only"
+    );
 }
 
 fn main() {
@@ -273,25 +280,53 @@ fn main() {
             info!("main", "P2P network started", "listen_address" => config.p2p.listen_address.clone());
 
             // Start RPC server in a separate thread
-            let rpc_bind_address = if config.rpc.bind_address.trim().is_empty() {
-                format!("127.0.0.1:{}", config.rpc.http_port)
+            if should_start_rpc(&config) {
+                let rpc_bind_address = if config.rpc.bind_address.trim().is_empty() {
+                    format!("127.0.0.1:{}", config.rpc.http_port)
+                } else {
+                    config.rpc.bind_address.clone()
+                };
+                let cors_enabled = config.rpc.cors_enabled;
+                let cors_origins = config.rpc.cors_origins.clone();
+                let _rpc_handle = std::thread::spawn(move || {
+                    rpc::rpc_server::start_rpc_server(
+                        &rpc_bind_address,
+                        cors_enabled,
+                        cors_origins,
+                    );
+                });
             } else {
-                config.rpc.bind_address.clone()
-            };
-            let cors_enabled = config.rpc.cors_enabled;
-            let cors_origins = config.rpc.cors_origins.clone();
-            let _rpc_handle = std::thread::spawn(move || {
-                rpc::rpc_server::start_rpc_server(&rpc_bind_address, cors_enabled, cors_origins);
-            });
+                info!(
+                    "main",
+                    "RPC server disabled for this node profile",
+                    "bootstrap_only" => config.node.bootstrap_only,
+                    "enable_http" => config.rpc.enable_http,
+                    "enable_ws" => config.rpc.enable_ws,
+                    "enable_grpc" => config.rpc.enable_grpc
+                );
+            }
 
             // Node initialized with core systems
-            info!("main", "Node initialized with RPC, P2P, and consensus systems", "rpc_port" => config.rpc.http_port, "p2p_address" => config.p2p.listen_address.clone(), "consensus" => config.consensus.algorithm.clone());
+            info!(
+                "main",
+                "Node initialized",
+                "bootstrap_only" => config.node.bootstrap_only,
+                "rpc_enabled" => should_start_rpc(&config),
+                "rpc_port" => config.rpc.http_port,
+                "p2p_address" => config.p2p.listen_address.clone(),
+                "consensus" => config.consensus.algorithm.clone()
+            );
 
             // Check if we just reset - if so, skip network sync to start fresh
             let reset_flag_path = "data/.reset_flag";
             let should_sync = !std::path::Path::new(reset_flag_path).exists();
 
-            if should_sync {
+            if config.node.bootstrap_only {
+                info!(
+                    "main",
+                    "Bootstrap-only mode enabled; skipping chain sync and consensus bootstrap"
+                );
+            } else if should_sync {
                 let sync_result = {
                     let mut manager = SYNC_MANAGER.lock().unwrap();
                     manager.attach_network(Arc::clone(&p2p_network));
@@ -318,7 +353,12 @@ fn main() {
             }
 
             // Self-register as validator if not already registered
-            if config.node.auto_register_validator {
+            if config.node.bootstrap_only {
+                info!(
+                    "main",
+                    "Bootstrap-only mode enabled; validator self-registration disabled"
+                );
+            } else if config.node.auto_register_validator {
                 let validator_address = resolve_local_validator_address(&config);
                 if !is_validator_allowed(&config, &validator_address) {
                     info!(
@@ -408,12 +448,20 @@ fn main() {
             }
 
             // Start consensus in a separate thread
-            info!("main", "Starting consensus engine", "algorithm" => config.consensus.algorithm.clone());
-            let consensus_handle = std::thread::spawn(|| {
-                let mut consensus = ProofOfSynergy::new();
-                consensus.initialize();
-                consensus.execute();
-            });
+            let consensus_handle = if config.node.bootstrap_only {
+                info!(
+                    "main",
+                    "Bootstrap-only mode enabled; consensus engine will not start"
+                );
+                None
+            } else {
+                info!("main", "Starting consensus engine", "algorithm" => config.consensus.algorithm.clone());
+                Some(std::thread::spawn(|| {
+                    let mut consensus = ProofOfSynergy::new();
+                    consensus.initialize();
+                    consensus.execute();
+                }))
+            };
 
             info!("main", "Node is running. Press Ctrl+C to stop.");
 
@@ -438,7 +486,9 @@ fn main() {
             fs::remove_file("data/synergy-testbeta.pid").ok();
 
             // Wait for threads to finish
-            consensus_handle.join().ok();
+            if let Some(consensus_handle) = consensus_handle {
+                consensus_handle.join().ok();
+            }
             // Note: RPC thread will be killed when main exits
         }
 
