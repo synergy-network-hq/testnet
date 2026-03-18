@@ -167,7 +167,7 @@ genesis = {
         "parameters": {
             "block_time_ms": 2000,
             "epoch_length": 50,
-            "min_validators": 5,
+            "min_validators": 3,
             "max_validators": 15,
             "quorum_threshold": 0.67,
             "min_stake_amount": str(validator_stake),

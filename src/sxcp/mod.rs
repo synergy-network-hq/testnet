@@ -260,7 +260,7 @@ fn verify_relayer_signature(
 
     let algorithm = parse_signature_algorithm(metadata);
     let message = event_hash.as_bytes();
-    let mut manager = PQCManager::new();
+    let manager = PQCManager::new();
     let public_key = PQCPublicKey {
         algorithm: algorithm.clone(),
         key_data: public_key_bytes,

@@ -2,7 +2,6 @@ use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
 use crate::validator::ValidatorManager;
 use serde::{Deserialize, Serialize};
-use sha3::Digest;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -485,7 +484,7 @@ impl WhistleblowerSystem {
             .ok_or("Report not found".to_string())?;
 
         // Verify the evidence signature
-        let mut pqc_manager = self.pqc_manager.lock().unwrap();
+        let pqc_manager = self.pqc_manager.lock().unwrap();
         let public_key = self.get_whistleblower_public_key(&report.reporter)?;
 
         let verified = pqc_manager

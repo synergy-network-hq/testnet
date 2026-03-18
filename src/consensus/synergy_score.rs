@@ -1,4 +1,4 @@
-use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
+use crate::crypto::pqc::PQCManager;
 use crate::validator::{Validator, ValidatorManager};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -229,7 +229,7 @@ impl SynergyScoreCalculator {
         }
     }
 
-    fn detect_cartel_correlation(&self, validator: &Validator) -> f64 {
+    fn detect_cartel_correlation(&self, _validator: &Validator) -> f64 {
         // Simplified cartel detection
         // In full implementation, construct_vote_vector and calculate_pairwise_correlations methods would be needed
         // For now, return a baseline value indicating no cartel behavior detected
@@ -254,10 +254,6 @@ impl SynergyScoreCalculator {
         }
 
         ((raw_score / max_raw) * 100.0).min(100.0)
-    }
-
-    fn calculate_total_raw_score(&self) -> f64 {
-        self.calculate_raw_scores().iter().copied().sum()
     }
 
     fn get_total_stake(&self) -> u64 {

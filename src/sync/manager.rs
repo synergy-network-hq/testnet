@@ -4,7 +4,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use crate::block::{Block, BlockChain, BlockHeader};
+use crate::block::{Block, BlockChain};
 use crate::p2p::networking::{P2PNetwork, PeerSnapshot};
 use crate::sync::fast_sync;
 use crate::sync::validation;
@@ -161,9 +161,8 @@ impl SyncManager {
         }
     }
 
-    pub fn discover_network_height(&mut self) -> Result<u64, SyncError> {
-        self.peers = self
-            .collect_peer_snapshots()
+    fn refresh_peers_from_snapshots(&mut self, snapshots: Vec<PeerSnapshot>) {
+        self.peers = snapshots
             .into_iter()
             .map(|snap| PeerInfo {
                 address: snap.address,
@@ -172,21 +171,94 @@ impl SyncManager {
                 genesis_hash: snap.genesis_hash,
             })
             .collect();
+    }
+
+    fn await_peer_snapshots(&self, timeout: Duration) -> Vec<PeerSnapshot> {
+        let start = Instant::now();
+        let mut last = Vec::new();
+
+        if let Some(network) = &self.p2p_network {
+            network.request_peer_statuses();
+        }
+
+        loop {
+            let snapshots = self.collect_peer_snapshots();
+            if !snapshots.is_empty() {
+                last = snapshots;
+                let has_height = last.iter().any(|peer| peer.block_height > 0);
+                if has_height {
+                    return last;
+                }
+            }
+
+            if start.elapsed() >= timeout {
+                return last;
+            }
+
+            thread::sleep(Duration::from_millis(500));
+            if let Some(network) = &self.p2p_network {
+                network.request_peer_statuses();
+            }
+        }
+    }
+
+    fn select_sync_peer(&self) -> Option<String> {
+        let local_genesis = self
+            .blockchain
+            .lock()
+            .ok()
+            .and_then(|chain| chain.get_genesis_hash())
+            .unwrap_or_default();
+        let mut candidates: Vec<&PeerInfo> = self
+            .peers
+            .iter()
+            .filter(|peer| {
+                if local_genesis.is_empty() {
+                    true
+                } else {
+                    peer.genesis_hash.is_empty() || peer.genesis_hash == local_genesis
+                }
+            })
+            .collect();
+        candidates.sort_by(|a, b| b.block_height.cmp(&a.block_height));
+        candidates.first().map(|peer| peer.address.clone())
+    }
+
+    pub fn discover_network_height(&mut self) -> Result<u64, SyncError> {
+        let snapshots = self.await_peer_snapshots(Duration::from_secs(10));
+        self.refresh_peers_from_snapshots(snapshots);
 
         if self.peers.is_empty() {
             return Err(SyncError::NoPeers);
         }
 
-        let mut heights: Vec<u64> = self.peers.iter().map(|peer| peer.block_height).collect();
-        heights.sort_unstable();
-        let median = heights[heights.len() / 2];
-        Ok(median)
+        let local_genesis = self
+            .blockchain
+            .lock()
+            .ok()
+            .and_then(|chain| chain.get_genesis_hash())
+            .unwrap_or_default();
+
+        let eligible = self.peers.iter().filter(|peer| {
+            if local_genesis.is_empty() {
+                true
+            } else {
+                peer.genesis_hash.is_empty() || peer.genesis_hash == local_genesis
+            }
+        });
+
+        let max_height = eligible
+            .map(|peer| peer.block_height)
+            .max()
+            .unwrap_or(0);
+
+        Ok(max_height)
     }
 
     pub fn start_sync(&mut self) -> Result<(), SyncError> {
         self.refresh_local_height();
         self.state = SyncState::Discovering;
-        let network_height = self.discover_network_height()?;
+        let mut network_height = self.discover_network_height()?;
         self.network_height = network_height;
 
         if self.local_height >= network_height {
@@ -200,18 +272,55 @@ impl SyncManager {
         self.state = SyncState::Downloading;
 
         while self.local_height < self.network_height {
+            self.refresh_peers_from_snapshots(self.collect_peer_snapshots());
+            if let Ok(updated_height) = self.discover_network_height() {
+                if updated_height > self.network_height {
+                    self.network_height = updated_height;
+                }
+            }
             let from = self.local_height + 1;
             let remaining = self.network_height - self.local_height;
-            let batch_size = std::cmp::min(remaining, 200);
+            let batch_size = if remaining > 5000 {
+                1000
+            } else if remaining > 2000 {
+                600
+            } else if remaining > 1000 {
+                400
+            } else {
+                std::cmp::min(remaining, 200)
+            };
 
             if let Some(network) = &self.p2p_network {
-                network.request_blocks(from, batch_size as u32);
+                let preferred_peer = self.select_sync_peer();
+                let sent = preferred_peer
+                    .as_ref()
+                    .map(|peer| network.request_blocks_from_peer(peer, from, batch_size as u32))
+                    .unwrap_or(false);
+                if !sent {
+                    network.request_blocks(from, batch_size as u32);
+                }
             } else {
                 return Err(SyncError::NetworkUnavailable);
             }
 
             let target_height = std::cmp::min(self.network_height, from + batch_size - 1);
-            if !self.wait_for_height(target_height, Duration::from_secs(8)) {
+            let mut satisfied = self.wait_for_height(target_height, Duration::from_secs(12));
+            if !satisfied {
+                if let Some(network) = &self.p2p_network {
+                    let preferred_peer = self.select_sync_peer();
+                    let sent = preferred_peer
+                        .as_ref()
+                        .map(|peer| {
+                            network.request_blocks_from_peer(peer, from, batch_size as u32)
+                        })
+                        .unwrap_or(false);
+                    if !sent {
+                        network.request_blocks(from, batch_size as u32);
+                    }
+                }
+                satisfied = self.wait_for_height(target_height, Duration::from_secs(12));
+            }
+            if !satisfied {
                 return Err(SyncError::Timeout(format!(
                     "blocks up to height {}",
                     target_height

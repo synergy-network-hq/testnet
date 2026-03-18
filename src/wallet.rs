@@ -1,4 +1,4 @@
-use crate::address::{generate_wallet_address, is_valid_address as address_is_valid};
+use crate::address::generate_wallet_address;
 use crate::crypto::pqc::{PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey};
 use crate::transaction::Transaction;
 use crate::{info, warn};
@@ -392,7 +392,7 @@ impl WalletManager {
             created_at: Wallet::current_timestamp(),
         };
 
-        let mut pqc_manager = PQCManager::new();
+        let pqc_manager = PQCManager::new();
         let shared_secret = pqc_manager.decapsulate(&pqc_private_key, &pqc_ciphertext)?;
         let plaintext = Self::xor_with_shared_secret(encrypted_payload, &shared_secret.secret);
 
@@ -431,7 +431,7 @@ impl WalletManager {
     }
 
     // Additional wallet utility functions
-    pub fn export_private_key(&self, address: &str, password: &str) -> Result<String, String> {
+    pub fn export_private_key(&self, address: &str, _password: &str) -> Result<String, String> {
         if let Some(keypair) = self.keypairs.get(address) {
             let (_, private_key) = keypair;
             // In production, this would encrypt the private key with the password
@@ -445,7 +445,7 @@ impl WalletManager {
     pub fn import_private_key(
         &mut self,
         private_key: &str,
-        password: &str,
+        _password: &str,
     ) -> Result<String, String> {
         // In production, this would decrypt the private key with the password
         // For now, we'll assume the private key is already decrypted
@@ -479,7 +479,7 @@ impl WalletManager {
         balances
     }
 
-    pub fn get_transaction_history(&self, address: &str) -> Vec<String> {
+    pub fn get_transaction_history(&self, _address: &str) -> Vec<String> {
         // In production, this would query the blockchain for transaction history
         // For now, return empty vector
         vec![]

@@ -53,7 +53,7 @@ external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [p2p]
 listen_address = "0.0.0.0:38638"
-public_address = "bootnode1.synergy-network.io:38638"
+public_address = "bootnode1.synergynode.xyz:38638"
 node_name = "bootnode1-validator"
 enable_discovery = true
 discovery_port = 38639

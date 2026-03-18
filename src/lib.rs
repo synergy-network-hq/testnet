@@ -9,6 +9,8 @@ pub mod gas;
 pub mod logging;
 pub mod node;
 pub mod p2p;
+pub mod role_profiles;
+pub mod role_runtime;
 pub mod rpc;
 pub mod sxcp;
 pub mod sync;
@@ -17,6 +19,3 @@ pub mod transaction;
 pub mod utils;
 pub mod validator;
 pub mod wallet;
-// Temporarily disabled for quick compile - validator control panel doesn't need these
-// pub mod aivm;
-// pub mod crypto;

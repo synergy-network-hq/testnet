@@ -1,10 +1,10 @@
 #!/bin/bash
-# Add testnet-beta-evm-rpc.synergy-network.io to the SSL certificate
+# Add testbeta-evm-rpc.synergy-network.io to the SSL certificate
 
 set -e
 
 echo "=========================================="
-echo "Add testnet-beta-evm-rpc.synergy-network.io to SSL Certificate"
+echo "Add testbeta-evm-rpc.synergy-network.io to SSL Certificate"
 echo "=========================================="
 echo ""
 
@@ -41,13 +41,13 @@ if [ -f "/etc/letsencrypt/live/$CERT_NAME/fullchain.pem" ]; then
     echo ""
 fi
 
-# Check if testnet-beta-evm-rpc is already included
-if echo "$EXISTING_DOMAINS" | grep -q "testnet-beta-evm-rpc.synergy-network.io"; then
-    echo "✅ testnet-beta-evm-rpc.synergy-network.io is already in the certificate!"
+# Check if testbeta-evm-rpc is already included
+if echo "$EXISTING_DOMAINS" | grep -q "testbeta-evm-rpc.synergy-network.io"; then
+    echo "✅ testbeta-evm-rpc.synergy-network.io is already in the certificate!"
     exit 0
 fi
 
-echo "📝 Adding testnet-beta-evm-rpc.synergy-network.io to certificate..."
+echo "📝 Adding testbeta-evm-rpc.synergy-network.io to certificate..."
 echo ""
 
 # Build the list of all domains to include
@@ -56,12 +56,14 @@ ALL_DOMAINS=(
     "synergy-network.io"
     "testbeta-core-rpc.synergy-network.io"
     "testbeta-core-ws.synergy-network.io"
-    "testnet-beta-evm-rpc.synergy-network.io"
-    "testnet-beta-evm-ws.synergy-network.io"
-    "testnet-beta-api.synergy-network.io"
+    "testbeta-evm-rpc.synergy-network.io"
+    "testbeta-evm-ws.synergy-network.io"
+    "testbeta-api.synergy-network.io"
     "testbeta-explorer.synergy-network.io"
     "testbeta-explorer-api.synergy-network.io"
-    "testnet-beta-indexer.synergy-network.io"
+    "testbeta-indexer.synergy-network.io"
+    "testbeta-atlas-api.synergy-network.io"
+    "testbeta.synergy-network.io"
     "api.synergy-network.io"
     "rpc.synergy-network.io"
     "ws.synergy-network.io"
@@ -90,7 +92,7 @@ eval $CERTBOT_CMD || {
     echo "  sudo certbot certonly --webroot -w /var/www/letsencrypt --expand \\"
     echo "    -d synergy-network.io \\"
     echo "    -d testbeta-core-rpc.synergy-network.io \\"
-    echo "    -d testnet-beta-evm-rpc.synergy-network.io \\"
+    echo "    -d testbeta-evm-rpc.synergy-network.io \\"
     echo "    [add all other domains]"
     exit 1
 }
@@ -118,5 +120,5 @@ echo ""
 echo "Next steps:"
 echo "   1. Test nginx: sudo nginx -t"
 echo "   2. Reload nginx: sudo systemctl reload nginx"
-echo "   3. Verify: openssl s_client -connect testnet-beta-evm-rpc.synergy-network.io:443 -servername testnet-beta-evm-rpc.synergy-network.io < /dev/null 2>/dev/null | openssl x509 -noout -text | grep -A 1 'Subject Alternative Name'"
+echo "   3. Verify: openssl s_client -connect testbeta-evm-rpc.synergy-network.io:443 -servername testbeta-evm-rpc.synergy-network.io < /dev/null 2>/dev/null | openssl x509 -noout -text | grep -A 1 'Subject Alternative Name'"
 echo ""

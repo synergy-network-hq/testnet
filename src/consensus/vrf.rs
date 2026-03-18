@@ -69,7 +69,7 @@ pub struct VRFResult {
 pub struct VRFConsensus {
     // VRF parameters
     threshold: f64,
-    max_validators: usize,
+    _max_validators: usize,
     epoch_length: u64,
 }
 
@@ -77,7 +77,7 @@ impl VRFConsensus {
     pub fn new() -> Self {
         VRFConsensus {
             threshold: 0.67, // 67% threshold for consensus
-            max_validators: 100,
+            _max_validators: 100,
             epoch_length: 100, // Blocks per epoch
         }
     }
@@ -218,7 +218,7 @@ impl VRFConsensus {
         let stake_weight = 1.0; // Placeholder - would use actual stake amount
 
         // Combined score
-        (vrf_score * 0.4 + synergy_weight * 0.3 + uptime_weight * 0.2 + stake_weight * 0.1)
+        vrf_score * 0.4 + synergy_weight * 0.3 + uptime_weight * 0.2 + stake_weight * 0.1
     }
 
     /// Convert VRF output to a score between 0 and 1
@@ -277,7 +277,7 @@ impl VRFConsensus {
     pub fn verify_consensus_threshold(
         &self,
         votes: &HashMap<String, bool>,
-        total_validators: usize,
+        _total_validators: usize,
     ) -> bool {
         let total_votes = votes.len();
         let positive_votes = votes.values().filter(|&&vote| vote).count();
@@ -342,10 +342,10 @@ impl VRFConsensus {
         &self,
         proposer: &Validator,
         seed: &VRFSeed,
-        block_data: &[u8],
+        _block_data: &[u8],
     ) -> bool {
         // Generate expected VRF proof
-        let expected_proof = self.generate_proof(proposer, seed);
+        let _expected_proof = self.generate_proof(proposer, seed);
 
         // Verify the proposer has the right to propose
         let vrf_result = self.select_block_proposer(&[proposer.clone()], seed);

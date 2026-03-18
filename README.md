@@ -115,6 +115,7 @@ curl -X POST http://localhost:8545 \
 - **[Wallet Usage](./docs/wallet-usage.md)**: Wallet management and security
 - **[Staking Guide](./docs/staking-guide.md)**: Staking mechanics and strategies
 - **[Block Explorer](./docs/explorer-guide.md)**: Explorer features and usage
+- **[How to Set Up an Indexer & Explorer Node](./docs/how-to-set-up-indexer-explorer-node.md)**: Step-by-step guide for live explorer indexing, API, and UI
 - **[AIVM Guide](./docs/aivm-guide.md)**: Artificial Intelligence Virtual Machine documentation
 
 ### Technical Documentation

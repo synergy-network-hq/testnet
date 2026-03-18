@@ -112,9 +112,8 @@ echo ""
 echo "✅ Distribution updated successfully!"
 echo ""
 echo "📊 Distribution URLs:"
-echo "   Binary: https://testnet-beta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta"
-echo "   Checksum: https://testnet-beta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta.sha256"
-echo "   Info: https://testnet-beta.synergy-network.io/binaries/latest.json"
+echo "   Binary: https://testbeta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta"
+echo "   Checksum: https://testbeta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta.sha256"
+echo "   Info: https://testbeta.synergy-network.io/binaries/latest.json"
 echo ""
-
 

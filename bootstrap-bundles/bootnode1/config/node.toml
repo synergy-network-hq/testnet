@@ -1,0 +1,70 @@
+[network]
+id = 338639
+name = "Synergy Testnet Beta"
+p2p_port = 38638
+rpc_port = 48638
+ws_port = 58638
+max_peers = 128
+bootnodes = ["snr://bootstrap@bootnode2.synergynode.xyz:38638", "snr://bootstrap@bootnode3.synergynode.xyz:38638"]
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[consensus]
+algorithm = "Proof of Synergy"
+block_time_secs = 5
+epoch_length = 30000
+min_validators = 3
+validator_cluster_size = 7
+max_validators = 21
+synergy_score_decay_rate = 0.05
+vrf_enabled = true
+vrf_seed_epoch_interval = 1000
+max_synergy_points_per_epoch = 100
+max_tasks_per_validator = 10
+
+[consensus.reward_weighting]
+task_accuracy = 0.5
+uptime = 0.3
+collaboration = 0.2
+
+[logging]
+log_level = "info"
+log_file = "data/logs/bootnode1.log"
+enable_console = true
+max_file_size = 10485760
+max_files = 5
+
+[rpc]
+bind_address = "127.0.0.1:48638"
+enable_http = false
+http_port = 48638
+enable_ws = false
+ws_port = 58638
+enable_grpc = false
+grpc_port = 50051
+cors_enabled = false
+cors_origins = []
+
+[p2p]
+listen_address = "0.0.0.0:38638"
+public_address = "bootnode1.synergynode.xyz:38638"
+node_name = "bootnode1"
+enable_discovery = true
+discovery_port = 39638
+heartbeat_interval = 30
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = true
+pruning_interval = 86400
+
+[node]
+bootstrap_only = true
+auto_register_validator = false
+validator_address = ""
+strict_validator_allowlist = false
+allowed_validator_addresses = []

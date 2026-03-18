@@ -23,19 +23,13 @@ jobs:
         include:
           - os: ubuntu-latest
             label: linux-amd64
-            bin_path: target/release/synergy-testbeta
             binary_suffix: ""
-            archive_ext: tar.gz
           - os: windows-latest
             label: windows-amd64
-            bin_path: target/release/synergy-testbeta.exe
             binary_suffix: .exe
-            archive_ext: zip
           - os: macos-14
             label: macos-arm64
-            bin_path: target/release/synergy-testbeta
             binary_suffix: ""
-            archive_ext: tar.gz
 
     steps:
       - name: Checkout
@@ -48,34 +42,123 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Build release binary
-        run: cargo build --release --locked -p synergy-testbeta --bin synergy-testbeta
-
-      - name: Package binary
-        id: package
         shell: bash
         run: |
           set -euo pipefail
+          bins=(
+            synergy-testbeta
+            synergy-validator-node
+            synergy-committee-node
+            synergy-archive-validator-node
+            synergy-audit-validator-node
+            synergy-relayer-node
+            synergy-witness-node
+            synergy-oracle-node
+            synergy-uma-coordinator-node
+            synergy-cross-chain-verifier-node
+            synergy-synq-execution-node
+            synergy-analytics-and-simulation-node
+            synergy-aegis-cryptography-node
+            synergy-data-availability-node
+            synergy-governance-auditor-node
+            synergy-treasury-controller-node
+            synergy-security-council-node
+            synergy-rpc-gateway-node
+            synergy-indexer-and-explorer-node
+            synergy-observer-light-node
+          )
+          args=()
+          for bin in "${bins[@]}"; do
+            args+=(--bin "$bin")
+          done
+          cargo build --release --locked -p synergy-testbeta "${args[@]}"
+
+      - name: Package binaries
+        id: package
+        shell: bash
+        env:
+          MATRIX_LABEL: ${{ matrix.label }}
+          MATRIX_SUFFIX: ${{ matrix.binary_suffix }}
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
           mkdir -p dist
+          python3 <<'PY'
+          import hashlib
+          import json
+          import os
+          import pathlib
+          import shutil
 
-          asset_base="synergy-testbeta-${{ matrix.label }}"
-          staged_binary="dist/${asset_base}${{ matrix.binary_suffix }}"
-          cp "${{ matrix.bin_path }}" "$staged_binary"
+          label = os.environ["MATRIX_LABEL"]
+          suffix = os.environ["MATRIX_SUFFIX"]
+          repo = os.environ["GITHUB_REPOSITORY"]
+          ref_name = os.environ.get("GITHUB_REF_NAME") or os.environ["GITHUB_SHA"]
+          event_name = os.environ["GITHUB_EVENT_NAME"]
 
-          if [[ "${{ matrix.archive_ext }}" == "zip" ]]; then
-            7z a "dist/${asset_base}.zip" "$staged_binary" >/dev/null
-            package_path="dist/${asset_base}.zip"
-          else
-            tar -C dist -czf "dist/${asset_base}.tar.gz" "$(basename "$staged_binary")"
-            package_path="dist/${asset_base}.tar.gz"
-          fi
+          role_bins = {
+              "validator_node": "synergy-validator-node",
+              "committee_node": "synergy-committee-node",
+              "archive_validator_node": "synergy-archive-validator-node",
+              "audit_validator_node": "synergy-audit-validator-node",
+              "relayer_node": "synergy-relayer-node",
+              "witness_node": "synergy-witness-node",
+              "oracle_node": "synergy-oracle-node",
+              "uma_coordinator_node": "synergy-uma-coordinator-node",
+              "cross_chain_verifier_node": "synergy-cross-chain-verifier-node",
+              "synq_execution_node": "synergy-synq-execution-node",
+              "analytics_and_simulation_node": "synergy-analytics-and-simulation-node",
+              "aegis_cryptography_node": "synergy-aegis-cryptography-node",
+              "data_availability_node": "synergy-data-availability-node",
+              "governance_auditor_node": "synergy-governance-auditor-node",
+              "treasury_controller_node": "synergy-treasury-controller-node",
+              "security_council_node": "synergy-security-council-node",
+              "rpc_gateway_node": "synergy-rpc-gateway-node",
+              "indexer_and_explorer_node": "synergy-indexer-and-explorer-node",
+              "observer_light_node": "synergy-observer-light-node",
+          }
 
-          if command -v sha256sum >/dev/null 2>&1; then
-            sha256sum "$package_path" > "${package_path}.sha256"
-          else
-            shasum -a 256 "$package_path" > "${package_path}.sha256"
-          fi
+          binaries = ["synergy-testbeta", *role_bins.values()]
+          dist = pathlib.Path("dist")
+          target = pathlib.Path("target") / "release"
 
-          echo "package_path=$package_path" >> "$GITHUB_OUTPUT"
+          role_entries = {}
+          base_url = (
+              f"https://github.com/{repo}/releases/download/{ref_name}"
+              if event_name == "release"
+              else ""
+          )
+
+          for binary in binaries:
+              source = target / f"{binary}{suffix}"
+              staged_name = f"{binary}-{label}{suffix}"
+              staged = dist / staged_name
+              shutil.copyfile(source, staged)
+              digest = hashlib.sha256(staged.read_bytes()).hexdigest()
+              (dist / f"{staged_name}.sha256").write_text(f"{digest}  {staged_name}\n", encoding="utf-8")
+
+              for compiled_profile, role_binary in role_bins.items():
+                  if role_binary == binary:
+                      role_entries[compiled_profile] = {
+                          "url": f"{base_url}/{staged_name}" if base_url else staged_name,
+                          "sha256": digest,
+                      }
+
+          manifest_path = dist / f"latest-{label}.json"
+          manifest = {
+              "version": ref_name,
+              "binaries": {
+                  label: {
+                      "roles": role_entries,
+                  }
+              },
+          }
+          manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+          print(f"manifest_path={manifest_path}")
+          PY
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
@@ -88,3 +171,61 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+
+  merge-manifest:
+    name: Publish unified latest.json
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download all platform artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Merge per-platform manifests into latest.json
+        shell: bash
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF_NAME: ${{ github.ref_name }}
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          from datetime import datetime, timezone
+
+          ref_name = os.environ.get("GITHUB_REF_NAME") or os.environ["GITHUB_SHA"]
+          artifacts = pathlib.Path("artifacts")
+
+          merged = {
+              "version": ref_name,
+              "build_date": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "binaries": {},
+          }
+
+          for manifest_path in sorted(artifacts.glob("*/latest-*.json")):
+              fragment = json.loads(manifest_path.read_text())
+              merged["binaries"].update(fragment.get("binaries", {}))
+
+          if not merged["binaries"]:
+              raise SystemExit("No per-platform manifests found under artifacts/")
+
+          out = artifacts / "latest.json"
+          out.write_text(json.dumps(merged, indent=2), encoding="utf-8")
+          print(f"Wrote unified manifest with platforms: {list(merged['binaries'].keys())}")
+          PY
+
+      - name: Upload unified manifest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: latest-manifest
+          path: artifacts/latest.json
+
+      - name: Upload unified manifest to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/latest.json

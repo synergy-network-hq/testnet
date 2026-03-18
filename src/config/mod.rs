@@ -17,6 +17,10 @@ pub struct NodeConfig {
     pub storage: StorageConfig,
     #[serde(default)]
     pub node: NodeSettings,
+    #[serde(default)]
+    pub identity: IdentityConfig,
+    #[serde(default)]
+    pub role: RoleConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -27,7 +31,12 @@ pub struct NetworkConfig {
     pub rpc_port: u16,
     pub ws_port: u16,
     pub max_peers: u32,
+    #[serde(default)]
     pub bootnodes: Vec<String>,
+    #[serde(default)]
+    pub seed_servers: Vec<String>,
+    #[serde(default)]
+    pub bootstrap_dns_records: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -55,7 +64,7 @@ pub struct ConsensusConfig {
 }
 
 fn default_min_validators() -> usize {
-    5
+    3
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -120,6 +129,28 @@ pub struct NodeSettings {
     pub allowed_validator_addresses: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct IdentityConfig {
+    #[serde(default)]
+    pub node_id: String,
+    #[serde(default)]
+    pub role: String,
+    #[serde(default)]
+    pub role_display: String,
+    #[serde(default)]
+    pub address: String,
+    #[serde(default)]
+    pub label: String,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct RoleConfig {
+    #[serde(default)]
+    pub compiled_profile: String,
+    #[serde(default)]
+    pub services: Vec<String>,
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
@@ -131,6 +162,8 @@ impl Default for NodeConfig {
                 ws_port: 8546,
                 max_peers: 50,
                 bootnodes: vec![],
+                seed_servers: vec![],
+                bootstrap_dns_records: vec![],
             },
             blockchain: BlockchainConfig {
                 block_time: 2,
@@ -188,6 +221,8 @@ impl Default for NodeConfig {
                 pruning_interval: 86400, // 24 hours
             },
             node: NodeSettings::default(),
+            identity: IdentityConfig::default(),
+            role: RoleConfig::default(),
         }
     }
 }
@@ -205,13 +240,13 @@ pub fn load_node_config(path: Option<&str>) -> Result<NodeConfig, Box<dyn Error>
     if let Some(config_path) = path {
         if Path::new(config_path).exists() {
             let content = fs::read_to_string(config_path)?;
-            let file_config: NodeConfig = toml::from_str(&content)?;
+            let file_config = parse_node_config_content(&content, Some(Path::new(config_path)))?;
             config = merge_configs(config, file_config);
         }
     } else if let Ok(config_path) = env::var("SYNERGY_CONFIG_PATH") {
         if Path::new(&config_path).exists() {
             let content = fs::read_to_string(&config_path)?;
-            let file_config: NodeConfig = toml::from_str(&content)?;
+            let file_config = parse_node_config_content(&content, Some(Path::new(&config_path)))?;
             config = merge_configs(config, file_config);
         }
     } else {
@@ -219,7 +254,7 @@ pub fn load_node_config(path: Option<&str>) -> Result<NodeConfig, Box<dyn Error>
         let default_path = "config/node.toml";
         if Path::new(default_path).exists() {
             let content = fs::read_to_string(default_path)?;
-            let file_config: NodeConfig = toml::from_str(&content)?;
+            let file_config = parse_node_config_content(&content, Some(Path::new(default_path)))?;
             config = merge_configs(config, file_config);
         }
     }
@@ -240,7 +275,7 @@ pub fn load_node_config_from_template(node_type: &str) -> Result<NodeConfig, Box
 
     let mut config = NodeConfig::default();
     let content = fs::read_to_string(&template_path)?;
-    let file_config: NodeConfig = toml::from_str(&content)?;
+    let file_config = parse_node_config_content(&content, Some(Path::new(&template_path)))?;
     config = merge_configs(config, file_config);
 
     // Override with environment variables
@@ -280,6 +315,8 @@ fn merge_configs(mut base: NodeConfig, override_config: NodeConfig) -> NodeConfi
     base.p2p = override_config.p2p;
     base.storage = override_config.storage;
     base.node = override_config.node;
+    base.identity = override_config.identity;
+    base.role = override_config.role;
     base
 }
 
@@ -308,6 +345,22 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     }
     if let Ok(val) = env::var("SYNERGY_BOOTNODES") {
         config.network.bootnodes = val.split(',').map(|s| s.trim().to_string()).collect();
+    }
+    if let Ok(val) = env::var("SYNERGY_SEED_SERVERS") {
+        config.network.seed_servers = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
+    if let Ok(val) = env::var("SYNERGY_BOOTSTRAP_DNS_RECORDS") {
+        config.network.bootstrap_dns_records = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
     }
 
     if let Ok(val) = env::var("SYNERGY_CONSENSUS_MIN_VALIDATORS") {
@@ -392,4 +445,470 @@ pub fn save_config(config: &NodeConfig, path: &str) -> Result<(), Box<dyn Error>
     let content = toml::to_string_pretty(config)?;
     fs::write(path, content)?;
     Ok(())
+}
+
+fn parse_node_config_content(
+    content: &str,
+    source_path: Option<&Path>,
+) -> Result<NodeConfig, Box<dyn Error>> {
+    let raw: toml::Value = toml::from_str(content)?;
+    let mut config = toml::from_str::<NodeConfig>(content).unwrap_or_default();
+
+    apply_compatibility_overrides(&mut config, &raw);
+
+    if let Some(source_path) = source_path {
+        merge_companion_peers_file(source_path, &mut config)?;
+    }
+
+    Ok(config)
+}
+
+fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
+    if let Some(chain_name) = get_string(raw, &["network", "chain_name"]) {
+        config.network.name = chain_name;
+    }
+
+    if let Some(chain_id) = get_u64(raw, &["network", "chain_id"]) {
+        config.network.id = chain_id;
+        config.blockchain.chain_id = chain_id;
+    }
+
+    if let Some(max_peers) = get_u64(raw, &["network", "max_peers"]) {
+        config.network.max_peers = max_peers as u32;
+    }
+
+    if let Some(p2p_listen) = get_string(raw, &["network", "p2p_listen"]) {
+        config.p2p.listen_address = p2p_listen.clone();
+        if let Some(port) = parse_port_from_address(&p2p_listen) {
+            config.network.p2p_port = port;
+        }
+    }
+
+    if let Some(port) =
+        get_u64(raw, &["network", "p2p_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.network.p2p_port = port;
+    }
+
+    if let Some(port) =
+        get_u64(raw, &["network", "rpc_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.network.rpc_port = port;
+        config.rpc.http_port = port;
+    }
+
+    if let Some(port) =
+        get_u64(raw, &["network", "ws_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.network.ws_port = port;
+        config.rpc.ws_port = port;
+    }
+
+    if let Some(port) =
+        get_u64(raw, &["rpc", "http_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.network.rpc_port = port;
+        config.rpc.http_port = port;
+    }
+
+    if let Some(port) =
+        get_u64(raw, &["rpc", "ws_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.network.ws_port = port;
+        config.rpc.ws_port = port;
+    }
+
+    if let Some(bind_address) = get_string(raw, &["rpc", "bind_address"]) {
+        config.rpc.bind_address = bind_address;
+    }
+
+    if let Some(enable_http) = get_bool(raw, &["rpc", "enable_http"]) {
+        config.rpc.enable_http = enable_http;
+    }
+
+    if let Some(enable_ws) = get_bool(raw, &["rpc", "enable_ws"]) {
+        config.rpc.enable_ws = enable_ws;
+    }
+
+    if let Some(enable_grpc) = get_bool(raw, &["rpc", "enable_grpc"]) {
+        config.rpc.enable_grpc = enable_grpc;
+    }
+
+    if let Some(listen_address) = get_string(raw, &["p2p", "listen_address"]) {
+        config.p2p.listen_address = listen_address.clone();
+        if let Some(port) = parse_port_from_address(&listen_address) {
+            config.network.p2p_port = port;
+        }
+    }
+
+    if let Some(public_address) = get_string(raw, &["p2p", "public_address"]) {
+        config.p2p.public_address = public_address;
+    }
+
+    if let Some(public_host) = get_string(raw, &["network", "public_host"]) {
+        let p2p_port = config.network.p2p_port;
+        config.p2p.public_address = format!("{public_host}:{p2p_port}");
+    }
+
+    if let Some(node_name) = get_string(raw, &["p2p", "node_name"]) {
+        config.p2p.node_name = node_name;
+    } else if let Some(label) = get_string(raw, &["identity", "label"]) {
+        config.p2p.node_name = label;
+    } else if let Some(node_id) = get_string(raw, &["identity", "node_id"]) {
+        config.p2p.node_name = node_id;
+    }
+
+    if let Some(enable_discovery) = get_bool(raw, &["p2p", "enable_discovery"]) {
+        config.p2p.enable_discovery = enable_discovery;
+    }
+
+    if let Some(discovery_port) =
+        get_u64(raw, &["p2p", "discovery_port"]).and_then(|value| u16::try_from(value).ok())
+    {
+        config.p2p.discovery_port = discovery_port;
+    }
+
+    if let Some(heartbeat_interval) = get_u64(raw, &["p2p", "heartbeat_interval"]) {
+        config.p2p.heartbeat_interval = heartbeat_interval;
+    }
+
+    if let Some(path) = get_string(raw, &["storage", "path"]) {
+        config.storage.path = path;
+    }
+
+    if let Some(database) = get_string(raw, &["storage", "engine"]) {
+        config.storage.database = database;
+    } else if let Some(database) = get_string(raw, &["storage", "database"]) {
+        config.storage.database = database;
+    }
+
+    if let Some(log_level) = get_string(raw, &["logging", "log_level"]) {
+        config.logging.log_level = log_level;
+    } else if let Some(log_level) = get_string(raw, &["telemetry", "log_level"]) {
+        config.logging.log_level = log_level;
+    }
+
+    if let Some(log_file) = get_string(raw, &["logging", "log_file"]) {
+        config.logging.log_file = log_file;
+    }
+
+    if let Some(bootnodes) = get_string_array(raw, &["network", "bootnodes"]) {
+        merge_unique_strings(&mut config.network.bootnodes, bootnodes);
+    }
+
+    if let Some(seed_servers) = get_string_array(raw, &["network", "seed_servers"]) {
+        merge_unique_strings(&mut config.network.seed_servers, seed_servers);
+    }
+
+    if let Some(dns_records) = get_string_array(raw, &["network", "bootstrap_dns_records"]) {
+        merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
+    }
+
+    if let Some(bootstrap_only) = get_bool(raw, &["node", "bootstrap_only"]) {
+        config.node.bootstrap_only = bootstrap_only;
+    }
+
+    if let Some(auto_register_validator) = get_bool(raw, &["node", "auto_register_validator"]) {
+        config.node.auto_register_validator = auto_register_validator;
+    }
+
+    if let Some(validator_address) = get_string(raw, &["node", "validator_address"]) {
+        config.node.validator_address = validator_address;
+    } else if let Some(address) = get_string(raw, &["identity", "address"]) {
+        config.node.validator_address = address.clone();
+        config.identity.address = address;
+    }
+
+    if let Some(strict_validator_allowlist) = get_bool(raw, &["node", "strict_validator_allowlist"])
+    {
+        config.node.strict_validator_allowlist = strict_validator_allowlist;
+    }
+
+    if let Some(allowed_validator_addresses) =
+        get_string_array(raw, &["node", "allowed_validator_addresses"])
+    {
+        config.node.allowed_validator_addresses = allowed_validator_addresses;
+    }
+
+    if let Some(node_id) = get_string(raw, &["identity", "node_id"]) {
+        config.identity.node_id = node_id;
+    }
+
+    if let Some(role) = get_string(raw, &["identity", "role"]) {
+        config.identity.role = role;
+    }
+
+    if let Some(role_display) = get_string(raw, &["identity", "role_display"]) {
+        config.identity.role_display = role_display;
+    }
+
+    if let Some(label) = get_string(raw, &["identity", "label"]) {
+        config.identity.label = label;
+    }
+
+    if let Some(compiled_profile) = get_string(raw, &["role", "compiled_profile"]) {
+        config.role.compiled_profile = compiled_profile;
+    }
+
+    if let Some(services) = get_string_array(raw, &["role", "services"]) {
+        config.role.services = services;
+    }
+}
+
+fn merge_companion_peers_file(
+    source_path: &Path,
+    config: &mut NodeConfig,
+) -> Result<(), Box<dyn Error>> {
+    let Some(parent) = source_path.parent() else {
+        return Ok(());
+    };
+
+    let peers_path = parent.join("peers.toml");
+    if !peers_path.exists() || peers_path == source_path {
+        return Ok(());
+    }
+
+    let content = fs::read_to_string(&peers_path)?;
+    let raw: toml::Value = toml::from_str(&content)?;
+
+    if let Some(bootnodes) = get_string_array(&raw, &["global", "bootnodes"]) {
+        merge_unique_strings(&mut config.network.bootnodes, bootnodes);
+    }
+
+    if let Some(seed_servers) = get_string_array(&raw, &["global", "seed_servers"]) {
+        merge_unique_strings(&mut config.network.seed_servers, seed_servers);
+    }
+
+    if let Some(dns_records) = get_string_array(&raw, &["global", "bootstrap_dns_records"]) {
+        merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
+    }
+
+    Ok(())
+}
+
+fn merge_unique_strings(destination: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !destination.iter().any(|existing| existing == &value) {
+            destination.push(value);
+        }
+    }
+}
+
+fn get_table<'a>(value: &'a toml::Value, path: &[&str]) -> Option<&'a toml::Value> {
+    let mut current = value;
+    for key in path {
+        current = current.get(*key)?;
+    }
+    Some(current)
+}
+
+fn get_string(value: &toml::Value, path: &[&str]) -> Option<String> {
+    get_table(value, path)?
+        .as_str()
+        .map(|entry| entry.trim().to_string())
+}
+
+fn get_bool(value: &toml::Value, path: &[&str]) -> Option<bool> {
+    get_table(value, path)?.as_bool()
+}
+
+fn get_u64(value: &toml::Value, path: &[&str]) -> Option<u64> {
+    get_table(value, path)?
+        .as_integer()
+        .and_then(|entry| u64::try_from(entry).ok())
+}
+
+fn get_string_array(value: &toml::Value, path: &[&str]) -> Option<Vec<String>> {
+    let array = get_table(value, path)?.as_array()?;
+    Some(
+        array
+            .iter()
+            .filter_map(|entry| entry.as_str())
+            .map(|entry| entry.trim())
+            .filter(|entry| !entry.is_empty())
+            .map(ToString::to_string)
+            .collect(),
+    )
+}
+
+fn parse_port_from_address(value: &str) -> Option<u16> {
+    value
+        .trim()
+        .rsplit_once(':')
+        .and_then(|(_, port)| port.parse::<u16>().ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn parses_testbeta_control_panel_workspace_config() {
+        let content = r#"
+[identity]
+node_id = "node-01"
+role = "validator"
+address = "synv1test"
+label = "Validator Node 01"
+
+[network]
+chain_name = "synergy-testbeta-closed"
+chain_id = 338639
+p2p_listen = "0.0.0.0:38638"
+bootnodes = ["bootnode1.synergynode.xyz:38638"]
+seed_servers = ["http://seed1.synergynode.xyz:18080"]
+bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+max_peers = 128
+
+[role]
+compiled_profile = "validator_node"
+
+[storage]
+path = "/tmp/synergy-testbeta"
+
+[telemetry]
+log_level = "debug"
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert_eq!(config.identity.role, "validator");
+        assert_eq!(config.role.compiled_profile, "validator_node");
+        assert_eq!(config.network.name, "synergy-testbeta-closed");
+        assert_eq!(config.network.id, 338639);
+        assert_eq!(config.blockchain.chain_id, 338639);
+        assert_eq!(config.network.p2p_port, 38638);
+        assert_eq!(config.p2p.listen_address, "0.0.0.0:38638");
+        assert_eq!(
+            config.network.bootnodes,
+            vec!["bootnode1.synergynode.xyz:38638".to_string()]
+        );
+        assert_eq!(
+            config.network.seed_servers,
+            vec!["http://seed1.synergynode.xyz:18080".to_string()]
+        );
+        assert_eq!(
+            config.network.bootstrap_dns_records,
+            vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+        assert_eq!(config.logging.log_level, "debug");
+    }
+
+    #[test]
+    fn merges_companion_peers_file_bootstrap_inputs() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("synergy-config-test-{unique}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+
+        let node_path = temp_dir.join("node.toml");
+        let peers_path = temp_dir.join("peers.toml");
+
+        fs::write(
+            &node_path,
+            r#"
+[network]
+id = 338639
+name = "synergy-testbeta-closed"
+p2p_port = 38638
+rpc_port = 48638
+ws_port = 58638
+bootnodes = ["bootnode1.synergynode.xyz:38638"]
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[consensus]
+algorithm = "Proof of Synergy"
+block_time_secs = 5
+epoch_length = 30000
+validator_cluster_size = 7
+max_validators = 21
+synergy_score_decay_rate = 0.05
+vrf_enabled = true
+vrf_seed_epoch_interval = 1000
+max_synergy_points_per_epoch = 100
+max_tasks_per_validator = 10
+
+[consensus.reward_weighting]
+task_accuracy = 0.5
+uptime = 0.3
+collaboration = 0.2
+
+[logging]
+log_level = "info"
+log_file = "data/logs/validator.log"
+enable_console = true
+max_file_size = 10485760
+max_files = 5
+
+[rpc]
+enable_http = true
+http_port = 48638
+enable_ws = true
+ws_port = 58638
+enable_grpc = true
+grpc_port = 48638
+cors_enabled = false
+cors_origins = []
+
+[p2p]
+listen_address = "0.0.0.0:38638"
+public_address = "127.0.0.1:38638"
+node_name = "node-01"
+enable_discovery = true
+discovery_port = 30301
+heartbeat_interval = 30
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = false
+pruning_interval = 86400
+"#,
+        )
+        .expect("node.toml should be written");
+
+        fs::write(
+            &peers_path,
+            r#"
+[global]
+bootnodes = ["bootnode2.synergynode.xyz:38638"]
+seed_servers = ["http://seed2.synergynode.xyz:18080"]
+bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+"#,
+        )
+        .expect("peers.toml should be written");
+
+        let content = fs::read_to_string(&node_path).expect("node.toml should be readable");
+        let config =
+            parse_node_config_content(&content, Some(&node_path)).expect("config should parse");
+
+        assert_eq!(config.network.bootnodes.len(), 2);
+        assert!(config
+            .network
+            .bootnodes
+            .contains(&"bootnode1.synergynode.xyz:38638".to_string()));
+        assert!(config
+            .network
+            .bootnodes
+            .contains(&"bootnode2.synergynode.xyz:38638".to_string()));
+        assert_eq!(
+            config.network.seed_servers,
+            vec!["http://seed2.synergynode.xyz:18080".to_string()]
+        );
+        assert_eq!(
+            config.network.bootstrap_dns_records,
+            vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+
+        fs::remove_file(&node_path).ok();
+        fs::remove_file(&peers_path).ok();
+        fs::remove_dir_all(&temp_dir).ok();
+    }
 }

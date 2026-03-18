@@ -63,8 +63,6 @@ pub fn validate_project_root() -> Result<PathBuf, String> {
     if let Some(project_root) = get_project_root() {
         // Check for required directories
         let config_dir = project_root.join("config");
-        let data_dir = project_root.join("data");
-
         if !config_dir.exists() {
             return Err(format!(
                 "Invalid project root: config/ directory not found in {}",

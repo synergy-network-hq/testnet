@@ -199,6 +199,24 @@ fn handle_json_rpc(
             }
         }
 
+        "synergy_getBlockByHash" => {
+            if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
+                let normalized = block_hash.trim().to_lowercase();
+                let chain = chain.lock().unwrap();
+                if let Some(block) = chain
+                    .chain
+                    .iter()
+                    .find(|b| b.hash.trim().eq_ignore_ascii_case(&normalized))
+                {
+                    block_to_explorer_json(block)
+                } else {
+                    json!(null)
+                }
+            } else {
+                json!("Invalid block hash")
+            }
+        }
+
         "synergy_getLatestBlock" => {
             let chain = chain.lock().unwrap();
             if let Some(block) = chain.last() {
@@ -518,7 +536,7 @@ fn handle_json_rpc(
             {
                 if let Ok(mut transaction) = serde_json::from_value::<Transaction>(tx_data.clone())
                 {
-                    if let Ok(mut wallet_manager) = WALLET_MANAGER.lock() {
+                    if let Ok(wallet_manager) = WALLET_MANAGER.lock() {
                         match wallet_manager.sign_transaction(address, &mut transaction) {
                             Ok(result) => {
                                 json!({"success": true, "message": result, "transaction": transaction})

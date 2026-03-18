@@ -457,7 +457,7 @@ impl ValidatorRegistry {
         validators.into_iter().take(count).collect()
     }
 
-    pub fn calculate_epoch_rewards(&self, epoch: u64) -> HashMap<String, u64> {
+    pub fn calculate_epoch_rewards(&self, _epoch: u64) -> HashMap<String, u64> {
         let mut rewards = HashMap::new();
 
         // Ensure we have active validators with stakes

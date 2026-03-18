@@ -537,9 +537,8 @@ impl ValidatorRotation {
             (active_validators.len() as f64 / self.target_cluster_size as f64).ceil() as usize;
 
         // Assign validators to clusters using deterministic randomness
-        for (i, validator) in active_validators.iter().enumerate() {
-            let cluster_id =
-                self.assign_to_cluster(&validator.address, &epoch_randomness, num_clusters);
+        for validator in &active_validators {
+            self.assign_to_cluster(&validator.address, &epoch_randomness, num_clusters);
             // Update validator's cluster assignment
         }
     }

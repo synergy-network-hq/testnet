@@ -6,14 +6,17 @@ use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::{debug, error, info, warn};
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::Resolver;
+use serde::Deserialize;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Type aliases to avoid nested generics parsing issues
 type PeerMap = HashMap<String, PeerConnection>;
@@ -47,6 +50,24 @@ struct PeerConnection {
     genesis_hash: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct SeedPeerListResponse {
+    #[serde(default)]
+    bootnodes: Vec<SeedBootnodeRecord>,
+    #[serde(default)]
+    dnsaddr_bootstrap: Vec<String>,
+    #[serde(default)]
+    peers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeedBootnodeRecord {
+    hostname: String,
+    port: u16,
+    #[serde(default)]
+    reachable: Option<bool>,
+}
+
 fn resolve_local_validator_address(config: &NodeConfig) -> String {
     let configured = config.node.validator_address.trim();
     if !configured.is_empty() {
@@ -67,7 +88,7 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
 }
 
 fn announced_validator_address(config: &NodeConfig) -> Option<String> {
-    if config.node.bootstrap_only {
+    if config.node.bootstrap_only || !config.node.auto_register_validator {
         return None;
     }
 
@@ -90,6 +111,306 @@ fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
         .allowed_validator_addresses
         .iter()
         .any(|allowed| allowed == validator_address)
+}
+
+fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
+    let mut targets = HashSet::<String>::new();
+
+    for bootnode in &config.network.bootnodes {
+        if let Some(dial) = parse_bootnode_dial_address(bootnode) {
+            targets.insert(dial);
+        }
+    }
+
+    for dial in resolve_dns_bootstrap_targets(&config.network.bootstrap_dns_records) {
+        targets.insert(dial);
+    }
+
+    for dial in resolve_seed_server_targets(&config.network.seed_servers) {
+        targets.insert(dial);
+    }
+
+    let mut ordered = targets.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn resolve_dns_bootstrap_targets(record_names: &[String]) -> Vec<String> {
+    if record_names.is_empty() {
+        return Vec::new();
+    }
+
+    let resolver = match build_dns_resolver() {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            warn!("p2p", "Failed to initialize DNS resolver for bootstrap discovery", "error" => error);
+            return Vec::new();
+        }
+    };
+
+    let mut visited = HashSet::<String>::new();
+    let mut out = HashSet::<String>::new();
+
+    for record_name in record_names {
+        collect_dnsaddr_record_targets(&resolver, record_name, 0, &mut visited, &mut out);
+    }
+
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn build_dns_resolver() -> Result<Resolver, String> {
+    Resolver::from_system_conf()
+        .or_else(|_| Resolver::new(ResolverConfig::default(), ResolverOpts::default()))
+        .map_err(|error| error.to_string())
+}
+
+fn collect_dnsaddr_record_targets(
+    resolver: &Resolver,
+    record_name: &str,
+    depth: usize,
+    visited: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let record_name = record_name.trim();
+    if record_name.is_empty() || depth > 4 {
+        return;
+    }
+
+    let canonical = record_name.trim_end_matches('.').to_string();
+    if !visited.insert(canonical.clone()) {
+        return;
+    }
+
+    match resolver.txt_lookup(canonical.as_str()) {
+        Ok(records) => {
+            for record in records.iter() {
+                for txt in record.txt_data() {
+                    let Ok(value) = std::str::from_utf8(txt) else {
+                        continue;
+                    };
+                    collect_dnsaddr_txt_target(resolver, value, depth, visited, out);
+                }
+            }
+        }
+        Err(error) => {
+            debug!(
+                "p2p",
+                "Bootstrap DNS TXT lookup failed",
+                "record" => canonical,
+                "error" => error.to_string()
+            );
+        }
+    }
+}
+
+fn collect_dnsaddr_txt_target(
+    resolver: &Resolver,
+    value: &str,
+    depth: usize,
+    visited: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let value = value
+        .trim()
+        .trim_matches('"')
+        .strip_prefix("dnsaddr=")
+        .unwrap_or(value.trim())
+        .trim();
+    if value.is_empty() {
+        return;
+    }
+
+    if let Some(next_record) = parse_dnsaddr_reference_record(value) {
+        collect_dnsaddr_record_targets(resolver, &next_record, depth + 1, visited, out);
+        return;
+    }
+
+    if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(value) {
+        out.insert(dial);
+    }
+}
+
+fn parse_dnsaddr_reference_record(value: &str) -> Option<String> {
+    let referenced = value.strip_prefix("/dnsaddr/")?;
+    let referenced = referenced.split('/').next()?.trim().trim_end_matches('.');
+    if referenced.is_empty() {
+        None
+    } else {
+        Some(format!("_dnsaddr.{}", referenced))
+    }
+}
+
+fn parse_dnsaddr_multiaddr_to_dial_address(value: &str) -> Option<String> {
+    let segments = value
+        .split('/')
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+    let mut transport: Option<&str> = None;
+    let mut index = 0usize;
+
+    while index + 1 < segments.len() {
+        let key = segments[index];
+        let val = segments[index + 1];
+        match key {
+            "dns" | "dns4" | "dns6" | "ip4" | "ip6" if host.is_none() => {
+                host = Some(val.to_string());
+            }
+            "tcp" => {
+                if let Ok(parsed) = val.parse::<u16>() {
+                    port = Some(parsed);
+                    transport = Some("tcp");
+                }
+            }
+            "udp" => {
+                transport = Some("udp");
+            }
+            _ => {}
+        }
+        index += 2;
+    }
+
+    match (host, port, transport) {
+        (Some(host), Some(port), Some("tcp")) => Some(format!("{host}:{port}")),
+        _ => None,
+    }
+}
+
+fn resolve_seed_server_targets(seed_servers: &[String]) -> Vec<String> {
+    if seed_servers.is_empty() {
+        return Vec::new();
+    }
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            warn!(
+                "p2p",
+                "Failed to build HTTP client for seed discovery",
+                "error" => error.to_string()
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut out = HashSet::<String>::new();
+    for seed_server in seed_servers {
+        fetch_seed_server_targets(&client, seed_server, &mut out);
+    }
+
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn fetch_seed_server_targets(
+    client: &reqwest::blocking::Client,
+    seed_server: &str,
+    out: &mut HashSet<String>,
+) {
+    let json_url = normalize_seed_server_url(seed_server, "/peer-list.json");
+    if !json_url.is_empty() {
+        match client.get(&json_url).send() {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<SeedPeerListResponse>() {
+                    Ok(payload) => {
+                        for bootnode in payload.bootnodes {
+                            if bootnode.reachable.unwrap_or(true) {
+                                out.insert(format!("{}:{}", bootnode.hostname, bootnode.port));
+                            }
+                        }
+                        for value in payload.dnsaddr_bootstrap {
+                            if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(&value) {
+                                out.insert(dial);
+                            }
+                        }
+                        for peer in payload.peers {
+                            if let Some(dial) = parse_bootnode_dial_address(&peer) {
+                                out.insert(dial);
+                            }
+                        }
+                        return;
+                    }
+                    Err(error) => {
+                        debug!(
+                            "p2p",
+                            "Failed to parse seed peer list JSON",
+                            "seed_server" => seed_server.to_string(),
+                            "error" => error.to_string()
+                        );
+                    }
+                }
+            }
+            Ok(response) => {
+                debug!(
+                    "p2p",
+                    "Seed peer list request returned non-success status",
+                    "seed_server" => seed_server.to_string(),
+                    "status" => response.status().as_u16()
+                );
+            }
+            Err(error) => {
+                debug!(
+                    "p2p",
+                    "Seed peer list request failed",
+                    "seed_server" => seed_server.to_string(),
+                    "error" => error.to_string()
+                );
+            }
+        }
+    }
+
+    let text_url = normalize_seed_server_url(seed_server, "/dns/bootstrap.txt");
+    if text_url.is_empty() {
+        return;
+    }
+
+    match client.get(&text_url).send() {
+        Ok(response) if response.status().is_success() => {
+            if let Ok(body) = response.text() {
+                for line in body.lines() {
+                    let value = line.trim();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(
+                        value.strip_prefix("dnsaddr=").unwrap_or(value),
+                    ) {
+                        out.insert(dial);
+                    }
+                }
+            }
+        }
+        Ok(_) | Err(_) => {}
+    }
+}
+
+fn normalize_seed_server_url(seed_server: &str, default_path: &str) -> String {
+    let trimmed = seed_server.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let remainder = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+        if remainder.contains('/') {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}{default_path}")
+        }
+    } else {
+        format!("http://{trimmed}{default_path}")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -284,6 +605,31 @@ impl P2PNetwork {
         }
     }
 
+    pub fn request_blocks_from_peer(
+        &self,
+        peer_address: &str,
+        from_height: u64,
+        count: u32,
+    ) -> bool {
+        let message = NetworkMessage::GetBlocks { from_height, count };
+        let mut peers = self.connected_peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(peer_address) {
+            if let Some(ref mut stream) = peer.stream {
+                if let Err(e) = send_message(stream, &message) {
+                    warn!(
+                        "p2p",
+                        "Failed to request blocks from peer",
+                        "peer" => peer_address.to_string(),
+                        "error" => e.to_string()
+                    );
+                    return false;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn request_peers(&self) {
         let message = NetworkMessage::GetPeers;
         let mut peers = self.connected_peers.lock().unwrap();
@@ -329,25 +675,38 @@ impl P2PNetwork {
     pub fn start_bootstrap(self: &Arc<Self>) {
         let network = Arc::clone(self);
         thread::spawn(move || {
-            let bootnode_dials: Vec<String> = network
-                .config
-                .network
-                .bootnodes
-                .iter()
-                .filter_map(|b| parse_bootnode_dial_address(b))
-                .collect();
             let heartbeat =
                 std::time::Duration::from_secs(network.config.p2p.heartbeat_interval.max(5));
-
-            if bootnode_dials.is_empty() && !network.config.network.bootnodes.is_empty() {
-                warn!(
-                    "p2p",
-                    "All configured bootnodes were invalid (cannot dial)",
-                    "bootnodes" => format!("{:?}", network.config.network.bootnodes)
-                );
-            }
+            let bootstrap_refresh_interval = std::time::Duration::from_secs(120);
+            let mut bootnode_dials = Vec::<String>::new();
+            let mut last_refresh = Instant::now() - bootstrap_refresh_interval;
 
             loop {
+                if last_refresh.elapsed() >= bootstrap_refresh_interval || bootnode_dials.is_empty()
+                {
+                    bootnode_dials = resolve_bootstrap_dial_targets(&network.config);
+                    last_refresh = Instant::now();
+
+                    if bootnode_dials.is_empty() {
+                        warn!(
+                            "p2p",
+                            "Bootstrap resolution returned no dialable peers",
+                            "bootnodes" => format!("{:?}", network.config.network.bootnodes),
+                            "seed_servers" => format!("{:?}", network.config.network.seed_servers),
+                            "dns_records" => format!(
+                                "{:?}",
+                                network.config.network.bootstrap_dns_records
+                            )
+                        );
+                    } else {
+                        info!(
+                            "p2p",
+                            "Resolved bootstrap dial targets",
+                            "targets" => format!("{:?}", bootnode_dials)
+                        );
+                    }
+                }
+
                 // Keep trying bootnodes until at least one peer is connected.
                 for addr in &bootnode_dials {
                     // Avoid self-dial if the config accidentally includes itself.
@@ -440,7 +799,7 @@ fn start_listener(
 fn handle_incoming_connection(
     stream: TcpStream,
     peer_address: String,
-    blockchain: BlockchainArc,
+    _blockchain: BlockchainArc,
     connected_peers: PeersArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -524,7 +883,7 @@ fn handle_incoming_connection(
 fn handle_outgoing_connection(
     stream: TcpStream,
     peer_address: String,
-    blockchain: BlockchainArc,
+    _blockchain: BlockchainArc,
     connected_peers: PeersArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -1314,8 +1673,11 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
-                let _ = stream.set_read_timeout(Some(timeout));
-                let _ = stream.set_write_timeout(Some(timeout));
+                // Keep the connect deadline, but leave established peer streams blocking.
+                // A fixed read timeout on long-lived P2P sockets causes idle bootstrap peers
+                // to be disconnected even though the link is healthy.
+                let _ = stream.set_read_timeout(None);
+                let _ = stream.set_write_timeout(None);
                 return Ok(stream);
             }
             Err(e) => last_err = Some(e),
@@ -1400,4 +1762,29 @@ fn dial_peer_async(
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dial_with_timeout;
+    use std::net::TcpListener;
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn dial_with_timeout_keeps_established_peer_streams_blocking() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accept_handle = thread::spawn(move || {
+            let _ = listener.accept().unwrap();
+        });
+
+        let stream = dial_with_timeout(&addr.to_string(), Duration::from_millis(250)).unwrap();
+
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
+
+        accept_handle.join().unwrap();
+    }
 }

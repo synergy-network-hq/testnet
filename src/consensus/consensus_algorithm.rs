@@ -313,8 +313,8 @@ impl ProofOfSynergy {
                     .unwrap_or_default();
 
                 if elapsed >= Duration::from_secs(block_time_secs) {
-                    let mut pool = TX_POOL.lock().unwrap();
-                    let mut chain_guard = chain.lock().unwrap();
+                    let pool = TX_POOL.lock().unwrap();
+                    let chain_guard = chain.lock().unwrap();
 
                     if let Some(latest_block) = chain_guard.last() {
                         // Check for epoch boundary
@@ -1081,47 +1081,6 @@ impl ProofOfSynergy {
             .as_secs()
     }
 
-    fn select_validator_for_block(validators: &[Validator], block_height: u64) -> Validator {
-        if validators.is_empty() {
-            // Fallback genesis validator with proper 41-character address format
-            return Validator::new(
-                "synv1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p7q8r9s0t1".to_string(),
-                "genesis_key".to_string(),
-                "Genesis Validator".to_string(),
-                1000,
-            );
-        }
-
-        // Use VRF for validator selection based on synergy scores
-        let vrf_consensus = VRFConsensus::new();
-        let seed = VRFSeed::generate();
-        let input = format!(
-            "validator_selection_{}_{}",
-            block_height,
-            hex::encode(&seed.seed)
-        );
-        let vrf_output = vrf_consensus.generate_vrf_proof(&input);
-
-        // Use VRF output to create weighted random selection
-        let total_score: f64 = validators.iter().map(|v| v.synergy_score).sum();
-        let mut cumulative_weight = 0.0;
-
-        // Use VRF output for true randomness
-        let vrf_hash = vrf_output.proof.hash();
-        let random_value = (vrf_hash[0] as f64) / 255.0; // Normalize to 0-1
-        let target = random_value * total_score;
-
-        for validator in validators {
-            cumulative_weight += validator.synergy_score;
-            if cumulative_weight >= target {
-                return validator.clone();
-            }
-        }
-
-        // Fallback to first validator
-        validators[0].clone()
-    }
-
     // New PoSy Helper Methods
 
     fn is_epoch_boundary(block_index: u64, epoch_length: u64) -> bool {
@@ -1406,7 +1365,7 @@ impl ProofOfSynergy {
         // isn't known locally (remote wallets). If a public key is available, we verify.
         let public_key = Self::get_transaction_public_key(&tx.sender);
         if let Some(public_key) = public_key {
-            let mut pqc = pqc_manager.lock().unwrap();
+            let pqc = pqc_manager.lock().unwrap();
             // Use raw_hash() for signature verification (without prefix)
             let message_bytes = match hex::decode(tx.raw_hash()) {
                 Ok(bytes) => bytes,
