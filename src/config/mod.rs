@@ -37,6 +37,8 @@ pub struct NetworkConfig {
     pub seed_servers: Vec<String>,
     #[serde(default)]
     pub bootstrap_dns_records: Vec<String>,
+    #[serde(default)]
+    pub additional_dial_targets: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -164,6 +166,7 @@ impl Default for NodeConfig {
                 bootnodes: vec![],
                 seed_servers: vec![],
                 bootstrap_dns_records: vec![],
+                additional_dial_targets: vec![],
             },
             blockchain: BlockchainConfig {
                 block_time: 2,
@@ -356,6 +359,14 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     }
     if let Ok(val) = env::var("SYNERGY_BOOTSTRAP_DNS_RECORDS") {
         config.network.bootstrap_dns_records = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
+    if let Ok(val) = env::var("SYNERGY_ADDITIONAL_DIAL_TARGETS") {
+        config.network.additional_dial_targets = val
             .split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -604,6 +615,11 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
         merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
     }
 
+    if let Some(additional_targets) = get_string_array(raw, &["network", "additional_dial_targets"])
+    {
+        merge_unique_strings(&mut config.network.additional_dial_targets, additional_targets);
+    }
+
     if let Some(bootstrap_only) = get_bool(raw, &["node", "bootstrap_only"]) {
         config.node.bootstrap_only = bootstrap_only;
     }
@@ -683,6 +699,11 @@ fn merge_companion_peers_file(
         merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
     }
 
+    if let Some(additional_targets) = get_string_array(&raw, &["global", "additional_dial_targets"])
+    {
+        merge_unique_strings(&mut config.network.additional_dial_targets, additional_targets);
+    }
+
     Ok(())
 }
 
@@ -759,6 +780,7 @@ p2p_listen = "0.0.0.0:38638"
 bootnodes = ["bootnode1.synergynode.xyz:38638"]
 seed_servers = ["http://seed1.synergynode.xyz:18080"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+additional_dial_targets = ["24.181.87.76:39638"]
 max_peers = 128
 
 [role]
@@ -791,6 +813,10 @@ log_level = "debug"
         assert_eq!(
             config.network.bootstrap_dns_records,
             vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+        assert_eq!(
+            config.network.additional_dial_targets,
+            vec!["24.181.87.76:39638".to_string()]
         );
         assert_eq!(config.logging.log_level, "debug");
     }
@@ -881,6 +907,7 @@ pruning_interval = 86400
 bootnodes = ["bootnode2.synergynode.xyz:38638"]
 seed_servers = ["http://seed2.synergynode.xyz:18080"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+additional_dial_targets = ["73.79.66.255:39638"]
 "#,
         )
         .expect("peers.toml should be written");
@@ -905,6 +932,10 @@ bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
         assert_eq!(
             config.network.bootstrap_dns_records,
             vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+        assert_eq!(
+            config.network.additional_dial_targets,
+            vec!["73.79.66.255:39638".to_string()]
         );
 
         fs::remove_file(&node_path).ok();

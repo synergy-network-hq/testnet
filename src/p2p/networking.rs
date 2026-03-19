@@ -22,11 +22,13 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 type PeerMap = HashMap<String, PeerConnection>;
 type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
+type DialTargetsArc = Arc<Mutex<Vec<String>>>;
 
 pub struct P2PNetwork {
     blockchain: BlockchainArc,
     config: NodeConfig,
     connected_peers: PeersArc,
+    discovered_dial_targets: DialTargetsArc,
     is_running: Arc<Mutex<bool>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     message_receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
@@ -128,6 +130,12 @@ fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
 
     for dial in resolve_seed_server_targets(&config.network.seed_servers) {
         targets.insert(dial);
+    }
+
+    for dial in &config.network.additional_dial_targets {
+        if let Some(parsed) = parse_bootnode_dial_address(dial) {
+            targets.insert(parsed);
+        }
     }
 
     let mut ordered = targets.into_iter().collect::<Vec<_>>();
@@ -429,6 +437,7 @@ impl P2PNetwork {
             blockchain,
             config: config.clone(),
             connected_peers: Arc::new(Mutex::new(HashMap::new())),
+            discovered_dial_targets: Arc::new(Mutex::new(Vec::new())),
             is_running: Arc::new(Mutex::new(false)),
             message_sender: sender,
             message_receiver: Arc::new(Mutex::new(receiver)),
@@ -462,6 +471,7 @@ impl P2PNetwork {
         // Start message handler thread
         let blockchain_handler = Arc::clone(&self.blockchain);
         let peers_handler = Arc::clone(&self.connected_peers);
+        let discovered_targets_handler = Arc::clone(&self.discovered_dial_targets);
         let receiver = Arc::clone(&self.message_receiver);
         let handler_config = self.config.clone();
         let handler_sender = self.message_sender.clone();
@@ -470,6 +480,7 @@ impl P2PNetwork {
             handle_messages(
                 blockchain_handler,
                 peers_handler,
+                discovered_targets_handler,
                 receiver,
                 handler_sender,
                 handler_config,
@@ -699,6 +710,9 @@ impl P2PNetwork {
                             )
                         );
                     } else {
+                        if let Ok(mut discovered) = network.discovered_dial_targets.lock() {
+                            *discovered = bootnode_dials.clone();
+                        }
                         info!(
                             "p2p",
                             "Resolved bootstrap dial targets",
@@ -967,6 +981,7 @@ fn handle_outgoing_connection(
 fn handle_messages(
     blockchain: BlockchainArc,
     connected_peers: PeersArc,
+    discovered_dial_targets: DialTargetsArc,
     receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -1502,7 +1517,11 @@ fn handle_messages(
                     NetworkMessage::GetPeers => {
                         // Respond with known peer dial addresses.
                         let peer_addresses = if config.p2p.enable_discovery {
-                            collect_known_peer_addresses(&connected_peers, &config)
+                            collect_known_peer_addresses(
+                                &connected_peers,
+                                &discovered_dial_targets,
+                                &config,
+                            )
                         } else {
                             Vec::new()
                         };
@@ -1531,12 +1550,20 @@ fn handle_messages(
 
                         // Attempt to dial new peers (best-effort).
                         let max_peers = config.network.max_peers as usize;
+                        let self_public_address = parse_bootnode_dial_address(&config.p2p.public_address);
+                        let self_listen_address = parse_bootnode_dial_address(&config.p2p.listen_address);
                         for addr in peer_addresses {
-                            if addr.is_empty() {
+                            let Some(addr) = parse_bootnode_dial_address(&addr) else {
+                                debug!(
+                                    "p2p",
+                                    "Ignoring non-dialable peer discovery address",
+                                    "peer" => peer_address.clone(),
+                                    "address" => addr
+                                );
                                 continue;
-                            }
-                            if addr == config.p2p.public_address
-                                || addr == config.p2p.listen_address
+                            };
+                            if self_public_address.as_deref() == Some(addr.as_str())
+                                || self_listen_address.as_deref() == Some(addr.as_str())
                             {
                                 continue;
                             }
@@ -1554,6 +1581,12 @@ fn handle_messages(
                                 }
                             };
                             if should_dial {
+                                info!(
+                                    "p2p",
+                                    "Dialing discovered peer",
+                                    "source_peer" => peer_address.clone(),
+                                    "target" => addr.clone()
+                                );
                                 let _ = dial_peer_async(
                                     addr.clone(),
                                     Arc::clone(&blockchain),
@@ -1658,12 +1691,48 @@ fn parse_bootnode_dial_address(bootnode: &str) -> Option<String> {
     let raw = raw.split('?').next().unwrap_or(raw);
     let raw = raw.split('#').next().unwrap_or(raw);
 
-    let dial = raw.trim();
-    if dial.is_empty() || !dial.contains(':') {
+    normalize_dial_target(raw.trim())
+}
+
+fn normalize_dial_target(dial: &str) -> Option<String> {
+    let dial = dial.trim();
+    if dial.is_empty() {
         return None;
     }
 
-    Some(dial.to_string())
+    if let Some(stripped) = dial.strip_prefix('[') {
+        let (host, port) = stripped.rsplit_once("]:")?;
+        return normalize_host_port(host, port);
+    }
+
+    let (host, port) = dial.rsplit_once(':')?;
+    normalize_host_port(host, port)
+}
+
+fn normalize_host_port(host: &str, port: &str) -> Option<String> {
+    let host = host.trim().trim_matches('[').trim_matches(']').trim_end_matches('.');
+    let port = port.trim().parse::<u16>().ok()?;
+    if port == 0 || host.is_empty() || !is_plausible_dial_host(host) {
+        return None;
+    }
+
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(_)) => Some(format!("[{host}]:{port}")),
+        Ok(std::net::IpAddr::V4(_)) => Some(format!("{host}:{port}")),
+        Err(_) if host.contains(':') => Some(format!("[{host}]:{port}")),
+        Err(_) => Some(format!("{host}:{port}")),
+    }
+}
+
+fn is_plausible_dial_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+
+    host.contains('.')
+        && host
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '.')
 }
 
 fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<TcpStream> {
@@ -1686,30 +1755,48 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
     Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "No resolved addresses")))
 }
 
-fn collect_known_peer_addresses(connected_peers: &PeersArc, config: &NodeConfig) -> Vec<String> {
-    use std::collections::HashSet;
-
+fn collect_known_peer_addresses(
+    connected_peers: &PeersArc,
+    discovered_dial_targets: &DialTargetsArc,
+    config: &NodeConfig,
+) -> Vec<String> {
     let mut out = HashSet::<String>::new();
 
-    if !config.p2p.public_address.trim().is_empty() {
-        out.insert(config.p2p.public_address.clone());
+    if let Some(address) = parse_bootnode_dial_address(&config.p2p.public_address) {
+        out.insert(address);
+    }
+
+    for dial in &config.network.additional_dial_targets {
+        if let Some(address) = parse_bootnode_dial_address(dial) {
+            out.insert(address);
+        }
+    }
+
+    if let Ok(discovered) = discovered_dial_targets.lock() {
+        for dial in discovered.iter() {
+            if let Some(address) = parse_bootnode_dial_address(dial) {
+                out.insert(address);
+            }
+        }
     }
 
     if let Ok(peers) = connected_peers.lock() {
         for peer in peers.values() {
             if let Some(pub_addr) = peer.public_address.as_ref() {
-                if !pub_addr.trim().is_empty() {
-                    out.insert(pub_addr.clone());
+                if let Some(address) = parse_bootnode_dial_address(pub_addr) {
+                    out.insert(address);
                     continue;
                 }
             }
-            if !peer.address.trim().is_empty() {
-                out.insert(peer.address.clone());
+            if let Some(address) = parse_bootnode_dial_address(&peer.address) {
+                out.insert(address);
             }
         }
     }
 
-    out.into_iter().collect()
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
@@ -1767,7 +1854,11 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::dial_with_timeout;
+    use super::{collect_known_peer_addresses, parse_bootnode_dial_address, DialTargetsArc};
+    use crate::config::NodeConfig;
+    use std::collections::HashMap;
     use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -1786,5 +1877,42 @@ mod tests {
         assert_eq!(stream.write_timeout().unwrap(), None);
 
         accept_handle.join().unwrap();
+    }
+
+    #[test]
+    fn parse_bootnode_dial_address_normalizes_identity_and_ipv6() {
+        assert_eq!(
+            parse_bootnode_dial_address("snr://peer@24.181.87.76:38638"),
+            Some("24.181.87.76:38638".to_string())
+        );
+        assert_eq!(
+            parse_bootnode_dial_address(
+                "snr://synv1156xl3ct9cxc4cl9pdn5ww9myxudavl0hxrq7zv@2a02:1812:172a:e900:1497:71dc:d720:e28e:38638",
+            ),
+            Some("[2a02:1812:172a:e900:1497:71dc:d720:e28e]:38638".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_bootnode_dial_address_rejects_invalid_bare_host_targets() {
+        assert_eq!(parse_bootnode_dial_address("snr://peer@test:38638"), None);
+        assert_eq!(parse_bootnode_dial_address(""), None);
+    }
+
+    #[test]
+    fn collect_known_peer_addresses_includes_discovered_targets() {
+        let mut config = NodeConfig::default();
+        config.p2p.public_address = "24.181.87.76:38638".to_string();
+        config.network.additional_dial_targets = vec!["73.79.66.255:39638".to_string()];
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let discovered_targets: DialTargetsArc =
+            Arc::new(Mutex::new(vec!["64.227.107.57:39638".to_string()]));
+
+        let addresses =
+            collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
+
+        assert!(addresses.contains(&"24.181.87.76:38638".to_string()));
+        assert!(addresses.contains(&"73.79.66.255:39638".to_string()));
+        assert!(addresses.contains(&"64.227.107.57:39638".to_string()));
     }
 }

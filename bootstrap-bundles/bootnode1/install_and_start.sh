@@ -29,6 +29,16 @@ select_binary() {
   exit 1
 }
 
+clear_quarantine_if_needed() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -dr com.apple.quarantine "$BASE_DIR" 2>/dev/null || true
+  fi
+}
+
 if [[ -f "$PID_FILE" ]]; then
   pid="$(cat "$PID_FILE")"
   if kill -0 "$pid" 2>/dev/null; then
@@ -44,6 +54,7 @@ if [[ ! -f "$BIN_SELECTED" ]]; then
   exit 1
 fi
 
+clear_quarantine_if_needed
 chmod +x "$BIN_SELECTED"
 nohup env \
   SYNERGY_BOOTSTRAP_ONLY=true \

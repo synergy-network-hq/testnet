@@ -18,6 +18,10 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
   fi
 fi
 
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$BASE_DIR" 2>/dev/null || true
+fi
+
 if [[ -f "$PID_FILE" ]]; then
   pid="$(cat "$PID_FILE")"
   if kill -0 "$pid" 2>/dev/null; then

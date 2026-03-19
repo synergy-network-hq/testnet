@@ -237,6 +237,16 @@ select_binary() {
   exit 1
 }
 
+clear_quarantine_if_needed() {
+  if [[ "$(uname -s)" != "Darwin" ]]; then
+    return
+  fi
+
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -dr com.apple.quarantine "$BASE_DIR" 2>/dev/null || true
+  fi
+}
+
 if [[ -f "$PID_FILE" ]]; then
   pid="$(cat "$PID_FILE")"
   if kill -0 "$pid" 2>/dev/null; then
@@ -252,6 +262,7 @@ if [[ ! -f "$BIN_SELECTED" ]]; then
   exit 1
 fi
 
+clear_quarantine_if_needed
 chmod +x "$BIN_SELECTED"
 nohup env \
   SYNERGY_BOOTSTRAP_ONLY=true \
@@ -569,7 +580,10 @@ write_seed_service() {
 
   cat > "$seed_dir/seed_service.py" <<'SCRIPT'
 #!/usr/bin/env python3
+import hmac
+import ipaddress
 import json
+import os
 import socket
 import threading
 import time
@@ -600,12 +614,83 @@ def load_peers():
         raw = raw.get("peers", [])
     if not isinstance(raw, list):
         return []
-    return [entry for entry in raw if isinstance(entry, dict)]
+    return dedupe_peer_records(raw)
 
 
 def save_peers(peers):
     PEER_PATH.parent.mkdir(parents=True, exist_ok=True)
-    PEER_PATH.write_text(json.dumps(peers, indent=2))
+    PEER_PATH.write_text(json.dumps(dedupe_peer_records(peers), indent=2))
+
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_plausible_dial_host(host):
+    normalized = str(host or "").strip()
+    if not normalized:
+        return False
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(normalized)
+        return True
+    except ValueError:
+        pass
+    return "." in normalized and all(
+        character.isalnum() or character in "-." for character in normalized
+    )
+
+
+def normalize_host_port(host, port):
+    normalized_host = str(host or "").strip().strip("[]").rstrip(".")
+    normalized_port = parse_int(port)
+    if (
+        normalized_port is None
+        or normalized_port <= 0
+        or normalized_port > 65535
+        or not normalized_host
+        or not is_plausible_dial_host(normalized_host)
+    ):
+        return None
+    try:
+        ip_value = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        if ":" in normalized_host:
+            return f"[{normalized_host}]:{normalized_port}"
+        return f"{normalized_host}:{normalized_port}"
+
+    if isinstance(ip_value, ipaddress.IPv6Address):
+        return f"[{normalized_host}]:{normalized_port}"
+    return f"{normalized_host}:{normalized_port}"
+
+
+def normalize_dial_target(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    if "@" in raw:
+        raw = raw.rsplit("@", 1)[1]
+    raw = raw.split("/", 1)[0]
+    raw = raw.split("?", 1)[0]
+    raw = raw.split("#", 1)[0]
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    if raw.startswith("[") and "]:" in raw:
+        host, port = raw[1:].rsplit("]:", 1)
+        return normalize_host_port(host, port)
+    if ":" not in raw:
+        return None
+    host, port = raw.rsplit(":", 1)
+    return normalize_host_port(host, port)
 
 
 def normalize_peer_payload(payload):
@@ -616,24 +701,20 @@ def normalize_peer_payload(payload):
     port = payload.get("p2p_port") or payload.get("port")
     if not dial and host and port:
         dial = f"{host}:{port}"
-    if dial:
-        dial = str(dial).strip()
-        if "://" not in dial:
-            dial = f"snr://peer@{dial}"
+    dial = normalize_dial_target(dial)
     if not dial:
         return None
-    try:
-        port_val = int(port) if port is not None else None
-    except (TypeError, ValueError):
-        port_val = None
+    dial_host = dial[1:].split("]:", 1)[0] if dial.startswith("[") else dial.rsplit(":", 1)[0]
+    dial_port = parse_int(dial.rsplit(":", 1)[1])
+    updated_at = parse_int(payload.get("updated_at")) or int(time.time())
     return {
         "node_id": payload.get("node_id"),
         "role_id": payload.get("role_id"),
         "wallet_address": payload.get("wallet_address"),
-        "public_host": host,
-        "p2p_port": port_val,
+        "public_host": str(host or dial_host).strip() or dial_host,
+        "p2p_port": dial_port,
         "dial": dial,
-        "updated_at": int(time.time()),
+        "updated_at": updated_at,
     }
 
 
@@ -648,6 +729,54 @@ def merge_peer(peers, incoming):
             return peers
     peers.append(incoming)
     return peers
+
+
+def dedupe_peer_records(records):
+    peers = []
+    for entry in records:
+        normalized = normalize_peer_payload(entry)
+        if not normalized:
+            continue
+        peers = merge_peer(peers, normalized)
+    return peers
+
+
+def peer_dials(peers):
+    dials = {
+        entry.get("dial")
+        for entry in dedupe_peer_records(peers)
+        if entry.get("dial")
+    }
+    return sorted(dials)
+
+
+def expected_admin_token(config):
+    token = str(os.environ.get("SEED_ADMIN_TOKEN") or config.get("admin_token") or "").strip()
+    return token or None
+
+
+def request_is_loopback(handler):
+    try:
+        return ipaddress.ip_address(handler.client_address[0]).is_loopback
+    except ValueError:
+        return handler.client_address[0] in {"localhost"}
+
+
+def request_admin_token(handler):
+    bearer = str(handler.headers.get("Authorization") or "").strip()
+    if bearer.lower().startswith("bearer "):
+        return bearer[7:].strip()
+    return str(handler.headers.get("X-Seed-Admin-Token") or "").strip()
+
+
+def is_admin_authorized(handler, config):
+    if request_is_loopback(handler):
+        return True
+    expected = expected_admin_token(config)
+    provided = request_admin_token(handler)
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
 
 
 def check_bootnode(host, port, timeout=1.5):
@@ -671,7 +800,8 @@ def rebuild_state(config):
     STATE["generated_at"] = int(time.time())
     STATE["bootnodes"] = snapshot
     with PEER_LOCK:
-        STATE["peers"] = load_peers()
+        peers = load_peers()
+        STATE["peers"] = peers
         STATE["peer_updated_at"] = int(time.time())
 
 
@@ -690,6 +820,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _clear_registered_peers(self, config):
+        if not is_admin_authorized(self, config):
+            self._send_json({"error": "forbidden"}, status=403)
+            return
+
+        with PEER_LOCK:
+            cleared = len(load_peers())
+            peers = []
+            save_peers(peers)
+            STATE["peers"] = peers
+            STATE["peer_updated_at"] = int(time.time())
+
+        self._send_json(
+            {
+                "ok": True,
+                "cleared": cleared,
+                "remaining": 0,
+            }
+        )
 
     def log_message(self, fmt, *args):
         return
@@ -716,7 +866,7 @@ class Handler(BaseHTTPRequestHandler):
                     "generated_at": STATE["generated_at"],
                     "bootnodes": STATE["bootnodes"],
                     "seed_services": config["seed_services"],
-                    "peers": [entry.get("dial") for entry in STATE["peers"] if entry.get("dial")],
+                    "peers": peer_dials(STATE["peers"]),
                     "dnsaddr_bootstrap": [
                         f"dnsaddr=/dns/{entry['hostname']}/tcp/{entry['port']}"
                         for entry in config["bootnodes"]
@@ -744,7 +894,7 @@ class Handler(BaseHTTPRequestHandler):
                     "service": config["service_name"],
                     "generated_at": STATE["generated_at"],
                     "peer_updated_at": STATE["peer_updated_at"],
-                    "peers": STATE["peers"],
+                    "peers": dedupe_peer_records(STATE["peers"]),
                 }
             )
             return
@@ -752,7 +902,12 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json({"error": "not_found"}, status=404)
 
     def do_POST(self):
+        config = load_config()
         path = urlparse(self.path).path
+        if path in {"/peers/clear", "/admin/peers/clear"}:
+            self._clear_registered_peers(config)
+            return
+
         if path != "/peers/register":
             self._send_json({"error": "not_found"}, status=404)
             return
@@ -779,7 +934,7 @@ class Handler(BaseHTTPRequestHandler):
                 peers = merge_peer(peers, normalized)
                 updated += 1
             save_peers(peers)
-            STATE["peers"] = peers
+            STATE["peers"] = dedupe_peer_records(peers)
             STATE["peer_updated_at"] = int(time.time())
 
         if updated == 0:
@@ -790,9 +945,17 @@ class Handler(BaseHTTPRequestHandler):
             {
                 "ok": True,
                 "registered": updated,
-                "peers": STATE["peers"],
+                "peers": dedupe_peer_records(STATE["peers"]),
             }
         )
+
+    def do_DELETE(self):
+        config = load_config()
+        path = urlparse(self.path).path
+        if path in {"/peers", "/peers/clear", "/admin/peers/clear"}:
+            self._clear_registered_peers(config)
+            return
+        self._send_json({"error": "not_found"}, status=404)
 
 
 def main():
@@ -827,6 +990,9 @@ SERVICE_NAME=${name}
 SERVICE_HOSTNAME=${name}.${DOMAIN}
 SERVICE_IP=${ip}
 SERVICE_PORT=${SEED_HTTP_PORT}
+# Optional remote admin token for clearing peer registrations.
+# Uncomment and set before start if you need authenticated DELETE /peers access.
+# export SEED_ADMIN_TOKEN=replace-with-a-long-random-token
 EOF
 }
 
@@ -852,6 +1018,10 @@ if ! command -v "$PYTHON_BIN" >/dev/null 2>&1; then
     echo "Python is required to run the seed service." >&2
     exit 1
   fi
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]] && command -v xattr >/dev/null 2>&1; then
+  xattr -dr com.apple.quarantine "$BASE_DIR" 2>/dev/null || true
 fi
 
 if [[ -f "$PID_FILE" ]]; then
@@ -1025,10 +1195,17 @@ Published endpoints
 - /healthz
 - /peer-list.json
 - /dns/bootstrap.txt
+- /peers
+- /peers/register
+- /peers/clear (admin)
 
 Start
 - Linux/macOS: ./install_and_start.sh
 - Windows: powershell -ExecutionPolicy Bypass -File .\\install_and_start.ps1
+
+Clear registered peers
+- Local only without a token: curl -X DELETE http://127.0.0.1:${SEED_HTTP_PORT}/peers
+- Remote with token: curl -X DELETE -H "X-Seed-Admin-Token: <token>" http://${name}.${DOMAIN}:${SEED_HTTP_PORT}/peers
 
 DNS
 - Publish A record ${name}.${DOMAIN} -> ${ip}
