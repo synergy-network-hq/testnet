@@ -8,6 +8,7 @@ use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::Resolver;
+use lazy_static::lazy_static;
 use serde::Deserialize;
 use serde_json;
 use std::collections::{HashMap, HashSet};
@@ -23,6 +24,10 @@ type PeerMap = HashMap<String, PeerConnection>;
 type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
 type DialTargetsArc = Arc<Mutex<Vec<String>>>;
+
+lazy_static! {
+    static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+}
 
 pub struct P2PNetwork {
     blockchain: BlockchainArc,
@@ -1550,8 +1555,10 @@ fn handle_messages(
 
                         // Attempt to dial new peers (best-effort).
                         let max_peers = config.network.max_peers as usize;
-                        let self_public_address = parse_bootnode_dial_address(&config.p2p.public_address);
-                        let self_listen_address = parse_bootnode_dial_address(&config.p2p.listen_address);
+                        let self_public_address =
+                            parse_bootnode_dial_address(&config.p2p.public_address);
+                        let self_listen_address =
+                            parse_bootnode_dial_address(&config.p2p.listen_address);
                         for addr in peer_addresses {
                             let Some(addr) = parse_bootnode_dial_address(&addr) else {
                                 debug!(
@@ -1710,7 +1717,11 @@ fn normalize_dial_target(dial: &str) -> Option<String> {
 }
 
 fn normalize_host_port(host: &str, port: &str) -> Option<String> {
-    let host = host.trim().trim_matches('[').trim_matches(']').trim_end_matches('.');
+    let host = host
+        .trim()
+        .trim_matches('[')
+        .trim_matches(']')
+        .trim_end_matches('.');
     let port = port.trim().parse::<u16>().ok()?;
     if port == 0 || host.is_empty() || !is_plausible_dial_host(host) {
         return None;
@@ -1730,9 +1741,9 @@ fn is_plausible_dial_host(host: &str) -> bool {
     }
 
     host.contains('.')
-        && host
-            .chars()
-            .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '.')
+        && host.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '.'
+        })
 }
 
 fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<TcpStream> {
@@ -1800,25 +1811,57 @@ fn collect_known_peer_addresses(
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
-    let mut chain = blockchain.lock().unwrap();
+    let (tip_height, snapshot) = {
+        let mut chain = blockchain.lock().unwrap();
 
-    // Deduplicate by hash.
-    if chain.chain.iter().any(|b| b.hash == block.hash) {
-        return false;
-    }
-
-    // Append if it extends the tip, otherwise ignore for now (no fork handling).
-    if let Some(tip) = chain.last() {
-        if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
+        // Deduplicate by hash.
+        if chain.chain.iter().any(|b| b.hash == block.hash) {
             return false;
         }
+
+        // Append if it extends the tip, otherwise ignore for now (no fork handling).
+        if let Some(tip) = chain.last() {
+            if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
+                return false;
+            }
+        }
+
+        chain.add_block(block);
+        let tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
+        let snapshot = if should_persist_chain_tip(tip_height) {
+            Some(chain.clone())
+        } else {
+            None
+        };
+        (tip_height, snapshot)
+    };
+
+    if let Some(snapshot) = snapshot {
+        let chain_path = crate::utils::resolve_data_path("data/chain.json");
+        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
+        note_chain_persist(tip_height);
     }
 
-    chain.add_block(block);
-    // Use absolute path based on project root
-    let chain_path = crate::utils::resolve_data_path("data/chain.json");
-    chain.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
     true
+}
+
+fn should_persist_chain_tip(tip_height: u64) -> bool {
+    if tip_height <= 32 || tip_height % 50 == 0 {
+        return true;
+    }
+
+    let state = LAST_CHAIN_PERSIST.lock().unwrap();
+    match *state {
+        Some((last_height, last_at)) => {
+            tip_height.saturating_sub(last_height) >= 10 || last_at.elapsed() >= Duration::from_secs(2)
+        }
+        None => true,
+    }
+}
+
+fn note_chain_persist(tip_height: u64) {
+    let mut state = LAST_CHAIN_PERSIST.lock().unwrap();
+    *state = Some((tip_height, Instant::now()));
 }
 
 /// Best-effort dial for a discovered peer.

@@ -49,6 +49,13 @@ pub fn resolve_data_path(relative_path: &str) -> PathBuf {
         return PathBuf::from(relative_path);
     }
 
+    // Prefer the active working directory first. Node processes are launched
+    // with their workspace as cwd, so this keeps per-node chain/state files
+    // scoped to that workspace instead of the source tree.
+    if let Ok(current_dir) = env::current_dir() {
+        return current_dir.join(relative_path);
+    }
+
     // Try to get project root
     if let Some(project_root) = get_project_root() {
         project_root.join(relative_path)
