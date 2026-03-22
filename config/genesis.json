@@ -1,11 +1,11 @@
 {
   "metadata": {
-    "network_name": "Synergy Closed Testnet Beta",
-    "network_id": "synergy-testbeta-closed-001",
+    "network_name": "Synergy Testnet Beta",
+    "network_id": "synergy-testnet-beta",
     "genesis_time": "2026-01-01T00:00:00Z",
     "chain_id": "338639",
     "version": "2.1.0-testbeta",
-    "description": "Closed, WireGuard-only deterministic testbeta genesis"
+    "description": "Synergy Testnet Beta genesis configuration"
   },
   "consensus": {
     "algorithm": "PoSy",
@@ -29,17 +29,18 @@
   },
   "network": {
     "chain_id": 338639,
-    "rpc_endpoint": "http://10.50.0.13:48650",
-    "websocket_endpoint": "ws://10.50.0.13:58650",
-    "api_endpoint": "http://10.50.0.13:48650",
-    "explorer_endpoint": "http://10.50.0.11:3000",
+    "rpc_endpoint": "https://testbeta-rpc.synergy-network.io",
+    "websocket_endpoint": "wss://testbeta-ws.synergy-network.io",
+    "api_endpoint": "https://testbeta-rpc.synergy-network.io",
+    "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
     "rpc_port": 48650,
     "p2p_port": 38638,
     "websocket_port": 58650,
     "metrics_port": 9090,
     "bootnodes": [
-      "snr://synv1daf1ee2c20ed961ec75d713aea4703389327@10.50.0.1:38638",
-      "snr://synv1f2d0b0caae7e006426408008ceed4946d5eb@10.50.0.2:38639"
+      "snr://bootstrap@bootnode1.synergynode.xyz:38638",
+      "snr://bootstrap@bootnode2.synergynode.xyz:38638",
+      "snr://bootstrap@bootnode3.synergynode.xyz:38638"
     ]
   },
   "supply": {
@@ -79,6 +80,18 @@
       "address": "synw1q0a8jzk24y8ra9qy0wqp6lx8kclha04r6w3lmf",
       "balance": "100000000000000000",
       "description": "Load and integration testing wallet pool"
+    },
+    {
+      "type": "fee_collector",
+      "address": "synw166wthd52f5vuxdxguplrmqe69zh5fswxvduq4y",
+      "balance": "0",
+      "description": "Transaction fee collector — accumulates gas fees from all transactions"
+    },
+    {
+      "type": "stake_vault",
+      "address": "synl1dwnssqdyp7nqlc9253ydy9957m6n5pggnpzqgl",
+      "balance": "0",
+      "description": "Stake vault — holds delegated validator stakes"
     },
     {
       "type": "validator_wallet",

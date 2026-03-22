@@ -1892,10 +1892,10 @@ fn normalize_host_port(host: &str, port: &str) -> Option<String> {
     }
 
     match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V6(_)) => Some(format!("[{host}]:{port}")),
+        Ok(std::net::IpAddr::V6(_)) => None, // Skip IPv6 — most peers are behind NAT
         Ok(std::net::IpAddr::V4(_)) => Some(format!("{host}:{port}")),
-        Err(_) if host.contains(':') => Some(format!("[{host}]:{port}")),
-        Err(_) => Some(format!("{host}:{port}")),
+        Err(_) if host.contains(':') => None, // Likely IPv6 literal
+        Err(_) => Some(format!("{host}:{port}")), // DNS hostnames
     }
 }
 
@@ -1913,7 +1913,18 @@ fn is_plausible_dial_host(host: &str) -> bool {
 fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<TcpStream> {
     let mut last_err: Option<io::Error> = None;
     let addrs = peer.to_socket_addrs()?;
-    for addr in addrs {
+    // Only dial IPv4 addresses — IPv6 peers behind NAT/firewalls cause
+    // spurious timeouts that flood the logs and waste connection budget.
+    let ipv4_addrs: Vec<_> = addrs
+        .filter(|a| a.is_ipv4())
+        .collect();
+    if ipv4_addrs.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::AddrNotAvailable,
+            format!("No IPv4 addresses resolved for {peer}"),
+        ));
+    }
+    for addr in ipv4_addrs {
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);

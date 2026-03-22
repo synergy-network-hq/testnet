@@ -194,28 +194,43 @@ impl TokenManager {
             println!(
                 "⚠️ Could not read genesis.json for token allocations, using default allocations"
             );
-            // Fallback to hardcoded allocations if genesis.json is not available
-            // These match the genesis.json allocations
+            // Fallback to hardcoded allocations if genesis.json is not available.
+            // These MUST match the genesis.json allocations exactly.
             let genesis_allocations = [
-                // Bootnode validator
-                (
-                    "synv11lylxla8qjcrk3ef8gjlyyhew3z4mjswwwsn6zv",
-                    2_000_000_000_000u64, // 2000 SNRG
-                ),
-                // Faucet - 2B SNRG
+                // Faucet wallet — distributes tokens to test accounts
                 (
                     "synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07",
-                    2_000_000_000_000_000_000u64,
+                    1_500_000_000_000_000_000u64, // 1.5B SNRG
                 ),
-                // Rewards pool - 2B SNRG (CRITICAL for validator rewards)
+                // Validator rewards pool
                 (
                     "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg",
-                    2_000_000_000_000_000_000u64,
+                    1_500_000_000_000_000_000u64, // 1.5B SNRG
                 ),
-                // Treasury - remaining supply
+                // Protocol treasury
                 (
                     "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd",
-                    7_997_000_000_000_000_000u64,
+                    8_800_000_000_000_000_000u64, // 8.8B SNRG
+                ),
+                // Foundation / DevOps wallet
+                (
+                    "synw1v6fhr0x7v6e2hxf9d9l72z2fcmn2c4k4m6m7d8",
+                    50_000_000_000_000_000u64, // 50M SNRG
+                ),
+                // Test wallet pool
+                (
+                    "synw1q0a8jzk24y8ra9qy0wqp6lx8kclha04r6w3lmf",
+                    100_000_000_000_000_000u64, // 100M SNRG
+                ),
+                // Fee collector — starts at zero, accumulates gas fees
+                (
+                    "synw166wthd52f5vuxdxguplrmqe69zh5fswxvduq4y",
+                    0u64,
+                ),
+                // Stake vault — holds delegated stakes
+                (
+                    "synl1dwnssqdyp7nqlc9253ydy9957m6n5pggnpzqgl",
+                    0u64,
                 ),
             ];
 
