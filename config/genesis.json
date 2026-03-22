@@ -83,7 +83,7 @@
     },
     {
       "type": "fee_collector",
-      "address": "synw166wthd52f5vuxdxguplrmqe69zh5fswxvduq4y",
+      "address": "synf1vt378ycuswrxfk6p73srtyf5972hek6avgqc68",
       "balance": "0",
       "description": "Transaction fee collector — accumulates gas fees from all transactions"
     },
@@ -95,49 +95,49 @@
     },
     {
       "type": "validator_wallet",
-      "address": "synv1daf1ee2c20ed961ec75d713aea4703389327",
+      "address": "synv1199526ap3rjxsjkn9hmdtn7lvz30n7dats8epfv",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for consensus-01"
     },
     {
       "type": "validator_wallet",
-      "address": "synv1f2d0b0caae7e006426408008ceed4946d5eb",
+      "address": "synv11szw4gam8qz33xa00xar5m2yppdxs4euq3emxw9",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for consensus-02"
     },
     {
       "type": "validator_wallet",
-      "address": "synv166ed2c95b408fcc400ec88a262c5fff78665",
+      "address": "synv11jnpq8009mkc5peeaea97hlvte077gjsgxrpu35",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for consensus-03"
     },
     {
       "type": "validator_wallet",
-      "address": "synv195e26a83cadf8636c052835b2d72ba232ed3",
+      "address": "synv11lcluc0n2ps4ympdl7jv9dskcs0zqm6nwxgrx52",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for consensus-04"
     },
     {
       "type": "validator_wallet",
-      "address": "synv10708faf79bc9aaf136a8d39c0235290bfe01",
+      "address": "synv11pvqw0rev506yr2jlyw2rdyqfhvz3ew095fmzg6",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for consensus-05"
     },
     {
       "type": "validator_wallet",
-      "address": "synv3cace1e19e4d4b466e8123aa14570c84cb231",
+      "address": "synv4164p0t0nrrq3js0fljanpr8gwpr9aqwej0rk88x",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for governance-01"
     },
     {
       "type": "validator_wallet",
-      "address": "synv38af8af7bca27a20ddf0733924d10a1afeeab",
+      "address": "synv41plc0989mplw58tjeesceujjxj5vnjz5yydpl9g",
       "balance": "5000000000000",
       "stake": "5000000000000",
       "description": "Testbeta validator allocation for governance-02"
@@ -145,8 +145,8 @@
   ],
   "validators": [
     {
-      "address": "synv1daf1ee2c20ed961ec75d713aea4703389327",
-      "public_key_file": "testbeta/lean15/keys/machine-01/identity.json",
+      "address": "synv1199526ap3rjxsjkn9hmdtn7lvz30n7dats8epfv",
+      "public_key_file": "testbeta/lean15/keys/node-01/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -160,8 +160,8 @@
       }
     },
     {
-      "address": "synv1f2d0b0caae7e006426408008ceed4946d5eb",
-      "public_key_file": "testbeta/lean15/keys/machine-02/identity.json",
+      "address": "synv11szw4gam8qz33xa00xar5m2yppdxs4euq3emxw9",
+      "public_key_file": "testbeta/lean15/keys/node-02/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -175,8 +175,8 @@
       }
     },
     {
-      "address": "synv166ed2c95b408fcc400ec88a262c5fff78665",
-      "public_key_file": "testbeta/lean15/keys/machine-03/identity.json",
+      "address": "synv11jnpq8009mkc5peeaea97hlvte077gjsgxrpu35",
+      "public_key_file": "testbeta/lean15/keys/node-03/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -190,8 +190,8 @@
       }
     },
     {
-      "address": "synv195e26a83cadf8636c052835b2d72ba232ed3",
-      "public_key_file": "testbeta/lean15/keys/machine-04/identity.json",
+      "address": "synv11lcluc0n2ps4ympdl7jv9dskcs0zqm6nwxgrx52",
+      "public_key_file": "testbeta/lean15/keys/node-04/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -205,8 +205,8 @@
       }
     },
     {
-      "address": "synv10708faf79bc9aaf136a8d39c0235290bfe01",
-      "public_key_file": "testbeta/lean15/keys/machine-05/identity.json",
+      "address": "synv11pvqw0rev506yr2jlyw2rdyqfhvz3ew095fmzg6",
+      "public_key_file": "testbeta/lean15/keys/node-05/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -220,8 +220,8 @@
       }
     },
     {
-      "address": "synv3cace1e19e4d4b466e8123aa14570c84cb231",
-      "public_key_file": "testbeta/lean15/keys/machine-10/identity.json",
+      "address": "synv4164p0t0nrrq3js0fljanpr8gwpr9aqwej0rk88x",
+      "public_key_file": "testbeta/lean15/keys/node-10/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -231,12 +231,12 @@
         "identity": "governance-01",
         "website": "https://synergy.local",
         "security_contact": "security@synergy.local",
-        "class": 3
+        "class": 4
       }
     },
     {
-      "address": "synv38af8af7bca27a20ddf0733924d10a1afeeab",
-      "public_key_file": "testbeta/lean15/keys/machine-11/identity.json",
+      "address": "synv41plc0989mplw58tjeesceujjxj5vnjz5yydpl9g",
+      "public_key_file": "testbeta/lean15/keys/node-11/identity.json",
       "stake": "5000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
@@ -246,12 +246,12 @@
         "identity": "governance-02",
         "website": "https://synergy.local",
         "security_contact": "security@synergy.local",
-        "class": 3
+        "class": 4
       }
     }
   ],
   "governance": {
-    "dao_address": "syndao17qw77teuxfejlupqpadzzj9exavmtmhysac2uq",
+    "dao_address": "syndao1lf6q9zmfh4w4t30d04j05nmsku03te4685t5vn",
     "treasury_address": "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd",
     "proposal_deposit": "10000",
     "voting_period": 100,

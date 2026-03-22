@@ -275,14 +275,22 @@ fn print_usage() {
     println!("Usage:");
     println!("  synergy-address-engine [OPTIONS]\n");
     println!("Options:");
-    println!("  --node-type <type>    Generate keys for specific node type");
-    println!("                        Types: validator, class1-5, wallet, contract");
+    println!("  --node-type <type>    Generate keys for specific address type");
     println!("  --output <path>       Save identity to file (JSON format)");
     println!("  --output-toml <path>  Save identity to file (TOML format)");
     println!("  --help                Show this help message\n");
+    println!("Address Types:");
+    println!("  Nodes:      validator, class1-5");
+    println!("  Wallets:    wallet, wallet-secondary, wallet-account, wallet-smart");
+    println!("  Clusters:   cluster1-5, cluster-group1-5");
+    println!("  Contracts:  contract, contract-system, contract-custom");
+    println!("  Multisig:   multisig, multisig-treasury, multisig-validator");
+    println!("  DAO:        dao-proposal, dao-oversight, dao-committee");
+    println!("  Special:    fee-collector, burn-address\n");
     println!("Examples:");
     println!("  synergy-address-engine --node-type validator --output validator_identity.json");
-    println!("  synergy-address-engine --node-type class1");
+    println!("  synergy-address-engine --node-type fee-collector --output fee_collector.json");
+    println!("  synergy-address-engine --node-type dao-proposal");
     println!("  synergy-address-engine --help\n");
 }
 
@@ -344,8 +352,8 @@ fn main() {
         match parse_node_type(nt) {
             Some(t) => t,
             None => {
-                eprintln!("Error: Invalid node type: {}", nt);
-                eprintln!("Valid types: validator, class1-5, wallet, contract");
+                eprintln!("Error: Invalid address type: {}", nt);
+                eprintln!("Run with --help to see all valid address types");
                 std::process::exit(1);
             }
         }

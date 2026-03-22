@@ -224,7 +224,7 @@ impl TokenManager {
                 ),
                 // Fee collector — starts at zero, accumulates gas fees
                 (
-                    "synw166wthd52f5vuxdxguplrmqe69zh5fswxvduq4y",
+                    "synf1vt378ycuswrxfk6p73srtyf5972hek6avgqc68",
                     0u64,
                 ),
                 // Stake vault — holds delegated stakes
