@@ -836,7 +836,8 @@ impl P2PNetwork {
                 // Keep connections alive.
                 network.ping_peers();
 
-                // Sleep less while catching up, normal heartbeat when synced.
+                // When catching up, loop immediately without sleeping.
+                // When synced, use normal heartbeat interval.
                 let (local_height, best_peer_height) = {
                     let chain = network.blockchain.lock().unwrap();
                     let local = chain.last().map(|b| b.block_index).unwrap_or(0);
@@ -844,13 +845,14 @@ impl P2PNetwork {
                     let best = peers.values().map(|p| p.last_known_height).max().unwrap_or(0);
                     (local, best)
                 };
-                let catching_up = best_peer_height > 0 && local_height + 10 < best_peer_height;
-                let sleep_duration = if catching_up {
-                    std::time::Duration::from_secs(3)
+                let behind = best_peer_height.saturating_sub(local_height);
+                if behind > 10 {
+                    // Still catching up — brief yield then request next batch immediately
+                    thread::sleep(std::time::Duration::from_millis(100));
                 } else {
-                    heartbeat
+                    // Synced or nearly synced — normal heartbeat
+                    thread::sleep(heartbeat);
                 };
-                thread::sleep(sleep_duration);
             }
         });
     }
@@ -1989,12 +1991,7 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
 
-        // Deduplicate by hash.
-        if chain.chain.iter().any(|b| b.hash == block.hash) {
-            return false;
-        }
-
-        // Append if it extends the tip, otherwise ignore for now (no fork handling).
+        // Only accept blocks that extend the tip (dedup is implicit: wrong index = rejected).
         if let Some(tip) = chain.last() {
             if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
                 return false;
@@ -2021,14 +2018,24 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
 }
 
 fn should_persist_chain_tip(tip_height: u64) -> bool {
-    if tip_height <= 32 || tip_height % 50 == 0 {
+    if tip_height <= 32 {
         return true;
     }
 
     let state = LAST_CHAIN_PERSIST.lock().unwrap();
     match *state {
         Some((last_height, last_at)) => {
-            tip_height.saturating_sub(last_height) >= 10 || last_at.elapsed() >= Duration::from_secs(2)
+            // During sync, persist every 500 blocks or 30s to avoid I/O bottleneck.
+            // Once close to tip, persist more frequently (every 10 blocks or 2s).
+            let gap = tip_height.saturating_sub(last_height);
+            let elapsed = last_at.elapsed();
+            if gap > 50 {
+                // Far behind — bulk sync mode: save rarely
+                gap >= 500 || elapsed >= Duration::from_secs(30)
+            } else {
+                // Near tip — normal mode
+                gap >= 10 || elapsed >= Duration::from_secs(2)
+            }
         }
         None => true,
     }
