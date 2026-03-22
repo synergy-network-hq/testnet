@@ -247,10 +247,7 @@ impl SyncManager {
             }
         });
 
-        let max_height = eligible
-            .map(|peer| peer.block_height)
-            .max()
-            .unwrap_or(0);
+        let max_height = eligible.map(|peer| peer.block_height).max().unwrap_or(0);
 
         Ok(max_height)
     }
@@ -310,9 +307,7 @@ impl SyncManager {
                     let preferred_peer = self.select_sync_peer();
                     let sent = preferred_peer
                         .as_ref()
-                        .map(|peer| {
-                            network.request_blocks_from_peer(peer, from, batch_size as u32)
-                        })
+                        .map(|peer| network.request_blocks_from_peer(peer, from, batch_size as u32))
                         .unwrap_or(false);
                     if !sent {
                         network.request_blocks(from, batch_size as u32);

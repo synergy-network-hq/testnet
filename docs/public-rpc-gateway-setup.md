@@ -22,6 +22,8 @@ synergy-testbeta binary (rpc_gateway role)
 
 The node binary listens on loopback for RPC/WS. nginx handles TLS termination and proxies public traffic in. The P2P port is the only one that needs to be publicly reachable directly.
 
+This gateway is not a validator. It should join P2P so it can discover peers and stay synced, but block production remains validator-only.
+
 ---
 
 ## Prerequisites
@@ -83,21 +85,13 @@ The RPC port (48638) and WS port (58638) do **not** need to be open — nginx pr
 
 Do this on your Mac, not on the server.
 
-Before opening the control panel, set the `SYNERGY_TESTBETA_PUBLIC_HOST` environment variable so the generated `node.toml` bakes in the server's real IP instead of your Mac's IP:
-
-```bash
-# In the terminal you launch the control panel from:
-export SYNERGY_TESTBETA_PUBLIC_HOST=74.208.227.23
-
-# Then launch the app normally
-```
-
-Inside the control panel:
-
 1. Go to the **Testnet-Beta Dashboard**
 2. Click **Setup a New Node**
 3. Select role: **RPC Gateway Node**
-4. Complete the wizard — the control panel will create an isolated workspace folder
+4. When the setup wizard asks about device details, click **Continue**
+5. The wizard will detect your Mac's IP and then ask: *"This node type is built to run on a dedicated public server. Enter that server's IP address now."*
+6. **Enter `74.208.227.23`** and press Enter (or click the button) — this gets baked directly into `node.toml` and `nginx.conf`
+7. Confirm the workspace folder and click **Provision Node**
 
 After setup, note the workspace path shown in the node detail view. It will look something like:
 
@@ -106,7 +100,7 @@ After setup, note the workspace path shown in the node detail view. It will look
 ```
 
 The workspace will contain:
-- `config/node.toml` — node configuration
+- `config/node.toml` — node configuration (with `public_address = "74.208.227.23:38638"`)
 - `config/peers.toml` — bootstrap peer list
 - `config/aegis.toml` — security overlay
 - `nginx.conf` — ready-to-deploy nginx reverse proxy config
@@ -115,25 +109,19 @@ The workspace will contain:
 
 ## Step 5 — Verify node.toml Public Address
 
-Open `config/node.toml` in the workspace and confirm:
+Open `config/node.toml` in the workspace and confirm the server's IP was picked up correctly:
 
 ```toml
 [p2p]
-public_address = "74.208.227.23:38638"   # ← must be the server IP, not your Mac IP
-```
+public_address = "74.208.227.23:38638"   # ← should match what you entered in the wizard
 
-If it shows your Mac's IP (because `SYNERGY_TESTBETA_PUBLIC_HOST` wasn't set), edit this line manually before transferring the workspace.
-
-Also confirm the RPC bind address is set to accept external connections:
-
-```toml
 [rpc]
 bind_address = "0.0.0.0"
 cors_enabled = true
 cors_origins = ["*"]
 ```
 
-These should already be correct for the `rpc_gateway` role — the control panel sets them automatically.
+The RPC bind address and CORS settings are set automatically for the `rpc_gateway` role. If `public_address` somehow shows your Mac's IP instead, edit it manually before transferring the workspace.
 
 ---
 
@@ -143,7 +131,7 @@ From your Mac, copy the workspace and the Linux binary:
 
 ```bash
 # Set these to match your actual paths
-WORKSPACE_PATH="$HOME/Library/Application Support/synergy-node-control-panel/testbeta/nodes/<your-node-id>"
+WORKSPACE_PATH="$HOME/Users/devpup/.synergy/testnet-beta/nodes/rpc-gateway-workspace"
 SERVER="root@74.208.227.23"
 BINARY="$(pwd)/binaries/synergy-testbeta-linux-amd64"
 

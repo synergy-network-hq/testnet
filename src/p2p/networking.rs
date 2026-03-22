@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json;
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -24,6 +24,12 @@ type PeerMap = HashMap<String, PeerConnection>;
 type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
 type DialTargetsArc = Arc<Mutex<Vec<String>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionDirection {
+    Incoming,
+    Outgoing,
+}
 
 lazy_static! {
     static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
@@ -41,6 +47,7 @@ pub struct P2PNetwork {
 
 struct PeerConnection {
     address: String,
+    direction: ConnectionDirection,
     public_address: Option<String>,
     connected_at: u64,
     last_seen: u64,
@@ -75,6 +82,12 @@ struct SeedBootnodeRecord {
     reachable: Option<bool>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DuplicateResolution {
+    KeepExisting,
+    ReplaceExisting,
+}
+
 fn resolve_local_validator_address(config: &NodeConfig) -> String {
     let configured = config.node.validator_address.trim();
     if !configured.is_empty() {
@@ -105,6 +118,57 @@ fn announced_validator_address(config: &NodeConfig) -> Option<String> {
         None
     } else {
         Some(trimmed.to_string())
+    }
+}
+
+fn preferred_connection_direction(
+    local_node_id: &str,
+    remote_node_id: &str,
+) -> Option<ConnectionDirection> {
+    let local_node_id = local_node_id.trim();
+    let remote_node_id = remote_node_id.trim();
+
+    if local_node_id.is_empty() || remote_node_id.is_empty() || local_node_id == remote_node_id {
+        return None;
+    }
+
+    if local_node_id < remote_node_id {
+        Some(ConnectionDirection::Outgoing)
+    } else {
+        Some(ConnectionDirection::Incoming)
+    }
+}
+
+fn resolve_duplicate_connection(
+    local_node_id: &str,
+    remote_node_id: &str,
+    existing_direction: ConnectionDirection,
+    existing_connected_at: u64,
+    new_direction: ConnectionDirection,
+    new_connected_at: u64,
+) -> DuplicateResolution {
+    match preferred_connection_direction(local_node_id, remote_node_id) {
+        Some(preferred) if existing_direction == preferred && new_direction != preferred => {
+            DuplicateResolution::KeepExisting
+        }
+        Some(preferred) if new_direction == preferred && existing_direction != preferred => {
+            DuplicateResolution::ReplaceExisting
+        }
+        _ => {
+            if new_connected_at < existing_connected_at {
+                DuplicateResolution::ReplaceExisting
+            } else {
+                DuplicateResolution::KeepExisting
+            }
+        }
+    }
+}
+
+fn disconnect_peer_entry(peers: &mut PeerMap, peer_key: &str) {
+    if let Some(mut peer) = peers.remove(peer_key) {
+        if let Some(stream) = peer.stream.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
     }
 }
 
@@ -833,6 +897,7 @@ fn handle_incoming_connection(
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
+                direction: ConnectionDirection::Incoming,
                 public_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
@@ -917,6 +982,7 @@ fn handle_outgoing_connection(
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
+                direction: ConnectionDirection::Outgoing,
                 public_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
@@ -1005,6 +1071,30 @@ fn handle_messages(
                         public_address,
                         validator_address,
                     } => {
+                        let node_id = node_id.trim().to_string();
+                        if node_id.is_empty() {
+                            warn!(
+                                "p2p",
+                                "Rejecting handshake with empty node_id",
+                                "peer" => peer_address.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&mut peers, &peer_address);
+                            continue;
+                        }
+
+                        if node_id == config.p2p.node_name {
+                            warn!(
+                                "p2p",
+                                "Rejecting self-connection handshake",
+                                "peer" => peer_address.clone(),
+                                "node_id" => node_id.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&mut peers, &peer_address);
+                            continue;
+                        }
+
                         let announced_validator_address = validator_address
                             .as_ref()
                             .map(|value| value.trim().to_string())
@@ -1033,21 +1123,75 @@ fn handle_messages(
                                 .find(|(_, peer)| peer.node_id.as_ref() == Some(&node_id))
                                 .map(|(key, _)| key.clone());
 
-                            if let Some(existing_key) = existing_peer_key {
-                                // If we already have this peer, remove the old connection and use the new one
+                            if let Some(existing_key) = existing_peer_key.clone() {
                                 if existing_key != peer_address {
-                                    warn!("p2p", "Duplicate connection from same node_id, replacing old connection",
-                                          "node_id" => node_id.clone(),
-                                          "old_address" => existing_key.clone(),
-                                          "new_address" => peer_address.clone());
-                                    peers.remove(&existing_key);
+                                    let existing_metadata = peers.get(&existing_key).map(|peer| {
+                                        (peer.direction, peer.connected_at, peer.public_address.clone())
+                                    });
+                                    let new_metadata = peers
+                                        .get(&peer_address)
+                                        .map(|peer| (peer.direction, peer.connected_at));
+
+                                    if let (Some((existing_direction, existing_connected_at, existing_public_address)), Some((new_direction, new_connected_at))) =
+                                        (existing_metadata, new_metadata)
+                                    {
+                                        match resolve_duplicate_connection(
+                                            &config.p2p.node_name,
+                                            &node_id,
+                                            existing_direction,
+                                            existing_connected_at,
+                                            new_direction,
+                                            new_connected_at,
+                                        ) {
+                                            DuplicateResolution::KeepExisting => {
+                                                warn!(
+                                                    "p2p",
+                                                    "Duplicate peer session detected; keeping stable connection",
+                                                    "node_id" => node_id.clone(),
+                                                    "kept_address" => existing_key.clone(),
+                                                    "kept_direction" => format!("{:?}", existing_direction),
+                                                    "dropped_address" => peer_address.clone(),
+                                                    "dropped_direction" => format!("{:?}", new_direction),
+                                                    "preferred_direction" => format!(
+                                                        "{:?}",
+                                                        preferred_connection_direction(
+                                                            &config.p2p.node_name,
+                                                            &node_id
+                                                        )
+                                                    ),
+                                                    "kept_public_address" => existing_public_address.unwrap_or_default()
+                                                );
+                                                disconnect_peer_entry(&mut peers, &peer_address);
+                                                continue;
+                                            }
+                                            DuplicateResolution::ReplaceExisting => {
+                                                warn!(
+                                                    "p2p",
+                                                    "Duplicate peer session detected; replacing non-preferred connection",
+                                                    "node_id" => node_id.clone(),
+                                                    "old_address" => existing_key.clone(),
+                                                    "old_direction" => format!("{:?}", existing_direction),
+                                                    "new_address" => peer_address.clone(),
+                                                    "new_direction" => format!("{:?}", new_direction),
+                                                    "preferred_direction" => format!(
+                                                        "{:?}",
+                                                        preferred_connection_direction(
+                                                            &config.p2p.node_name,
+                                                            &node_id
+                                                        )
+                                                    )
+                                                );
+                                                disconnect_peer_entry(&mut peers, &existing_key);
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
                             // Update peer info
                             if let Some(peer) = peers.get_mut(&peer_address) {
-                                peer.node_id = Some(node_id);
-                                peer.version = Some(version);
+                                peer.node_id = Some(node_id.clone());
+                                peer.version = Some(version.clone());
                                 peer.capabilities = capabilities;
                                 peer.public_address = public_address;
                             }
@@ -1896,8 +2040,11 @@ fn dial_peer_async(
 
 #[cfg(test)]
 mod tests {
-    use super::dial_with_timeout;
-    use super::{collect_known_peer_addresses, parse_bootnode_dial_address, DialTargetsArc};
+    use super::{
+        collect_known_peer_addresses, dial_with_timeout, parse_bootnode_dial_address,
+        preferred_connection_direction, resolve_duplicate_connection, ConnectionDirection,
+        DialTargetsArc, DuplicateResolution,
+    };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
     use std::net::TcpListener;
@@ -1920,6 +2067,52 @@ mod tests {
         assert_eq!(stream.write_timeout().unwrap(), None);
 
         accept_handle.join().unwrap();
+    }
+
+    #[test]
+    fn lower_node_id_prefers_outgoing_connection() {
+        assert_eq!(
+            preferred_connection_direction("node-01", "node-02"),
+            Some(ConnectionDirection::Outgoing)
+        );
+    }
+
+    #[test]
+    fn higher_node_id_prefers_incoming_connection() {
+        assert_eq!(
+            preferred_connection_direction("node-02", "node-01"),
+            Some(ConnectionDirection::Incoming)
+        );
+    }
+
+    #[test]
+    fn duplicate_resolution_keeps_preferred_existing_connection() {
+        assert_eq!(
+            resolve_duplicate_connection(
+                "node-01",
+                "node-02",
+                ConnectionDirection::Outgoing,
+                10,
+                ConnectionDirection::Incoming,
+                20,
+            ),
+            DuplicateResolution::KeepExisting
+        );
+    }
+
+    #[test]
+    fn duplicate_resolution_replaces_non_preferred_existing_connection() {
+        assert_eq!(
+            resolve_duplicate_connection(
+                "node-01",
+                "node-02",
+                ConnectionDirection::Incoming,
+                10,
+                ConnectionDirection::Outgoing,
+                20,
+            ),
+            DuplicateResolution::ReplaceExisting
+        );
     }
 
     #[test]

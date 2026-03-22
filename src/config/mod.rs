@@ -178,7 +178,7 @@ impl Default for NodeConfig {
                 block_time_secs: 2,
                 epoch_length: 50,
                 min_validators: default_min_validators(),
-                validator_cluster_size: 7,
+                validator_cluster_size: 5,
                 max_validators: 21,
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
@@ -617,7 +617,10 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
 
     if let Some(additional_targets) = get_string_array(raw, &["network", "additional_dial_targets"])
     {
-        merge_unique_strings(&mut config.network.additional_dial_targets, additional_targets);
+        merge_unique_strings(
+            &mut config.network.additional_dial_targets,
+            additional_targets,
+        );
     }
 
     if let Some(bootstrap_only) = get_bool(raw, &["node", "bootstrap_only"]) {
@@ -701,7 +704,10 @@ fn merge_companion_peers_file(
 
     if let Some(additional_targets) = get_string_array(&raw, &["global", "additional_dial_targets"])
     {
-        merge_unique_strings(&mut config.network.additional_dial_targets, additional_targets);
+        merge_unique_strings(
+            &mut config.network.additional_dial_targets,
+            additional_targets,
+        );
     }
 
     Ok(())
@@ -853,7 +859,7 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
-validator_cluster_size = 7
+validator_cluster_size = 5
 max_validators = 21
 synergy_score_decay_rate = 0.05
 vrf_enabled = true

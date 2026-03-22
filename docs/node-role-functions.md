@@ -192,11 +192,12 @@
 ### RPC Gateway Node
 
 - `Shared`: config/profile validation, logging, data-path setup, runtime reporting, and CLI lifecycle commands.
+- `Shared subset`: P2P bootstrap, peer discovery, and chain sync.
 - `Shared subset`: RPC/WS startup shared with other RPC-capable roles.
 - `Role-specific`: expose gateway, upstream routing, and request-entry surfaces.
 - `Role-specific`: apply rate limiting, authentication/authorization, and edge-cache behavior.
 - `Role-specific`: provide public access without inheriting validator or governance authority.
-- `Current runtime note`: the binary is role-bounded and allows RPC-class startup, but gateway-local management is currently represented as a bounded runtime surface placeholder.
+- `Current runtime note`: the binary is role-bounded and starts P2P plus RPC-class startup for the gateway profile, while gateway-local management is still represented as a bounded runtime surface placeholder.
 
 ### Indexer and Explorer Node
 
@@ -217,7 +218,7 @@
 ## Shared-Function Cross Reference
 
 - `Consensus startup`: Validator, Committee.
-- `P2P bootstrap and sync`: Validator, Committee, Archive Validator, Audit Validator, Relayer, plus any binary started in `bootstrap_only` mode.
+- `P2P bootstrap and sync`: Validator, Committee, Archive Validator, Audit Validator, Relayer, RPC Gateway, plus any binary started in `bootstrap_only` mode.
 - `RPC/WS-class startup`: Validator, Archive Validator, Relayer, RPC Gateway.
 - `PQC-managed local services`: Committee, Audit Validator, Oracle, Aegis Cryptography, Governance Auditor, Treasury Controller, Security Council.
 - `Governance manager`: Governance Auditor, Treasury Controller, Security Council.

@@ -508,21 +508,28 @@ fn start_role_local_services(
                                 "method": "synergy_getBlockNumber",
                                 "params": []
                             });
-                            match client.post(payload["rpc_url"].as_str().unwrap()).json(&request).send() {
+                            match client
+                                .post(payload["rpc_url"].as_str().unwrap())
+                                .json(&request)
+                                .send()
+                            {
                                 Ok(response) if response.status().is_success() => {
                                     match response.json::<serde_json::Value>() {
                                         Ok(body) => {
-                                            let result = body.get("result").and_then(|v| v.as_u64());
+                                            let result =
+                                                body.get("result").and_then(|v| v.as_u64());
                                             payload["ok"] = json!(true);
                                             payload["block_number"] = json!(result);
                                         }
                                         Err(error) => {
-                                            payload["error"] = json!(format!("invalid json: {error}"));
+                                            payload["error"] =
+                                                json!(format!("invalid json: {error}"));
                                         }
                                     }
                                 }
                                 Ok(response) => {
-                                    payload["error"] = json!(format!("http {}", response.status().as_u16()));
+                                    payload["error"] =
+                                        json!(format!("http {}", response.status().as_u16()));
                                 }
                                 Err(error) => {
                                     payload["error"] = json!(error.to_string());
@@ -547,7 +554,9 @@ fn start_role_local_services(
             };
 
             let Some(explorer_root) = resolve_explorer_root(&project_root) else {
-                eprintln!("Indexer/Explorer role requires explorer-app directory near the node runtime.");
+                eprintln!(
+                    "Indexer/Explorer role requires explorer-app directory near the node runtime."
+                );
                 return active;
             };
 
@@ -580,12 +589,22 @@ fn start_role_local_services(
                 ("DATABASE_URL", database_url),
             ];
 
-            if let Err(error) = run_node_script("atlas-indexer-migrate", &indexer_dir, &indexer_migrate, &base_envs) {
+            if let Err(error) = run_node_script(
+                "atlas-indexer-migrate",
+                &indexer_dir,
+                &indexer_migrate,
+                &base_envs,
+            ) {
                 eprintln!("Failed to run indexer migrations: {error}");
                 return active;
             }
 
-            if let Err(error) = run_node_script("atlas-backend-migrate", &backend_dir, &backend_migrate, &base_envs) {
+            if let Err(error) = run_node_script(
+                "atlas-backend-migrate",
+                &backend_dir,
+                &backend_migrate,
+                &base_envs,
+            ) {
                 eprintln!("Failed to run explorer backend migrations: {error}");
                 return active;
             }
@@ -1634,5 +1653,10 @@ mod tests {
 
         assert!(error.contains("validator_node"));
         assert!(error.contains("oracle_node"));
+    }
+
+    #[test]
+    fn rpc_gateway_profile_starts_p2p() {
+        assert!(role_profile_requires_p2p(NodeRole::RpcGateway.profile()));
     }
 }

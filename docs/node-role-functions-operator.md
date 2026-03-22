@@ -174,7 +174,7 @@
 ### RPC Gateway Node
 
 - `Shared`: runs with the same role validation, logs, runtime reporting, and operator commands as other roles.
-- `Shared subset`: shares RPC-style service exposure with other RPC-capable roles.
+- `Shared subset`: joins the P2P network to sync chain state and shares RPC-style service exposure with other RPC-capable roles.
 - `Role-specific`: provides public or internal gateway access to the network.
 - `Role-specific`: applies rate limiting, access control, and request routing.
 - `Role-specific`: exposes access services without inheriting validator or governance authority.
@@ -213,7 +213,7 @@
 ## Shared-Function Cross Reference
 
 - `Consensus`: Validator, Committee.
-- `P2P bootstrap and sync`: Validator, Committee, Archive Validator, Audit Validator, Relayer, plus nodes intentionally started in bootstrap-only mode.
+- `P2P bootstrap and sync`: Validator, Committee, Archive Validator, Audit Validator, Relayer, RPC Gateway, plus nodes intentionally started in bootstrap-only mode.
 - `RPC and service access`: Validator, Archive Validator, Relayer, RPC Gateway, plus any role intentionally configured to expose compatible service endpoints.
 - `Governance workflows`: Governance Auditor, Treasury Controller, Security Council.
 - `Cryptographic and attestation-heavy workflows`: Committee, Audit Validator, Oracle, Aegis Cryptography, Governance Auditor, Treasury Controller, Security Council, plus interoperability roles that submit signed observations.

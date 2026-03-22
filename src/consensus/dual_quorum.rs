@@ -2,7 +2,7 @@ use crate::block::Block;
 use crate::crypto::pqc::{
     PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey, PQCSignature,
 };
-use crate::validator::ValidatorManager;
+use crate::validator::{ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
 use std::collections::HashMap;
@@ -524,7 +524,7 @@ impl ValidatorRotation {
         ValidatorRotation {
             validator_manager,
             entropy_beacon,
-            target_cluster_size: 30,
+            target_cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
         }
     }
 

@@ -126,7 +126,14 @@ const SECURITY_COUNCIL_SERVICES: &[&str] = &[
     "aegis-emergency-auth",
     "incident-logging",
 ];
-const RPC_GATEWAY_SERVICES: &[&str] = &["rpc", "ws", "rate-limit", "authn/authz", "edge-cache"];
+const RPC_GATEWAY_SERVICES: &[&str] = &[
+    "p2p",
+    "rpc",
+    "ws",
+    "rate-limit",
+    "authn/authz",
+    "edge-cache",
+];
 const INDEXER_EXPLORER_SERVICES: &[&str] = &[
     "indexer-ingest",
     "query-api",
@@ -156,6 +163,7 @@ const RELAYER_PORTS: &[&str] = &[
 const BASIC_METRICS_PORTS: &[&str] = &["9090 localhost metrics"];
 const CROSS_CHAIN_VERIFIER_PORTS: &[&str] = &["3030 https verify api", "9090 localhost metrics"];
 const RPC_GATEWAY_PORTS: &[&str] = &[
+    "38638 p2p",
     "48638 core rpc upstream",
     "58638 core ws upstream",
     "8545 evm http",
@@ -490,5 +498,15 @@ mod tests {
             .expect("legacy alias should resolve")
             .expect("role profile should be present");
         assert_eq!(profile.role, NodeRole::IndexerExplorer);
+    }
+
+    #[test]
+    fn rpc_gateway_profile_requires_p2p_surface() {
+        let profile = NodeRole::RpcGateway.profile();
+        assert!(profile.service_surface.contains(&"p2p"));
+        assert!(profile
+            .required_ports
+            .iter()
+            .any(|port| port.to_ascii_lowercase().contains("p2p")));
     }
 }
