@@ -277,11 +277,13 @@ impl SyncManager {
             }
             let from = self.local_height + 1;
             let remaining = self.network_height - self.local_height;
-            let batch_size = if remaining > 5000 {
+            let batch_size = if remaining > 10000 {
+                2000
+            } else if remaining > 5000 {
                 1000
             } else if remaining > 2000 {
                 600
-            } else if remaining > 1000 {
+            } else if remaining > 500 {
                 400
             } else {
                 std::cmp::min(remaining, 200)
@@ -301,7 +303,10 @@ impl SyncManager {
             }
 
             let target_height = std::cmp::min(self.network_height, from + batch_size - 1);
-            let mut satisfied = self.wait_for_height(target_height, Duration::from_secs(12));
+            // Scale timeout with batch size: minimum 15s, up to 60s for large batches.
+            let batch_timeout_secs = std::cmp::max(15, std::cmp::min(60, batch_size / 10 + 10));
+            let batch_timeout = Duration::from_secs(batch_timeout_secs);
+            let mut satisfied = self.wait_for_height(target_height, batch_timeout);
             if !satisfied {
                 if let Some(network) = &self.p2p_network {
                     let preferred_peer = self.select_sync_peer();
@@ -313,7 +318,7 @@ impl SyncManager {
                         network.request_blocks(from, batch_size as u32);
                     }
                 }
-                satisfied = self.wait_for_height(target_height, Duration::from_secs(12));
+                satisfied = self.wait_for_height(target_height, batch_timeout);
             }
             if !satisfied {
                 return Err(SyncError::Timeout(format!(

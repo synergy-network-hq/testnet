@@ -820,17 +820,37 @@ impl P2PNetwork {
 
                 // Try to sync missing blocks.
                 if !network.config.node.bootstrap_only {
-                    let from_height = {
+                    let (from_height, best_peer_height) = {
                         let chain = network.blockchain.lock().unwrap();
-                        chain.last().map(|b| b.block_index + 1).unwrap_or(0)
+                        let local = chain.last().map(|b| b.block_index).unwrap_or(0);
+                        let peers = network.connected_peers.lock().unwrap();
+                        let best = peers.values().map(|p| p.last_known_height).max().unwrap_or(0);
+                        (local + 1, best)
                     };
-                    network.request_blocks(from_height, 200);
+                    let behind = best_peer_height.saturating_sub(from_height.saturating_sub(1));
+                    // Request larger batches when far behind.
+                    let batch = if behind > 5000 { 2000 } else if behind > 1000 { 1000 } else { 500 };
+                    network.request_blocks(from_height, batch);
                 }
 
                 // Keep connections alive.
                 network.ping_peers();
 
-                thread::sleep(heartbeat);
+                // Sleep less while catching up, normal heartbeat when synced.
+                let (local_height, best_peer_height) = {
+                    let chain = network.blockchain.lock().unwrap();
+                    let local = chain.last().map(|b| b.block_index).unwrap_or(0);
+                    let peers = network.connected_peers.lock().unwrap();
+                    let best = peers.values().map(|p| p.last_known_height).max().unwrap_or(0);
+                    (local, best)
+                };
+                let catching_up = best_peer_height > 0 && local_height + 10 < best_peer_height;
+                let sleep_duration = if catching_up {
+                    std::time::Duration::from_secs(3)
+                } else {
+                    heartbeat
+                };
+                thread::sleep(sleep_duration);
             }
         });
     }
