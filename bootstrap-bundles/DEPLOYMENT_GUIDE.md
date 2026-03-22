@@ -606,77 +606,822 @@ cd ~/seedX
 
 ## Troubleshooting
 
-### Bootnode Won't Start
+### Bootnode Troubleshooting
 
-1. **Check binary compatibility**:
-   ```bash
-   # Verify binary exists and is executable
-   ls -la ~/bootnodeX/bin/
-   file ~/bootnodeX/bin/synergy-testbeta-*
-   ```
+#### Problem: Bootnode Won't Start
 
-2. **Check port conflicts**:
-   ```bash
-   # Ubuntu
-   sudo netstat -tlnp | grep 38638
-   
-   # macOS
-   lsof -i :38638
-   ```
+**Step 1: Check binary compatibility**
+```bash
+# Verify binary exists and is executable
+ls -la ~/bootnodeX/bin/
+file ~/bootnodeX/bin/synergy-testbeta-*
 
-3. **Check logs**:
-   ```bash
-   # Ubuntu
-   sudo journalctl -u synergy-bootnode.service -n 100
-   
-   # macOS
-   tail -n 100 ~/bootnodeX/data/logs/launchd.err
-   ```
+# Expected output:
+# Linux: ELF 64-bit LSB executable, x86-64
+# macOS: Mach-O 64-bit executable, arm64
+```
 
-### Seed Service Won't Start
+**Step 2: Clear macOS quarantine (macOS only)**
+```bash
+# If you see "Permission denied" or binary won't execute
+xattr -dr com.apple.quarantine ~/bootnode2
+chmod +x ~/bootnode2/bin/synergy-testbeta-*
+```
 
-1. **Verify Python**:
-   ```bash
-   python3 --version
-   which python3
-   ```
+**Step 3: Check port conflicts**
+```bash
+# Ubuntu - check if port 38638 is already in use
+sudo netstat -tlnp | grep 38638
+# OR
+sudo ss -tlnp | grep 38638
 
-2. **Check syntax**:
-   ```bash
-   python3 -m py_compile ~/seedX/seed_service.py
-   ```
+# macOS - check if port 38638 is already in use
+lsof -i :38638
 
-3. **Check port conflicts**:
-   ```bash
-   # Ubuntu
-   sudo netstat -tlnp | grep 18080
-   
-   # macOS
-   lsof -i :18080
-   ```
+# If a process is using the port, either:
+# 1. Stop the existing process
+sudo kill <PID>
+# 2. Or check if bootnode is already running
+./nodectl.sh status
+```
+
+**Step 4: Check configuration file**
+```bash
+# Validate node.toml syntax
+cat ~/bootnodeX/config/node.toml
+
+# Ensure required fields are present:
+# - [p2p] listen_address and public_address
+# - [network] bootnodes list
+# - [node] bootstrap_only = true
+```
+
+**Step 5: Test manual start (bypass service manager)**
+```bash
+cd ~/bootnodeX
+./nodectl.sh stop  # Stop any existing instance
+
+# Try starting manually to see errors
+./install_and_start.sh
+
+# Or run the binary directly for verbose output
+./bin/synergy-testbeta-<platform> start --config config/node.toml
+```
+
+**Step 6: Check logs for errors**
+```bash
+# Ubuntu - systemd logs
+sudo journalctl -u synergy-bootnode.service -n 100 --no-pager
+
+# Ubuntu - Application logs
+tail -n 100 ~/bootnodeX/data/logs/node.out
+
+# macOS - launchd logs
+tail -n 100 ~/bootnodeX/data/logs/launchd.err
+tail -n 100 ~/bootnodeX/data/logs/launchd.out
+
+# Look for errors like:
+# - "Address already in use" → Port conflict
+# - "Failed to bind" → Network interface issue
+# - "Invalid configuration" → node.toml syntax error
+# - "Permission denied" → File permissions or quarantine
+```
+
+**Step 7: Check disk space**
+```bash
+# Ensure sufficient disk space for chain data
+df -h ~/bootnodeX
+
+# If disk is full, consider pruning old data
+# (Bootnodes typically don't store much chain data)
+```
+
+---
+
+#### Problem: Bootnode Starts But Crashes
+
+**Step 1: Check for OOM (Out of Memory)**
+```bash
+# Ubuntu - Check kernel OOM killer logs
+dmesg | grep -i "killed process"
+journalctl -k | grep -i "oom"
+
+# macOS - Check system logs
+log show --predicate 'eventMessage contains "kill"' --last 1h
+```
+
+**Step 2: Monitor resource usage**
+```bash
+# Ubuntu - Monitor in real-time
+top -p $(cat ~/bootnodeX/data/node.pid)
+
+# macOS - Monitor in real-time
+top -pid $(cat ~/bootnodeX/data/node.pid)
+```
+
+**Step 3: Check for panic/crash logs**
+```bash
+# Ubuntu - Check for Rust panics in logs
+grep -i "panic" ~/bootnodeX/data/logs/node.out
+grep -i "thread.*panicked" ~/bootnodeX/data/logs/node.out
+
+# macOS
+grep -i "panic" ~/bootnodeX/data/logs/launchd.out
+```
+
+**Step 4: Increase logging verbosity**
+```bash
+# Edit node.env to add debug logging
+echo 'RUST_LOG=debug' >> ~/bootnodeX/node.env
+
+# Restart the service
+# Ubuntu
+sudo systemctl restart synergy-bootnode.service
+
+# macOS
+launchctl stop com.synergy.bootnode
+launchctl start com.synergy.bootnode
+
+# Check detailed logs
+# Ubuntu
+sudo journalctl -u synergy-bootnode.service -f
+
+# macOS
+tail -f ~/bootnodeX/data/logs/launchd.out
+```
+
+---
+
+#### Problem: Bootnode Running But Not Accepting Connections
+
+**Step 1: Verify P2P port is listening**
+```bash
+# Ubuntu
+sudo netstat -tlnp | grep 38638
+
+# macOS
+lsof -i :38638
+
+# Expected: LISTEN state on 0.0.0.0:38638 or *:38638
+```
+
+**Step 2: Check firewall rules**
+```bash
+# Ubuntu - Check ufw status
+sudo ufw status
+sudo ufw status numbered | grep 38638
+
+# If port is blocked, allow it:
+sudo ufw allow 38638/tcp comment "Synergy P2P"
+
+# macOS - Check firewall
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --getglobalstate
+sudo /usr/libexec/ApplicationFirewall/socketfilterfw --listapps | grep synergy
+
+# If needed, allow incoming connections in System Preferences → Security → Firewall
+```
+
+**Step 3: Test local connectivity**
+```bash
+# Test connecting to yourself
+telnet localhost 38638
+# OR
+nc -zv localhost 38638
+
+# Should show: Connection succeeded
+```
+
+**Step 4: Test external connectivity**
+```bash
+# From a different machine, test connection
+nc -zv <bootnode-ip> 38638
+
+# If connection times out:
+# 1. Check cloud provider security groups (AWS, GCP, etc.)
+# 2. Check ISP firewall
+# 3. Verify NAT/port forwarding if behind router
+```
+
+**Step 5: Check peer connections**
+```bash
+# Check if bootnode has any peers
+curl -s http://localhost:48638/rpc \
+  -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","method":"synergy_getPeers","params":[],"id":1}'
+
+# Expected: Should return peer count (may be 0 if isolated)
+```
+
+---
+
+### Seed Server Troubleshooting
+
+#### Problem: Seed Service Won't Start
+
+**Step 1: Verify Python installation**
+```bash
+# Check Python 3 is available
+python3 --version
+# Should be 3.8 or higher
+
+which python3
+# Should return: /usr/bin/python3 (Ubuntu) or /usr/bin/python3 (macOS)
+```
+
+**Step 2: Check Python syntax**
+```bash
+# Validate seed_service.py syntax
+python3 -m py_compile ~/seedX/seed_service.py
+
+# If errors appear, check the reported line numbers
+```
+
+**Step 3: Check configuration file**
+```bash
+# Validate seed-service.json syntax
+python3 -c "import json; json.load(open('~/seedX/config/seed-service.json'))"
+
+# Or use jq if available
+jq . ~/seedX/config/seed-service.json
+
+# Ensure required fields:
+# - service_name, domain, listen_host, listen_port
+# - bootnodes array with at least one entry
+# - seed_services array with all three seeds
+```
+
+**Step 4: Check port conflicts**
+```bash
+# Ubuntu - check if port 18080 is already in use
+sudo netstat -tlnp | grep 18080
+sudo ss -tlnp | grep 18080
+
+# macOS
+lsof -i :18080
+
+# If port is in use:
+# 1. Stop existing seed service
+./nodectl.sh stop
+
+# 2. Or kill the process
+sudo kill <PID>
+```
+
+**Step 5: Test manual start**
+```bash
+cd ~/seedX
+./nodectl.sh stop  # Stop any existing instance
+
+# Try starting manually
+./install_and_start.sh
+
+# Or run Python directly for verbose output
+python3 seed_service.py
+```
+
+**Step 6: Check logs for errors**
+```bash
+# Ubuntu - systemd logs
+sudo journalctl -u synergy-seed.service -n 100 --no-pager
+
+# Ubuntu - Application logs
+tail -n 100 ~/seedX/data/logs/seed.out
+
+# macOS - launchd logs
+tail -n 100 ~/seedX/data/logs/launchd.err
+tail -n 100 ~/seedX/data/logs/launchd.out
+
+# Common errors:
+# - "Address already in use" → Port 18080 conflict
+# - "JSON decode error" → Invalid seed-service.json
+# - "Permission denied" → Can't write to data/ directory
+```
+
+---
+
+#### Problem: Seed Service Starts But Returns Errors
+
+**Step 1: Test HTTP endpoint**
+```bash
+# Test peer-list.json endpoint
+curl -v http://localhost:18080/peer-list.json
+
+# Expected: JSON response with bootnodes and peers
+# If 500 error: Check logs for Python traceback
+
+# Test /peers endpoint
+curl -v http://localhost:18080/peers
+
+# Expected: JSON with peer list and TTL info
+```
+
+**Step 2: Check data directory permissions**
+```bash
+# Ensure seed service can write to data/
+ls -la ~/seedX/data/
+
+# Should be writable by the user running the service
+# If not, fix permissions:
+chmod -R 755 ~/seedX/data
+chown -R $USER:$USER ~/seedX/data
+```
+
+**Step 3: Verify peers.json file**
+```bash
+# Check if peers.json exists and is valid JSON
+cat ~/seedX/data/peers.json
+
+# If corrupted or invalid, reset it:
+echo '[]' > ~/seedX/data/peers.json
+
+# Restart the service
+# Ubuntu
+sudo systemctl restart synergy-seed.service
+
+# macOS
+launchctl stop com.synergy.seed
+launchctl start com.synergy.seed
+```
+
+**Step 4: Check inter-seed synchronization**
+```bash
+# Test connectivity to sibling seeds
+curl -s http://73.79.66.255:18080/peers | jq .
+curl -s http://64.227.107.57:18080/peers | jq .
+
+# If connections fail:
+# 1. Check firewall rules (see bootnode firewall section)
+# 2. Verify sibling seeds are running
+# 3. Check seed-service.json has correct sibling IPs
+```
+
+**Step 5: Monitor peer registration**
+```bash
+# Watch peers.json for updates
+watch -n 5 'cat ~/seedX/data/peers.json | jq .'
+
+# Register a test peer (simulate node registration)
+curl -X POST http://localhost:18080/peer \
+  -H "Content-Type: application/json" \
+  -d '{
+    "public_host": "test.example.com",
+    "p2p_port": 38638,
+    "node_id": "test-node",
+    "version": "test"
+  }'
+
+# Check if peer was added
+curl http://localhost:18080/peers | jq '.peers'
+```
+
+---
+
+#### Problem: Seed Service Not Syncing with Sibling Seeds
+
+**Step 1: Check seed-service.json configuration**
+```bash
+# Verify seed_services array has all three seeds
+cat ~/seedX/config/seed-service.json | jq '.seed_services'
+
+# Should include seed1, seed2, and seed3 with correct IPs
+```
+
+**Step 2: Test HTTP connectivity to siblings**
+```bash
+# From each seed server, test the others
+curl -s http://74.208.227.23:18080/peers | jq '.active_peer_count'
+curl -s http://73.79.66.255:18080/peers | jq '.active_peer_count'
+curl -s http://64.227.107.57:18080/peers | jq '.active_peer_count'
+
+# All should return a number (may be 0 if no peers registered)
+```
+
+**Step 3: Check sync logs**
+```bash
+# Look for sync-related messages in logs
+grep -i "sync" ~/seedX/data/logs/seed.out
+grep -i "sibling" ~/seedX/data/logs/seed.out
+grep -i "merge" ~/seedX/data/logs/seed.out
+
+# Ubuntu - systemd logs
+sudo journalctl -u synergy-seed.service | grep -i sync
+```
+
+**Step 4: Force manual sync**
+```bash
+# The seed service syncs every 3rd refresh cycle (~90 seconds)
+# Wait 2-3 minutes and check if peers.json updates
+
+watch -n 10 'cat ~/seedX/data/peers.json | jq ". | length"'
+```
+
+---
+
+### Service Manager Troubleshooting
+
+#### Ubuntu systemd: Service Won't Start
+
+**Step 1: Check service status**
+```bash
+sudo systemctl status synergy-bootnode.service
+sudo systemctl status synergy-seed.service
+
+# Look for:
+# - "Active: failed" → Check exit code
+# - "Active: activating" → Service is starting
+# - "Loaded: not-found" → Service file missing
+```
+
+**Step 2: View detailed error information**
+```bash
+# Get full status report
+sudo systemctl status synergy-bootnode.service -l --no-pager
+
+# Check for start failures
+sudo journalctl -u synergy-bootnode.service -n 50 --no-pager
+
+# Check service configuration
+sudo systemctl cat synergy-bootnode.service
+```
+
+**Step 3: Fix common issues**
+
+**Issue: WorkingDirectory doesn't exist**
+```bash
+# Verify directory exists
+ls -la /root/bootnode1  # or /root/bootnode3
+
+# If missing, re-copy the bundle
+```
+
+**Issue: ExecStart script not executable**
+```bash
+chmod +x /root/bootnode1/install_and_start.sh
+chmod +x /root/seed1/seed_service.py
+```
+
+**Issue: Permission denied**
+```bash
+# Check service is running as correct user
+sudo systemctl show synergy-bootnode.service | grep User
+
+# Should be User=root for bootnode/seed services
+```
+
+**Step 4: Reload and restart**
+```bash
+# After fixing issues, reload systemd
+sudo systemctl daemon-reload
+
+# Reset any failed state
+sudo systemctl reset-failed synergy-bootnode.service
+sudo systemctl reset-failed synergy-seed.service
+
+# Restart services
+sudo systemctl start synergy-bootnode.service
+sudo systemctl start synergy-seed.service
+
+# Verify
+sudo systemctl status synergy-bootnode.service
+sudo systemctl status synergy-seed.service
+```
+
+---
+
+#### macOS launchd: Service Won't Start
+
+**Step 1: Check if agent is loaded**
+```bash
+launchctl list | grep synergy
+
+# Expected output:
+# -    com.synergy.bootnode
+# -    com.synergy.seed
+```
+
+**Step 2: Validate plist syntax**
+```bash
+plutil -lint ~/Library/LaunchAgents/com.synergy.bootnode.plist
+plutil -lint ~/Library/LaunchAgents/com.synergy.seed.plist
+
+# Should return: <filename>: OK
+```
+
+**Step 3: Check plist content**
+```bash
+# View the plist
+cat ~/Library/LaunchAgents/com.synergy.bootnode.plist
+
+# Verify:
+# - ProgramArguments points to correct path
+# - WorkingDirectory exists
+# - Paths use /Users/synergynode/ (not /root/)
+```
+
+**Step 4: Load and start manually**
+```bash
+# Unload if already loaded
+launchctl unload ~/Library/LaunchAgents/com.synergy.bootnode.plist 2>/dev/null || true
+launchctl unload ~/Library/LaunchAgents/com.synergy.seed.plist 2>/dev/null || true
+
+# Load the agents
+launchctl load ~/Library/LaunchAgents/com.synergy.bootnode.plist
+launchctl load ~/Library/LaunchAgents/com.synergy.seed.plist
+
+# Start the services
+launchctl start com.synergy.bootnode
+launchctl start com.synergy.seed
+
+# Verify
+launchctl list | grep synergy
+```
+
+**Step 5: Check macOS-specific issues**
+
+**Issue: Quarantine attribute**
+```bash
+# Clear quarantine from all files
+xattr -dr com.apple.quarantine ~/bootnode2
+xattr -dr com.apple.quarantine ~/seed2
+```
+
+**Issue: Full Disk Access required**
+```bash
+# macOS may block access to certain directories
+# Check System Preferences → Security & Privacy → Privacy → Full Disk Access
+# Add Terminal or your SSH client if needed
+```
+
+**Issue: Path differences**
+```bash
+# macOS uses /Users/username/ not /root/
+# Verify paths in plist match actual directory
+ls -la /Users/synergynode/bootnode2
+ls -la /Users/synergynode/seed2
+```
+
+---
+
+### Network Connectivity Troubleshooting
+
+#### Problem: Bootnodes Can't Connect to Each Other
+
+**Step 1: Verify DNS resolution**
+```bash
+# Test DNS resolution from each machine
+nslookup bootnode1.synergynode.xyz
+nslookup bootnode2.synergynode.xyz
+nslookup bootnode3.synergynode.xyz
+
+# Or use dig
+dig bootnode1.synergynode.xyz +short
+dig bootnode2.synergynode.xyz +short
+dig bootnode3.synergynode.xyz +short
+
+# Should return correct IPs:
+# bootnode1 → 74.208.227.23
+# bootnode2 → 73.79.66.255
+# bootnode3 → 64.227.107.57
+```
+
+**Step 2: Test bidirectional connectivity**
+```bash
+# From Machine 1 (74.208.227.23)
+nc -zv 73.79.66.255 38638  # To Machine 2
+nc -zv 64.227.107.57 38638  # To Machine 3
+
+# From Machine 2 (73.79.66.255)
+nc -zv 74.208.227.23 38638  # To Machine 1
+nc -zv 64.227.107.57 38638  # To Machine 3
+
+# From Machine 3 (64.227.107.57)
+nc -zv 74.208.227.23 38638  # To Machine 1
+nc -zv 73.79.66.255 38638  # To Machine 2
+
+# All should show: Connection succeeded
+```
+
+**Step 3: Check bootnode configuration**
+```bash
+# Verify node.toml has correct bootnode list
+cat ~/bootnodeX/config/node.toml | grep -A 5 "bootnodes"
+
+# Should include the OTHER two bootnodes (not itself)
+# Example for bootnode1:
+# bootnodes = [
+#   "snr://bootstrap@bootnode2.synergynode.xyz:38638",
+#   "snr://bootstrap@bootnode3.synergynode.xyz:38638"
+# ]
+```
+
+**Step 4: Check P2P discovery**
+```bash
+# Check if bootnode is discovering peers
+grep -i "peer" ~/bootnodeX/data/logs/node.out | tail -20
+
+# Look for:
+# - "Connected to peer"
+# - "Handshake successful"
+# - "Discovery" messages
+```
+
+---
+
+#### Problem: Seed Servers Not Syncing Peer Lists
+
+**Step 1: Verify all seed services are running**
+```bash
+# Check all three seeds respond
+curl -s http://74.208.227.23:18080/peers | jq '.service'
+curl -s http://73.79.66.255:18080/peers | jq '.service'
+curl -s http://64.227.107.57:18080/peers | jq '.service'
+
+# Should return: "seed1", "seed2", "seed3"
+```
+
+**Step 2: Check seed-service.json on each machine**
+```bash
+# Each seed should have all three in seed_services array
+cat ~/seed1/config/seed-service.json | jq '.seed_services[].name'
+cat ~/seed2/config/seed-service.json | jq '.seed_services[].name'
+cat ~/seed3/config/seed-service.json | jq '.seed_services[].name'
+
+# All should return: "seed1", "seed2", "seed3"
+```
+
+**Step 3: Verify inter-seed HTTP connectivity**
+```bash
+# From each seed, test HTTP access to siblings
+# Machine 1:
+curl -s http://73.79.66.255:18080/peers | jq '.active_peer_count'
+curl -s http://64.227.107.57:18080/peers | jq '.active_peer_count'
+
+# Machine 2:
+curl -s http://74.208.227.23:18080/peers | jq '.active_peer_count'
+curl -s http://64.227.107.57:18080/peers | jq '.active_peer_count'
+
+# Machine 3:
+curl -s http://74.208.227.23:18080/peers | jq '.active_peer_count'
+curl -s http://73.79.66.255:18080/peers | jq '.active_peer_count'
+```
+
+**Step 4: Check sync logs**
+```bash
+# Look for sync activity in logs
+grep -i "sync" ~/seedX/data/logs/seed.out | tail -20
+grep -i "merge" ~/seedX/data/logs/seed.out | tail -20
+
+# Sync happens every ~90 seconds (every 3rd refresh cycle)
+```
+
+---
 
 ### Services Don't Auto-Restart
 
-#### Ubuntu:
+#### Ubuntu systemd:
+
+**Step 1: Check service configuration**
 ```bash
-# Check systemd service configuration
+# View full service file
 sudo systemctl cat synergy-bootnode.service
 
-# Check for restart limits
+# Verify Restart=always is present
+```
+
+**Step 2: Check for restart limits**
+```bash
+# View restart counter
 sudo systemctl show synergy-bootnode.service | grep -i restart
 
-# Reset failed state
+# Reset if needed
 sudo systemctl reset-failed synergy-bootnode.service
 ```
 
-#### macOS:
+**Step 3: Test auto-restart**
 ```bash
-# Check launchd plist syntax
-plutil -lint ~/Library/LaunchAgents/com.synergy.bootnode.plist
+# Kill the process to test restart
+sudo kill $(cat /root/bootnodeX/data/node.pid)
 
-# Reload the agent
-launchctl unload ~/Library/LaunchAgents/com.synergy.bootnode.plist
-launchctl load ~/Library/LaunchAgents/com.synergy.bootnode.plist
+# Wait 10 seconds
+sleep 10
+
+# Check if it restarted
+sudo systemctl status synergy-bootnode.service
+# Should show "active (running)" with new PID
+```
+
+**Step 4: Enable at boot**
+```bash
+# Verify service is enabled
+sudo systemctl is-enabled synergy-bootnode.service
+sudo systemctl is-enabled synergy-seed.service
+
+# Should return: enabled
+
+# If not enabled:
+sudo systemctl enable synergy-bootnode.service
+sudo systemctl enable synergy-seed.service
+```
+
+---
+
+#### macOS launchd:
+
+**Step 1: Check plist syntax**
+```bash
+plutil -lint ~/Library/LaunchAgents/com.synergy.bootnode.plist
+plutil -lint ~/Library/LaunchAgents/com.synergy.seed.plist
+```
+
+**Step 2: Verify KeepAlive configuration**
+```bash
+# Check KeepAlive settings in plist
+cat ~/Library/LaunchAgents/com.synergy.bootnode.plist | grep -A 5 KeepAlive
+
+# Should show:
+# <key>KeepAlive</key>
+# <dict>
+#     <key>SuccessfulExit</key>
+#     <false/>
+#     <key>Crashed</key>
+#     <true/>
+# </dict>
+```
+
+**Step 3: Test auto-restart**
+```bash
+# Kill the process
+kill $(cat ~/bootnode2/data/seed.pid)
+
+# Wait 10 seconds
+sleep 10
+
+# Check if it restarted
+launchctl list | grep synergy
+ps aux | grep seed_service.py
+```
+
+**Step 4: Ensure agent loads at login**
+```bash
+# For services to start on boot, they need to be in:
+# ~/Library/LaunchAgents/ (per-user, loads at login)
+# OR
+# /Library/LaunchDaemons/ (system-wide, loads at boot)
+
+# Current setup uses per-user agents
+# To test, reboot the machine and check:
+launchctl list | grep synergy
+```
+
+---
+
+### Quick Diagnostic Commands
+
+```bash
+# ===== BOOTNODE QUICK CHECK =====
+# Check if running
+ps aux | grep synergy-testbeta | grep -v grep
+
+# Check P2P port
+netstat -tlnp 2>/dev/null | grep 38638 || lsof -i :38638
+
+# Check logs (last 20 lines)
+tail -20 ~/bootnodeX/data/logs/node.out
+
+# Quick status
+./nodectl.sh status
+
+
+# ===== SEED SERVICE QUICK CHECK =====
+# Check if running
+ps aux | grep seed_service.py | grep -v grep
+
+# Check HTTP port
+netstat -tlnp 2>/dev/null | grep 18080 || lsof -i :18080
+
+# Test endpoint
+curl -s http://localhost:18080/peers | jq '.active_peer_count'
+
+# Check logs (last 20 lines)
+tail -20 ~/seedX/data/logs/seed.out
+
+# Quick status
+./nodectl.sh status
+
+
+# ===== NETWORK CONNECTIVITY =====
+# Test all bootnode P2P ports
+for ip in 74.208.227.23 73.79.66.255 64.227.107.57; do
+  echo -n "$ip:38638 -> "
+  nc -zv $ip 38638 2>&1 | grep succeeded || echo "FAILED"
+done
+
+# Test all seed HTTP endpoints
+for ip in 74.208.227.23 73.79.66.255 64.227.107.57; do
+  echo -n "http://$ip:18080/peers -> "
+  curl -s -o /dev/null -w "%{http_code}" http://$ip:18080/peers
+  echo
+done
 ```
 
 ---
