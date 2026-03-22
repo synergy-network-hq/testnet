@@ -1,5 +1,5 @@
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm::Aes256Gcm;
 use base64::{engine::general_purpose, Engine as _};
 use rand::RngCore;
 use sha3::{Digest, Sha3_256};
@@ -45,10 +45,8 @@ fn encrypt_passcode(passcode: &str, mnemonic: &str) -> Result<(), String> {
 
     let mut nonce_bytes = [0u8; 12];
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
-    let nonce = Nonce::from_slice(&nonce_bytes);
-
     let sealed = cipher
-        .encrypt(nonce, passcode.as_bytes())
+        .encrypt(&nonce_bytes.into(), passcode.as_bytes())
         .map_err(|e| format!("Failed to encrypt passcode: {e}"))?;
 
     let output = serde_json::json!({

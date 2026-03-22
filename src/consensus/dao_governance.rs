@@ -426,7 +426,7 @@ impl DAOGovernance {
         if let Some(proposal) = self.proposals.get_mut(proposal_id) {
             if proposal.status == ProposalStatus::Voting && current_time >= proposal.voting_end {
                 // Release the mutable borrow before checking approval
-                drop(proposal);
+                let _ = proposal;
 
                 let approved = self.check_proposal_approval(proposal_id)?;
 

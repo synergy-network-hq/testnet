@@ -1,10 +1,13 @@
 use crate::address::generate_cluster_address;
 use serde::{Deserialize, Serialize};
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERBOSE_VALIDATOR_LOGS: bool = false;
+pub const INITIAL_VALIDATOR_SYNERGY_SCORE: f64 = 100.0;
+pub const TESTNET_BETA_VALIDATOR_CLUSTER_SIZE: usize = 5;
 
 macro_rules! validator_log {
     ($($arg:tt)*) => {
@@ -100,7 +103,7 @@ pub struct ValidatorRegistration {
 
 #[derive(Debug)]
 pub struct ValidatorManager {
-    registry: Arc<Mutex<ValidatorRegistry>>,
+    pub registry: Arc<Mutex<ValidatorRegistry>>,
 }
 
 impl Validator {
@@ -122,7 +125,7 @@ impl Validator {
             average_block_time: 5.0,
             missed_blocks: 0,
             double_signs: 0,
-            synergy_score: 0.0,
+            synergy_score: INITIAL_VALIDATOR_SYNERGY_SCORE,
             task_accuracy: 100.0,
             collaboration_score: 0.0,
             reputation_score: 100.0,
@@ -196,7 +199,7 @@ impl ValidatorRegistry {
             jailed_validators: HashSet::new(),
             min_stake_amount: 0, // Lowered for testnet-beta (production: 1000)
             max_validators: 100,
-            cluster_size: 7,
+            cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
             epoch_length: 30000,
             current_epoch: 0,
         }
@@ -245,9 +248,9 @@ impl ValidatorRegistry {
 
             validator.status = ValidatorStatus::Active;
 
-            // Set appropriate default values for genesis validators
-            validator.synergy_score = 75.0; // Above the 50.0 requirement
-            validator.uptime_percentage = 100.0; // Above the 95.0 requirement
+            // New validators start fully healthy, then consensus updates the score from activity.
+            validator.synergy_score = INITIAL_VALIDATOR_SYNERGY_SCORE;
+            validator.uptime_percentage = 100.0;
 
             // Ensure stake amount is properly set (this was the missing piece)
             validator.stake_amount = registration.stake_amount;
@@ -311,90 +314,75 @@ impl ValidatorRegistry {
     }
 
     pub fn reorganize_clusters(&mut self) {
-        // Maximum validators per cluster (for 3-of-5 threshold)
-        const MAX_CLUSTER_SIZE: usize = 5;
-
-        let active_validators: Vec<Validator> =
+        let cluster_size = self.cluster_size.max(1);
+        let mut active_validators: Vec<Validator> =
             self.get_active_validators().into_iter().cloned().collect();
 
-        // Sort validators by synergy score for cluster formation
-        let mut sorted_validators = active_validators;
-        sorted_validators.sort_by(|a, b| b.synergy_score.partial_cmp(&a.synergy_score).unwrap());
+        for validator in self.validators.values_mut() {
+            validator.cluster_id = None;
+        }
+        self.clusters.clear();
 
-        // Find validators not assigned to any cluster
-        let unassigned: Vec<&Validator> = sorted_validators
-            .iter()
-            .filter(|v| {
-                v.cluster_id.is_none() || !self.clusters.contains_key(&v.cluster_id.unwrap())
-            })
-            .collect();
-
-        // If no unassigned validators, check if any clusters need rebalancing
-        if unassigned.is_empty() {
+        if active_validators.is_empty() {
             return;
         }
 
-        // Find clusters that have room (less than MAX_CLUSTER_SIZE)
-        let mut clusters_with_room: Vec<u64> = self
-            .clusters
-            .iter()
-            .filter(|(_, c)| c.validators.len() < MAX_CLUSTER_SIZE)
-            .map(|(id, _)| *id)
+        active_validators.sort_by(|a, b| {
+            b.synergy_score
+                .partial_cmp(&a.synergy_score)
+                .unwrap_or(Ordering::Equal)
+                .then_with(|| a.address.cmp(&b.address))
+        });
+
+        let cluster_count = active_validators.len().div_ceil(cluster_size);
+        let base_cluster_size = active_validators.len() / cluster_count;
+        let extra_members = active_validators.len() % cluster_count;
+        let target_sizes: Vec<usize> = (0..cluster_count)
+            .map(|index| base_cluster_size + usize::from(index < extra_members))
             .collect();
+        let mut cluster_members: Vec<Vec<Validator>> = (0..cluster_count).map(|_| Vec::new()).collect();
+        let mut next_cluster_index = 0usize;
 
-        // Assign unassigned validators to existing clusters or create new ones
-        for validator in unassigned {
-            if let Some(cluster_id) = clusters_with_room.pop() {
-                // Add to existing cluster with room
-                if let Some(cluster) = self.clusters.get_mut(&cluster_id) {
-                    cluster.validators.push(validator.address.clone());
-                    cluster.total_stake += validator.stake_amount;
-                    // Recalculate average synergy score
-                    let validator_count = cluster.validators.len() as f64;
-                    cluster.average_synergy_score = (cluster.average_synergy_score
-                        * (validator_count - 1.0)
-                        + validator.synergy_score)
-                        / validator_count;
-                    cluster.last_rotation = Validator::current_timestamp();
+        for validator in active_validators {
+            while cluster_members[next_cluster_index].len() >= target_sizes[next_cluster_index] {
+                next_cluster_index = (next_cluster_index + 1) % cluster_count;
+            }
+            cluster_members[next_cluster_index].push(validator);
+            next_cluster_index = (next_cluster_index + 1) % cluster_count;
+        }
 
-                    // If cluster still has room, put it back
-                    if cluster.validators.len() < MAX_CLUSTER_SIZE {
-                        clusters_with_room.push(cluster_id);
-                    }
-                }
-                // Update validator's cluster assignment
-                if let Some(v) = self.validators.get_mut(&validator.address) {
-                    v.cluster_id = Some(cluster_id);
-                }
-            } else {
-                // Create a new cluster
-                let new_cluster_id = self.clusters.len() as u64;
-                let cluster_group = ((new_cluster_id % 5) + 1) as u8; // Rotate through groups 1-5
+        let now = Validator::current_timestamp();
+        for (cluster_index, members) in cluster_members.into_iter().enumerate() {
+            let cluster_id = cluster_index as u64;
+            let cluster_group = ((cluster_id % 5) + 1) as u8;
+            let validator_addresses: Vec<String> =
+                members.iter().map(|validator| validator.address.clone()).collect();
+            let cluster_seed = format!("cluster-{}-{}", cluster_id, validator_addresses.join("-"));
+            let total_stake = members.iter().map(|validator| validator.stake_amount).sum();
+            let average_synergy_score = members
+                .iter()
+                .map(|validator| validator.synergy_score)
+                .sum::<f64>()
+                / members.len() as f64;
 
-                // Generate cluster address using FN-DSA algorithm
-                let seed = format!("cluster-{}-{}", new_cluster_id, validator.address);
-                let cluster_address = generate_cluster_address(&seed, cluster_group);
-
-                let cluster = ValidatorCluster {
-                    id: new_cluster_id,
-                    address: cluster_address,
-                    validators: vec![validator.address.clone()],
-                    total_stake: validator.stake_amount,
-                    average_synergy_score: validator.synergy_score,
-                    created_at: Validator::current_timestamp(),
-                    last_rotation: Validator::current_timestamp(),
+            self.clusters.insert(
+                cluster_id,
+                ValidatorCluster {
+                    id: cluster_id,
+                    address: generate_cluster_address(&cluster_seed, cluster_group),
+                    validators: validator_addresses.clone(),
+                    total_stake,
+                    average_synergy_score,
+                    created_at: now,
+                    last_rotation: now,
                     group: cluster_group,
-                };
+                },
+            );
 
-                self.clusters.insert(new_cluster_id, cluster);
-
-                // Update validator's cluster assignment
-                if let Some(v) = self.validators.get_mut(&validator.address) {
-                    v.cluster_id = Some(new_cluster_id);
+            for address in validator_addresses {
+                if let Some(validator) = self.validators.get_mut(&address) {
+                    validator.cluster_id = Some(cluster_id);
                 }
-
-                // New cluster has room for more validators
-                clusters_with_room.push(new_cluster_id);
             }
         }
     }
@@ -457,7 +445,7 @@ impl ValidatorRegistry {
         validators.into_iter().take(count).collect()
     }
 
-    pub fn calculate_epoch_rewards(&self, epoch: u64) -> HashMap<String, u64> {
+    pub fn calculate_epoch_rewards(&self, _epoch: u64) -> HashMap<String, u64> {
         let mut rewards = HashMap::new();
 
         // Ensure we have active validators with stakes
@@ -541,8 +529,8 @@ impl ValidatorManager {
                     // Create a new active validator with proper defaults
                     let mut active_validator = validator.clone();
                     active_validator.status = ValidatorStatus::Active;
-                    active_validator.synergy_score = 75.0; // Above the 50.0 requirement
-                    active_validator.uptime_percentage = 100.0; // Above the 95.0 requirement
+                    active_validator.synergy_score = INITIAL_VALIDATOR_SYNERGY_SCORE;
+                    active_validator.uptime_percentage = 100.0;
                     registry
                         .validators
                         .insert(address.to_string(), active_validator);
@@ -724,4 +712,87 @@ impl ValidatorManager {
 // Global validator manager instance
 lazy_static::lazy_static! {
     pub static ref VALIDATOR_MANAGER: Arc<ValidatorManager> = Arc::new(ValidatorManager::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending_registration(index: usize) -> ValidatorRegistration {
+        ValidatorRegistration {
+            address: format!("validator-{}", index),
+            public_key: format!("validator-key-{}", index),
+            name: format!("Validator {}", index),
+            stake_amount: 1_000,
+            submitted_at: 0,
+            registration_tx_hash: format!("registration-{}", index),
+        }
+    }
+
+    fn active_registry(count: usize) -> ValidatorRegistry {
+        let mut registry = ValidatorRegistry::new();
+        for index in 0..count {
+            let mut validator = Validator::new(
+                format!("validator-{}", index),
+                format!("validator-key-{}", index),
+                format!("Validator {}", index),
+                1_000,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator.synergy_score = INITIAL_VALIDATOR_SYNERGY_SCORE - index as f64;
+            registry.validators.insert(validator.address.clone(), validator);
+        }
+        registry.reorganize_clusters();
+        registry
+    }
+
+    #[test]
+    fn approved_validators_start_at_full_synergy_score() {
+        let mut registry = ValidatorRegistry::new();
+        let registration = pending_registration(1);
+        let address = registration.address.clone();
+
+        registry
+            .register_validator(registration)
+            .expect("validator registration should be accepted");
+        registry
+            .approve_registration(&address)
+            .expect("pending validator should be approved");
+
+        let validator = registry
+            .get_validator_by_address(&address)
+            .expect("approved validator should exist");
+        assert_eq!(validator.status, ValidatorStatus::Active);
+        assert_eq!(validator.synergy_score, INITIAL_VALIDATOR_SYNERGY_SCORE);
+        assert_eq!(validator.uptime_percentage, 100.0);
+    }
+
+    #[test]
+    fn reorganize_clusters_balances_six_validators_into_two_clusters() {
+        let registry = active_registry(6);
+        let mut cluster_sizes: Vec<usize> = registry
+            .clusters
+            .values()
+            .map(|cluster| cluster.validators.len())
+            .collect();
+        cluster_sizes.sort_unstable();
+
+        assert_eq!(registry.clusters.len(), 2);
+        assert_eq!(cluster_sizes, vec![3, 3]);
+    }
+
+    #[test]
+    fn reorganize_clusters_adds_a_new_cluster_every_five_validators() {
+        let registry = active_registry(16);
+        let mut cluster_sizes: Vec<usize> = registry
+            .clusters
+            .values()
+            .map(|cluster| cluster.validators.len())
+            .collect();
+        cluster_sizes.sort_unstable();
+
+        assert_eq!(registry.clusters.len(), 4);
+        assert_eq!(cluster_sizes, vec![4, 4, 4, 4]);
+        assert!(cluster_sizes.iter().all(|size| *size <= TESTNET_BETA_VALIDATOR_CLUSTER_SIZE));
+    }
 }

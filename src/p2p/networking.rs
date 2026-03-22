@@ -6,24 +6,40 @@ use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::{debug, error, info, warn};
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::Resolver;
+use lazy_static::lazy_static;
+use serde::Deserialize;
 use serde_json;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, BufWriter, Read, Write};
-use std::net::{TcpListener, TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // Type aliases to avoid nested generics parsing issues
 type PeerMap = HashMap<String, PeerConnection>;
 type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
+type DialTargetsArc = Arc<Mutex<Vec<String>>>;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConnectionDirection {
+    Incoming,
+    Outgoing,
+}
+
+lazy_static! {
+    static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+}
 
 pub struct P2PNetwork {
     blockchain: BlockchainArc,
     config: NodeConfig,
     connected_peers: PeersArc,
+    discovered_dial_targets: DialTargetsArc,
     is_running: Arc<Mutex<bool>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     message_receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
@@ -31,6 +47,7 @@ pub struct P2PNetwork {
 
 struct PeerConnection {
     address: String,
+    direction: ConnectionDirection,
     public_address: Option<String>,
     connected_at: u64,
     last_seen: u64,
@@ -45,6 +62,30 @@ struct PeerConnection {
     last_known_height: u64,
     best_block_hash: String,
     genesis_hash: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeedPeerListResponse {
+    #[serde(default)]
+    bootnodes: Vec<SeedBootnodeRecord>,
+    #[serde(default)]
+    dnsaddr_bootstrap: Vec<String>,
+    #[serde(default)]
+    peers: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct SeedBootnodeRecord {
+    hostname: String,
+    port: u16,
+    #[serde(default)]
+    reachable: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DuplicateResolution {
+    KeepExisting,
+    ReplaceExisting,
 }
 
 fn resolve_local_validator_address(config: &NodeConfig) -> String {
@@ -66,6 +107,71 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
         .unwrap_or_else(|| config.p2p.node_name.clone())
 }
 
+fn announced_validator_address(config: &NodeConfig) -> Option<String> {
+    if config.node.bootstrap_only || !config.node.auto_register_validator {
+        return None;
+    }
+
+    let resolved = resolve_local_validator_address(config);
+    let trimmed = resolved.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+fn preferred_connection_direction(
+    local_node_id: &str,
+    remote_node_id: &str,
+) -> Option<ConnectionDirection> {
+    let local_node_id = local_node_id.trim();
+    let remote_node_id = remote_node_id.trim();
+
+    if local_node_id.is_empty() || remote_node_id.is_empty() || local_node_id == remote_node_id {
+        return None;
+    }
+
+    if local_node_id < remote_node_id {
+        Some(ConnectionDirection::Outgoing)
+    } else {
+        Some(ConnectionDirection::Incoming)
+    }
+}
+
+fn resolve_duplicate_connection(
+    local_node_id: &str,
+    remote_node_id: &str,
+    existing_direction: ConnectionDirection,
+    existing_connected_at: u64,
+    new_direction: ConnectionDirection,
+    new_connected_at: u64,
+) -> DuplicateResolution {
+    match preferred_connection_direction(local_node_id, remote_node_id) {
+        Some(preferred) if existing_direction == preferred && new_direction != preferred => {
+            DuplicateResolution::KeepExisting
+        }
+        Some(preferred) if new_direction == preferred && existing_direction != preferred => {
+            DuplicateResolution::ReplaceExisting
+        }
+        _ => {
+            if new_connected_at < existing_connected_at {
+                DuplicateResolution::ReplaceExisting
+            } else {
+                DuplicateResolution::KeepExisting
+            }
+        }
+    }
+}
+
+fn disconnect_peer_entry(peers: &mut PeerMap, peer_key: &str) {
+    if let Some(mut peer) = peers.remove(peer_key) {
+        if let Some(stream) = peer.stream.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
     if !config.node.strict_validator_allowlist {
         return true;
@@ -76,6 +182,312 @@ fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
         .allowed_validator_addresses
         .iter()
         .any(|allowed| allowed == validator_address)
+}
+
+fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
+    let mut targets = HashSet::<String>::new();
+
+    for bootnode in &config.network.bootnodes {
+        if let Some(dial) = parse_bootnode_dial_address(bootnode) {
+            targets.insert(dial);
+        }
+    }
+
+    for dial in resolve_dns_bootstrap_targets(&config.network.bootstrap_dns_records) {
+        targets.insert(dial);
+    }
+
+    for dial in resolve_seed_server_targets(&config.network.seed_servers) {
+        targets.insert(dial);
+    }
+
+    for dial in &config.network.additional_dial_targets {
+        if let Some(parsed) = parse_bootnode_dial_address(dial) {
+            targets.insert(parsed);
+        }
+    }
+
+    let mut ordered = targets.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn resolve_dns_bootstrap_targets(record_names: &[String]) -> Vec<String> {
+    if record_names.is_empty() {
+        return Vec::new();
+    }
+
+    let resolver = match build_dns_resolver() {
+        Ok(resolver) => resolver,
+        Err(error) => {
+            warn!("p2p", "Failed to initialize DNS resolver for bootstrap discovery", "error" => error);
+            return Vec::new();
+        }
+    };
+
+    let mut visited = HashSet::<String>::new();
+    let mut out = HashSet::<String>::new();
+
+    for record_name in record_names {
+        collect_dnsaddr_record_targets(&resolver, record_name, 0, &mut visited, &mut out);
+    }
+
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn build_dns_resolver() -> Result<Resolver, String> {
+    Resolver::from_system_conf()
+        .or_else(|_| Resolver::new(ResolverConfig::default(), ResolverOpts::default()))
+        .map_err(|error| error.to_string())
+}
+
+fn collect_dnsaddr_record_targets(
+    resolver: &Resolver,
+    record_name: &str,
+    depth: usize,
+    visited: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let record_name = record_name.trim();
+    if record_name.is_empty() || depth > 4 {
+        return;
+    }
+
+    let canonical = record_name.trim_end_matches('.').to_string();
+    if !visited.insert(canonical.clone()) {
+        return;
+    }
+
+    match resolver.txt_lookup(canonical.as_str()) {
+        Ok(records) => {
+            for record in records.iter() {
+                for txt in record.txt_data() {
+                    let Ok(value) = std::str::from_utf8(txt) else {
+                        continue;
+                    };
+                    collect_dnsaddr_txt_target(resolver, value, depth, visited, out);
+                }
+            }
+        }
+        Err(error) => {
+            debug!(
+                "p2p",
+                "Bootstrap DNS TXT lookup failed",
+                "record" => canonical,
+                "error" => error.to_string()
+            );
+        }
+    }
+}
+
+fn collect_dnsaddr_txt_target(
+    resolver: &Resolver,
+    value: &str,
+    depth: usize,
+    visited: &mut HashSet<String>,
+    out: &mut HashSet<String>,
+) {
+    let value = value
+        .trim()
+        .trim_matches('"')
+        .strip_prefix("dnsaddr=")
+        .unwrap_or(value.trim())
+        .trim();
+    if value.is_empty() {
+        return;
+    }
+
+    if let Some(next_record) = parse_dnsaddr_reference_record(value) {
+        collect_dnsaddr_record_targets(resolver, &next_record, depth + 1, visited, out);
+        return;
+    }
+
+    if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(value) {
+        out.insert(dial);
+    }
+}
+
+fn parse_dnsaddr_reference_record(value: &str) -> Option<String> {
+    let referenced = value.strip_prefix("/dnsaddr/")?;
+    let referenced = referenced.split('/').next()?.trim().trim_end_matches('.');
+    if referenced.is_empty() {
+        None
+    } else {
+        Some(format!("_dnsaddr.{}", referenced))
+    }
+}
+
+fn parse_dnsaddr_multiaddr_to_dial_address(value: &str) -> Option<String> {
+    let segments = value
+        .split('/')
+        .filter(|segment| !segment.trim().is_empty())
+        .collect::<Vec<_>>();
+
+    let mut host: Option<String> = None;
+    let mut port: Option<u16> = None;
+    let mut transport: Option<&str> = None;
+    let mut index = 0usize;
+
+    while index + 1 < segments.len() {
+        let key = segments[index];
+        let val = segments[index + 1];
+        match key {
+            "dns" | "dns4" | "dns6" | "ip4" | "ip6" if host.is_none() => {
+                host = Some(val.to_string());
+            }
+            "tcp" => {
+                if let Ok(parsed) = val.parse::<u16>() {
+                    port = Some(parsed);
+                    transport = Some("tcp");
+                }
+            }
+            "udp" => {
+                transport = Some("udp");
+            }
+            _ => {}
+        }
+        index += 2;
+    }
+
+    match (host, port, transport) {
+        (Some(host), Some(port), Some("tcp")) => Some(format!("{host}:{port}")),
+        _ => None,
+    }
+}
+
+fn resolve_seed_server_targets(seed_servers: &[String]) -> Vec<String> {
+    if seed_servers.is_empty() {
+        return Vec::new();
+    }
+
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => client,
+        Err(error) => {
+            warn!(
+                "p2p",
+                "Failed to build HTTP client for seed discovery",
+                "error" => error.to_string()
+            );
+            return Vec::new();
+        }
+    };
+
+    let mut out = HashSet::<String>::new();
+    for seed_server in seed_servers {
+        fetch_seed_server_targets(&client, seed_server, &mut out);
+    }
+
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
+}
+
+fn fetch_seed_server_targets(
+    client: &reqwest::blocking::Client,
+    seed_server: &str,
+    out: &mut HashSet<String>,
+) {
+    let json_url = normalize_seed_server_url(seed_server, "/peer-list.json");
+    if !json_url.is_empty() {
+        match client.get(&json_url).send() {
+            Ok(response) if response.status().is_success() => {
+                match response.json::<SeedPeerListResponse>() {
+                    Ok(payload) => {
+                        for bootnode in payload.bootnodes {
+                            if bootnode.reachable.unwrap_or(true) {
+                                out.insert(format!("{}:{}", bootnode.hostname, bootnode.port));
+                            }
+                        }
+                        for value in payload.dnsaddr_bootstrap {
+                            if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(&value) {
+                                out.insert(dial);
+                            }
+                        }
+                        for peer in payload.peers {
+                            if let Some(dial) = parse_bootnode_dial_address(&peer) {
+                                out.insert(dial);
+                            }
+                        }
+                        return;
+                    }
+                    Err(error) => {
+                        debug!(
+                            "p2p",
+                            "Failed to parse seed peer list JSON",
+                            "seed_server" => seed_server.to_string(),
+                            "error" => error.to_string()
+                        );
+                    }
+                }
+            }
+            Ok(response) => {
+                debug!(
+                    "p2p",
+                    "Seed peer list request returned non-success status",
+                    "seed_server" => seed_server.to_string(),
+                    "status" => response.status().as_u16()
+                );
+            }
+            Err(error) => {
+                debug!(
+                    "p2p",
+                    "Seed peer list request failed",
+                    "seed_server" => seed_server.to_string(),
+                    "error" => error.to_string()
+                );
+            }
+        }
+    }
+
+    let text_url = normalize_seed_server_url(seed_server, "/dns/bootstrap.txt");
+    if text_url.is_empty() {
+        return;
+    }
+
+    match client.get(&text_url).send() {
+        Ok(response) if response.status().is_success() => {
+            if let Ok(body) = response.text() {
+                for line in body.lines() {
+                    let value = line.trim();
+                    if value.is_empty() {
+                        continue;
+                    }
+                    if let Some(dial) = parse_dnsaddr_multiaddr_to_dial_address(
+                        value.strip_prefix("dnsaddr=").unwrap_or(value),
+                    ) {
+                        out.insert(dial);
+                    }
+                }
+            }
+        }
+        Ok(_) | Err(_) => {}
+    }
+}
+
+fn normalize_seed_server_url(seed_server: &str, default_path: &str) -> String {
+    let trimmed = seed_server.trim().trim_end_matches('/');
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
+        let remainder = trimmed
+            .split_once("://")
+            .map(|(_, rest)| rest)
+            .unwrap_or(trimmed);
+        if remainder.contains('/') {
+            trimmed.to_string()
+        } else {
+            format!("{trimmed}{default_path}")
+        }
+    } else {
+        format!("http://{trimmed}{default_path}")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -94,6 +506,7 @@ impl P2PNetwork {
             blockchain,
             config: config.clone(),
             connected_peers: Arc::new(Mutex::new(HashMap::new())),
+            discovered_dial_targets: Arc::new(Mutex::new(Vec::new())),
             is_running: Arc::new(Mutex::new(false)),
             message_sender: sender,
             message_receiver: Arc::new(Mutex::new(receiver)),
@@ -127,6 +540,7 @@ impl P2PNetwork {
         // Start message handler thread
         let blockchain_handler = Arc::clone(&self.blockchain);
         let peers_handler = Arc::clone(&self.connected_peers);
+        let discovered_targets_handler = Arc::clone(&self.discovered_dial_targets);
         let receiver = Arc::clone(&self.message_receiver);
         let handler_config = self.config.clone();
         let handler_sender = self.message_sender.clone();
@@ -135,6 +549,7 @@ impl P2PNetwork {
             handle_messages(
                 blockchain_handler,
                 peers_handler,
+                discovered_targets_handler,
                 receiver,
                 handler_sender,
                 handler_config,
@@ -270,6 +685,31 @@ impl P2PNetwork {
         }
     }
 
+    pub fn request_blocks_from_peer(
+        &self,
+        peer_address: &str,
+        from_height: u64,
+        count: u32,
+    ) -> bool {
+        let message = NetworkMessage::GetBlocks { from_height, count };
+        let mut peers = self.connected_peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(peer_address) {
+            if let Some(ref mut stream) = peer.stream {
+                if let Err(e) = send_message(stream, &message) {
+                    warn!(
+                        "p2p",
+                        "Failed to request blocks from peer",
+                        "peer" => peer_address.to_string(),
+                        "error" => e.to_string()
+                    );
+                    return false;
+                }
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn request_peers(&self) {
         let message = NetworkMessage::GetPeers;
         let mut peers = self.connected_peers.lock().unwrap();
@@ -315,25 +755,41 @@ impl P2PNetwork {
     pub fn start_bootstrap(self: &Arc<Self>) {
         let network = Arc::clone(self);
         thread::spawn(move || {
-            let bootnode_dials: Vec<String> = network
-                .config
-                .network
-                .bootnodes
-                .iter()
-                .filter_map(|b| parse_bootnode_dial_address(b))
-                .collect();
             let heartbeat =
                 std::time::Duration::from_secs(network.config.p2p.heartbeat_interval.max(5));
-
-            if bootnode_dials.is_empty() && !network.config.network.bootnodes.is_empty() {
-                warn!(
-                    "p2p",
-                    "All configured bootnodes were invalid (cannot dial)",
-                    "bootnodes" => format!("{:?}", network.config.network.bootnodes)
-                );
-            }
+            let bootstrap_refresh_interval = std::time::Duration::from_secs(120);
+            let mut bootnode_dials = Vec::<String>::new();
+            let mut last_refresh = Instant::now() - bootstrap_refresh_interval;
 
             loop {
+                if last_refresh.elapsed() >= bootstrap_refresh_interval || bootnode_dials.is_empty()
+                {
+                    bootnode_dials = resolve_bootstrap_dial_targets(&network.config);
+                    last_refresh = Instant::now();
+
+                    if bootnode_dials.is_empty() {
+                        warn!(
+                            "p2p",
+                            "Bootstrap resolution returned no dialable peers",
+                            "bootnodes" => format!("{:?}", network.config.network.bootnodes),
+                            "seed_servers" => format!("{:?}", network.config.network.seed_servers),
+                            "dns_records" => format!(
+                                "{:?}",
+                                network.config.network.bootstrap_dns_records
+                            )
+                        );
+                    } else {
+                        if let Ok(mut discovered) = network.discovered_dial_targets.lock() {
+                            *discovered = bootnode_dials.clone();
+                        }
+                        info!(
+                            "p2p",
+                            "Resolved bootstrap dial targets",
+                            "targets" => format!("{:?}", bootnode_dials)
+                        );
+                    }
+                }
+
                 // Keep trying bootnodes until at least one peer is connected.
                 for addr in &bootnode_dials {
                     // Avoid self-dial if the config accidentally includes itself.
@@ -358,14 +814,18 @@ impl P2PNetwork {
                 if network.config.p2p.enable_discovery {
                     network.request_peers();
                 }
-                network.request_peer_statuses();
+                if !network.config.node.bootstrap_only {
+                    network.request_peer_statuses();
+                }
 
                 // Try to sync missing blocks.
-                let from_height = {
-                    let chain = network.blockchain.lock().unwrap();
-                    chain.last().map(|b| b.block_index + 1).unwrap_or(0)
-                };
-                network.request_blocks(from_height, 200);
+                if !network.config.node.bootstrap_only {
+                    let from_height = {
+                        let chain = network.blockchain.lock().unwrap();
+                        chain.last().map(|b| b.block_index + 1).unwrap_or(0)
+                    };
+                    network.request_blocks(from_height, 200);
+                }
 
                 // Keep connections alive.
                 network.ping_peers();
@@ -422,7 +882,7 @@ fn start_listener(
 fn handle_incoming_connection(
     stream: TcpStream,
     peer_address: String,
-    blockchain: BlockchainArc,
+    _blockchain: BlockchainArc,
     connected_peers: PeersArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -437,6 +897,7 @@ fn handle_incoming_connection(
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
+                direction: ConnectionDirection::Incoming,
                 public_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
@@ -461,7 +922,7 @@ fn handle_incoming_connection(
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
         public_address: Some(config.p2p.public_address.clone()),
-        validator_address: Some(resolve_local_validator_address(&config)),
+        validator_address: announced_validator_address(&config),
     };
 
     send_message(&mut writer, &handshake)?;
@@ -506,7 +967,7 @@ fn handle_incoming_connection(
 fn handle_outgoing_connection(
     stream: TcpStream,
     peer_address: String,
-    blockchain: BlockchainArc,
+    _blockchain: BlockchainArc,
     connected_peers: PeersArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -521,6 +982,7 @@ fn handle_outgoing_connection(
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
+                direction: ConnectionDirection::Outgoing,
                 public_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
@@ -545,7 +1007,7 @@ fn handle_outgoing_connection(
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
         public_address: Some(config.p2p.public_address.clone()),
-        validator_address: Some(resolve_local_validator_address(&config)),
+        validator_address: announced_validator_address(&config),
     };
 
     send_message(&mut writer, &handshake)?;
@@ -590,6 +1052,7 @@ fn handle_outgoing_connection(
 fn handle_messages(
     blockchain: BlockchainArc,
     connected_peers: PeersArc,
+    discovered_dial_targets: DialTargetsArc,
     receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -608,10 +1071,36 @@ fn handle_messages(
                         public_address,
                         validator_address,
                     } => {
-                        let validator_address = validator_address
+                        let node_id = node_id.trim().to_string();
+                        if node_id.is_empty() {
+                            warn!(
+                                "p2p",
+                                "Rejecting handshake with empty node_id",
+                                "peer" => peer_address.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&mut peers, &peer_address);
+                            continue;
+                        }
+
+                        if node_id == config.p2p.node_name {
+                            warn!(
+                                "p2p",
+                                "Rejecting self-connection handshake",
+                                "peer" => peer_address.clone(),
+                                "node_id" => node_id.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&mut peers, &peer_address);
+                            continue;
+                        }
+
+                        let announced_validator_address = validator_address
                             .as_ref()
                             .map(|value| value.trim().to_string())
-                            .filter(|value| !value.is_empty())
+                            .filter(|value| !value.is_empty());
+                        let peer_identity = announced_validator_address
+                            .clone()
                             .unwrap_or_else(|| node_id.clone());
 
                         info!(
@@ -619,7 +1108,7 @@ fn handle_messages(
                             "Handshake received",
                             "peer" => peer_address.clone(),
                             "node_id" => node_id.clone(),
-                            "validator_address" => validator_address.clone(),
+                            "validator_address" => announced_validator_address.clone().unwrap_or_default(),
                             "version" => version.clone(),
                             "public_address" => public_address.clone().unwrap_or_default()
                         );
@@ -634,21 +1123,75 @@ fn handle_messages(
                                 .find(|(_, peer)| peer.node_id.as_ref() == Some(&node_id))
                                 .map(|(key, _)| key.clone());
 
-                            if let Some(existing_key) = existing_peer_key {
-                                // If we already have this peer, remove the old connection and use the new one
+                            if let Some(existing_key) = existing_peer_key.clone() {
                                 if existing_key != peer_address {
-                                    warn!("p2p", "Duplicate connection from same node_id, replacing old connection",
-                                          "node_id" => node_id.clone(),
-                                          "old_address" => existing_key.clone(),
-                                          "new_address" => peer_address.clone());
-                                    peers.remove(&existing_key);
+                                    let existing_metadata = peers.get(&existing_key).map(|peer| {
+                                        (peer.direction, peer.connected_at, peer.public_address.clone())
+                                    });
+                                    let new_metadata = peers
+                                        .get(&peer_address)
+                                        .map(|peer| (peer.direction, peer.connected_at));
+
+                                    if let (Some((existing_direction, existing_connected_at, existing_public_address)), Some((new_direction, new_connected_at))) =
+                                        (existing_metadata, new_metadata)
+                                    {
+                                        match resolve_duplicate_connection(
+                                            &config.p2p.node_name,
+                                            &node_id,
+                                            existing_direction,
+                                            existing_connected_at,
+                                            new_direction,
+                                            new_connected_at,
+                                        ) {
+                                            DuplicateResolution::KeepExisting => {
+                                                warn!(
+                                                    "p2p",
+                                                    "Duplicate peer session detected; keeping stable connection",
+                                                    "node_id" => node_id.clone(),
+                                                    "kept_address" => existing_key.clone(),
+                                                    "kept_direction" => format!("{:?}", existing_direction),
+                                                    "dropped_address" => peer_address.clone(),
+                                                    "dropped_direction" => format!("{:?}", new_direction),
+                                                    "preferred_direction" => format!(
+                                                        "{:?}",
+                                                        preferred_connection_direction(
+                                                            &config.p2p.node_name,
+                                                            &node_id
+                                                        )
+                                                    ),
+                                                    "kept_public_address" => existing_public_address.unwrap_or_default()
+                                                );
+                                                disconnect_peer_entry(&mut peers, &peer_address);
+                                                continue;
+                                            }
+                                            DuplicateResolution::ReplaceExisting => {
+                                                warn!(
+                                                    "p2p",
+                                                    "Duplicate peer session detected; replacing non-preferred connection",
+                                                    "node_id" => node_id.clone(),
+                                                    "old_address" => existing_key.clone(),
+                                                    "old_direction" => format!("{:?}", existing_direction),
+                                                    "new_address" => peer_address.clone(),
+                                                    "new_direction" => format!("{:?}", new_direction),
+                                                    "preferred_direction" => format!(
+                                                        "{:?}",
+                                                        preferred_connection_direction(
+                                                            &config.p2p.node_name,
+                                                            &node_id
+                                                        )
+                                                    )
+                                                );
+                                                disconnect_peer_entry(&mut peers, &existing_key);
+                                            }
+                                        }
+                                    }
                                 }
                             }
 
                             // Update peer info
                             if let Some(peer) = peers.get_mut(&peer_address) {
-                                peer.node_id = Some(node_id);
-                                peer.version = Some(version);
+                                peer.node_id = Some(node_id.clone());
+                                peer.version = Some(version.clone());
                                 peer.capabilities = capabilities;
                                 peer.public_address = public_address;
                             }
@@ -659,7 +1202,28 @@ fn handle_messages(
                         // and funds them with 1000 SNRG for staking
                         {
                             // Only auto-register if auto-registration is enabled in config
+                            if config.node.bootstrap_only {
+                                debug!(
+                                    "p2p",
+                                    "Bootstrap-only mode enabled; skipping validator auto-registration for peer",
+                                    "peer" => peer_address.clone(),
+                                    "peer_identity" => peer_identity.clone()
+                                );
+                                continue;
+                            }
+
                             if config.node.auto_register_validator {
+                                let Some(validator_address) = announced_validator_address.clone()
+                                else {
+                                    debug!(
+                                        "p2p",
+                                        "Peer did not advertise a validator address; skipping validator auto-registration",
+                                        "peer" => peer_address.clone(),
+                                        "peer_identity" => peer_identity.clone()
+                                    );
+                                    continue;
+                                };
+
                                 if !is_validator_allowed(&config, &validator_address) {
                                     warn!(
                                         "p2p",
@@ -784,6 +1348,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Block { block_data } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block propagation",
+                                "peer" => peer_address.clone(),
+                                "height" => block_data.block_index
+                            );
+                            continue;
+                        }
+
                         info!("p2p", "Received block", "peer" => peer_address.clone());
 
                         // Update peer stats
@@ -814,6 +1388,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Transaction { transaction_data } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring transaction propagation",
+                                "peer" => peer_address.clone(),
+                                "tx_hash" => transaction_data.hash()
+                            );
+                            continue;
+                        }
+
                         info!("p2p", "Received transaction", "peer" => peer_address.clone());
 
                         // Update peer stats
@@ -834,6 +1418,24 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetBlocks { from_height, count } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node returning empty block response",
+                                "peer" => peer_address.clone(),
+                                "from_height" => from_height,
+                                "count" => count as u64
+                            );
+                            let response = NetworkMessage::Blocks { blocks: Vec::new() };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         info!(
                             "p2p",
                             "Block request",
@@ -870,6 +1472,25 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetStatus => {
+                        if config.node.bootstrap_only {
+                            let status = NetworkMessage::Status {
+                                block_height: 0,
+                                best_block_hash: String::new(),
+                                genesis_hash: String::new(),
+                            };
+
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                peer.last_known_height = 0;
+                                peer.best_block_hash.clear();
+                                peer.genesis_hash.clear();
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &status);
+                                }
+                            }
+                            continue;
+                        }
+
                         let (block_height, best_block_hash, genesis_hash) = {
                             let chain = blockchain.lock().unwrap();
                             (
@@ -902,6 +1523,16 @@ fn handle_messages(
                         best_block_hash,
                         genesis_hash,
                     } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring remote chain status",
+                                "peer" => peer_address.clone(),
+                                "height" => block_height
+                            );
+                            continue;
+                        }
+
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             peer.last_known_height = block_height;
@@ -914,6 +1545,19 @@ fn handle_messages(
                         start_height,
                         count,
                     } => {
+                        if config.node.bootstrap_only {
+                            let response = NetworkMessage::BlockHeaders {
+                                headers: Vec::new(),
+                            };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         let headers = {
                             let chain = blockchain.lock().unwrap();
                             chain
@@ -933,9 +1577,30 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::BlockHeaders { headers } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block headers",
+                                "peer" => peer_address.clone(),
+                                "count" => headers.len()
+                            );
+                            continue;
+                        }
+
                         debug!("p2p", "Received block headers", "peer" => peer_address.clone(), "count" => headers.len());
                     }
                     NetworkMessage::GetBlockBodies { hashes } => {
+                        if config.node.bootstrap_only {
+                            let response = NetworkMessage::BlockBodies { blocks: Vec::new() };
+                            let mut peers = connected_peers.lock().unwrap();
+                            if let Some(peer) = peers.get_mut(&peer_address) {
+                                if let Some(ref mut stream) = peer.stream {
+                                    let _ = send_message(stream, &response);
+                                }
+                            }
+                            continue;
+                        }
+
                         let blocks = {
                             let chain = blockchain.lock().unwrap();
                             hashes
@@ -958,6 +1623,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::BlockBodies { blocks } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring block bodies",
+                                "peer" => peer_address.clone(),
+                                "count" => blocks.len()
+                            );
+                            continue;
+                        }
+
                         debug!("p2p", "Received block bodies", "peer" => peer_address.clone(), "count" => blocks.len());
                         for block in blocks {
                             let height = block.block_index;
@@ -967,6 +1642,16 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Blocks { blocks } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring bulk blocks",
+                                "peer" => peer_address.clone(),
+                                "count" => blocks.len()
+                            );
+                            continue;
+                        }
+
                         // Apply blocks received in bulk.
                         let mut applied = 0u64;
                         for block in blocks {
@@ -981,7 +1666,11 @@ fn handle_messages(
                     NetworkMessage::GetPeers => {
                         // Respond with known peer dial addresses.
                         let peer_addresses = if config.p2p.enable_discovery {
-                            collect_known_peer_addresses(&connected_peers, &config)
+                            collect_known_peer_addresses(
+                                &connected_peers,
+                                &discovered_dial_targets,
+                                &config,
+                            )
                         } else {
                             Vec::new()
                         };
@@ -1010,12 +1699,22 @@ fn handle_messages(
 
                         // Attempt to dial new peers (best-effort).
                         let max_peers = config.network.max_peers as usize;
+                        let self_public_address =
+                            parse_bootnode_dial_address(&config.p2p.public_address);
+                        let self_listen_address =
+                            parse_bootnode_dial_address(&config.p2p.listen_address);
                         for addr in peer_addresses {
-                            if addr.is_empty() {
+                            let Some(addr) = parse_bootnode_dial_address(&addr) else {
+                                debug!(
+                                    "p2p",
+                                    "Ignoring non-dialable peer discovery address",
+                                    "peer" => peer_address.clone(),
+                                    "address" => addr
+                                );
                                 continue;
-                            }
-                            if addr == config.p2p.public_address
-                                || addr == config.p2p.listen_address
+                            };
+                            if self_public_address.as_deref() == Some(addr.as_str())
+                                || self_listen_address.as_deref() == Some(addr.as_str())
                             {
                                 continue;
                             }
@@ -1033,6 +1732,12 @@ fn handle_messages(
                                 }
                             };
                             if should_dial {
+                                info!(
+                                    "p2p",
+                                    "Dialing discovered peer",
+                                    "source_peer" => peer_address.clone(),
+                                    "target" => addr.clone()
+                                );
                                 let _ = dial_peer_async(
                                     addr.clone(),
                                     Arc::clone(&blockchain),
@@ -1137,12 +1842,52 @@ fn parse_bootnode_dial_address(bootnode: &str) -> Option<String> {
     let raw = raw.split('?').next().unwrap_or(raw);
     let raw = raw.split('#').next().unwrap_or(raw);
 
-    let dial = raw.trim();
-    if dial.is_empty() || !dial.contains(':') {
+    normalize_dial_target(raw.trim())
+}
+
+fn normalize_dial_target(dial: &str) -> Option<String> {
+    let dial = dial.trim();
+    if dial.is_empty() {
         return None;
     }
 
-    Some(dial.to_string())
+    if let Some(stripped) = dial.strip_prefix('[') {
+        let (host, port) = stripped.rsplit_once("]:")?;
+        return normalize_host_port(host, port);
+    }
+
+    let (host, port) = dial.rsplit_once(':')?;
+    normalize_host_port(host, port)
+}
+
+fn normalize_host_port(host: &str, port: &str) -> Option<String> {
+    let host = host
+        .trim()
+        .trim_matches('[')
+        .trim_matches(']')
+        .trim_end_matches('.');
+    let port = port.trim().parse::<u16>().ok()?;
+    if port == 0 || host.is_empty() || !is_plausible_dial_host(host) {
+        return None;
+    }
+
+    match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(_)) => Some(format!("[{host}]:{port}")),
+        Ok(std::net::IpAddr::V4(_)) => Some(format!("{host}:{port}")),
+        Err(_) if host.contains(':') => Some(format!("[{host}]:{port}")),
+        Err(_) => Some(format!("{host}:{port}")),
+    }
+}
+
+fn is_plausible_dial_host(host: &str) -> bool {
+    if host.eq_ignore_ascii_case("localhost") || host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+
+    host.contains('.')
+        && host.chars().all(|character| {
+            character.is_ascii_alphanumeric() || character == '-' || character == '.'
+        })
 }
 
 fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<TcpStream> {
@@ -1152,8 +1897,11 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(stream) => {
                 let _ = stream.set_nodelay(true);
-                let _ = stream.set_read_timeout(Some(timeout));
-                let _ = stream.set_write_timeout(Some(timeout));
+                // Keep the connect deadline, but leave established peer streams blocking.
+                // A fixed read timeout on long-lived P2P sockets causes idle bootstrap peers
+                // to be disconnected even though the link is healthy.
+                let _ = stream.set_read_timeout(None);
+                let _ = stream.set_write_timeout(None);
                 return Ok(stream);
             }
             Err(e) => last_err = Some(e),
@@ -1162,52 +1910,102 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
     Err(last_err.unwrap_or_else(|| io::Error::new(io::ErrorKind::Other, "No resolved addresses")))
 }
 
-fn collect_known_peer_addresses(connected_peers: &PeersArc, config: &NodeConfig) -> Vec<String> {
-    use std::collections::HashSet;
-
+fn collect_known_peer_addresses(
+    connected_peers: &PeersArc,
+    discovered_dial_targets: &DialTargetsArc,
+    config: &NodeConfig,
+) -> Vec<String> {
     let mut out = HashSet::<String>::new();
 
-    if !config.p2p.public_address.trim().is_empty() {
-        out.insert(config.p2p.public_address.clone());
+    if let Some(address) = parse_bootnode_dial_address(&config.p2p.public_address) {
+        out.insert(address);
+    }
+
+    for dial in &config.network.additional_dial_targets {
+        if let Some(address) = parse_bootnode_dial_address(dial) {
+            out.insert(address);
+        }
+    }
+
+    if let Ok(discovered) = discovered_dial_targets.lock() {
+        for dial in discovered.iter() {
+            if let Some(address) = parse_bootnode_dial_address(dial) {
+                out.insert(address);
+            }
+        }
     }
 
     if let Ok(peers) = connected_peers.lock() {
         for peer in peers.values() {
             if let Some(pub_addr) = peer.public_address.as_ref() {
-                if !pub_addr.trim().is_empty() {
-                    out.insert(pub_addr.clone());
+                if let Some(address) = parse_bootnode_dial_address(pub_addr) {
+                    out.insert(address);
                     continue;
                 }
             }
-            if !peer.address.trim().is_empty() {
-                out.insert(peer.address.clone());
+            if let Some(address) = parse_bootnode_dial_address(&peer.address) {
+                out.insert(address);
             }
         }
     }
 
-    out.into_iter().collect()
+    let mut ordered = out.into_iter().collect::<Vec<_>>();
+    ordered.sort();
+    ordered
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
-    let mut chain = blockchain.lock().unwrap();
+    let (tip_height, snapshot) = {
+        let mut chain = blockchain.lock().unwrap();
 
-    // Deduplicate by hash.
-    if chain.chain.iter().any(|b| b.hash == block.hash) {
-        return false;
-    }
-
-    // Append if it extends the tip, otherwise ignore for now (no fork handling).
-    if let Some(tip) = chain.last() {
-        if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
+        // Deduplicate by hash.
+        if chain.chain.iter().any(|b| b.hash == block.hash) {
             return false;
         }
+
+        // Append if it extends the tip, otherwise ignore for now (no fork handling).
+        if let Some(tip) = chain.last() {
+            if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
+                return false;
+            }
+        }
+
+        chain.add_block(block);
+        let tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
+        let snapshot = if should_persist_chain_tip(tip_height) {
+            Some(chain.clone())
+        } else {
+            None
+        };
+        (tip_height, snapshot)
+    };
+
+    if let Some(snapshot) = snapshot {
+        let chain_path = crate::utils::resolve_data_path("data/chain.json");
+        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
+        note_chain_persist(tip_height);
     }
 
-    chain.add_block(block);
-    // Use absolute path based on project root
-    let chain_path = crate::utils::resolve_data_path("data/chain.json");
-    chain.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
     true
+}
+
+fn should_persist_chain_tip(tip_height: u64) -> bool {
+    if tip_height <= 32 || tip_height % 50 == 0 {
+        return true;
+    }
+
+    let state = LAST_CHAIN_PERSIST.lock().unwrap();
+    match *state {
+        Some((last_height, last_at)) => {
+            tip_height.saturating_sub(last_height) >= 10 || last_at.elapsed() >= Duration::from_secs(2)
+        }
+        None => true,
+    }
+}
+
+fn note_chain_persist(tip_height: u64) {
+    let mut state = LAST_CHAIN_PERSIST.lock().unwrap();
+    *state = Some((tip_height, Instant::now()));
 }
 
 /// Best-effort dial for a discovered peer.
@@ -1238,4 +2036,119 @@ fn dial_peer_async(
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        collect_known_peer_addresses, dial_with_timeout, parse_bootnode_dial_address,
+        preferred_connection_direction, resolve_duplicate_connection, ConnectionDirection,
+        DialTargetsArc, DuplicateResolution,
+    };
+    use crate::config::NodeConfig;
+    use std::collections::HashMap;
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn dial_with_timeout_keeps_established_peer_streams_blocking() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let accept_handle = thread::spawn(move || {
+            let _ = listener.accept().unwrap();
+        });
+
+        let stream = dial_with_timeout(&addr.to_string(), Duration::from_millis(250)).unwrap();
+
+        assert_eq!(stream.read_timeout().unwrap(), None);
+        assert_eq!(stream.write_timeout().unwrap(), None);
+
+        accept_handle.join().unwrap();
+    }
+
+    #[test]
+    fn lower_node_id_prefers_outgoing_connection() {
+        assert_eq!(
+            preferred_connection_direction("node-01", "node-02"),
+            Some(ConnectionDirection::Outgoing)
+        );
+    }
+
+    #[test]
+    fn higher_node_id_prefers_incoming_connection() {
+        assert_eq!(
+            preferred_connection_direction("node-02", "node-01"),
+            Some(ConnectionDirection::Incoming)
+        );
+    }
+
+    #[test]
+    fn duplicate_resolution_keeps_preferred_existing_connection() {
+        assert_eq!(
+            resolve_duplicate_connection(
+                "node-01",
+                "node-02",
+                ConnectionDirection::Outgoing,
+                10,
+                ConnectionDirection::Incoming,
+                20,
+            ),
+            DuplicateResolution::KeepExisting
+        );
+    }
+
+    #[test]
+    fn duplicate_resolution_replaces_non_preferred_existing_connection() {
+        assert_eq!(
+            resolve_duplicate_connection(
+                "node-01",
+                "node-02",
+                ConnectionDirection::Incoming,
+                10,
+                ConnectionDirection::Outgoing,
+                20,
+            ),
+            DuplicateResolution::ReplaceExisting
+        );
+    }
+
+    #[test]
+    fn parse_bootnode_dial_address_normalizes_identity_and_ipv6() {
+        assert_eq!(
+            parse_bootnode_dial_address("snr://peer@24.181.87.76:38638"),
+            Some("24.181.87.76:38638".to_string())
+        );
+        assert_eq!(
+            parse_bootnode_dial_address(
+                "snr://synv1156xl3ct9cxc4cl9pdn5ww9myxudavl0hxrq7zv@2a02:1812:172a:e900:1497:71dc:d720:e28e:38638",
+            ),
+            Some("[2a02:1812:172a:e900:1497:71dc:d720:e28e]:38638".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_bootnode_dial_address_rejects_invalid_bare_host_targets() {
+        assert_eq!(parse_bootnode_dial_address("snr://peer@test:38638"), None);
+        assert_eq!(parse_bootnode_dial_address(""), None);
+    }
+
+    #[test]
+    fn collect_known_peer_addresses_includes_discovered_targets() {
+        let mut config = NodeConfig::default();
+        config.p2p.public_address = "24.181.87.76:38638".to_string();
+        config.network.additional_dial_targets = vec!["73.79.66.255:39638".to_string()];
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let discovered_targets: DialTargetsArc =
+            Arc::new(Mutex::new(vec!["64.227.107.57:39638".to_string()]));
+
+        let addresses =
+            collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
+
+        assert!(addresses.contains(&"24.181.87.76:38638".to_string()));
+        assert!(addresses.contains(&"73.79.66.255:39638".to_string()));
+        assert!(addresses.contains(&"64.227.107.57:39638".to_string()));
+    }
 }

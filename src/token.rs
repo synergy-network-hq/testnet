@@ -56,7 +56,7 @@ pub struct StakingInfo {
 pub struct TokenManager {
     tokens: Arc<Mutex<HashMap<String, Token>>>,
     pub balances: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>, // address -> token_symbol -> balance
-    locked_balances: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>, // address -> token_symbol -> locked
+    _locked_balances: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>, // address -> token_symbol -> locked
     staked_balances: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>, // address -> token_symbol -> staked
     transfers: Arc<Mutex<Vec<TokenTransfer>>>,
     stakes: Arc<Mutex<HashMap<String, Vec<StakingInfo>>>>, // validator -> stakes
@@ -112,7 +112,7 @@ impl TokenManager {
         let mut manager = TokenManager {
             tokens: Arc::new(Mutex::new(HashMap::new())),
             balances: Arc::new(Mutex::new(HashMap::new())),
-            locked_balances: Arc::new(Mutex::new(HashMap::new())),
+            _locked_balances: Arc::new(Mutex::new(HashMap::new())),
             staked_balances: Arc::new(Mutex::new(HashMap::new())),
             transfers: Arc::new(Mutex::new(Vec::new())),
             stakes: Arc::new(Mutex::new(HashMap::new())),
@@ -264,7 +264,7 @@ impl TokenManager {
             }
 
             // Mint initial supply to creator
-            self.mint_tokens(&creator, &symbol, total_supply);
+            let _ = self.mint_tokens(&creator, &symbol, total_supply);
 
             Ok(format!("Token {} created successfully", symbol))
         } else {
@@ -273,7 +273,7 @@ impl TokenManager {
     }
 
     pub fn mint_tokens(&self, to: &str, token_symbol: &str, amount: u64) -> Result<String, String> {
-        if let Ok(mut tokens) = self.tokens.lock() {
+        if let Ok(tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get(token_symbol) {
                 if !token.mintable {
                     return Err("Token is not mintable".to_string());
@@ -317,7 +317,7 @@ impl TokenManager {
         token_symbol: &str,
         amount: u64,
     ) -> Result<String, String> {
-        if let Ok(mut tokens) = self.tokens.lock() {
+        if let Ok(tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get(token_symbol) {
                 if !token.burnable {
                     return Err("Token is not burnable".to_string());

@@ -114,7 +114,7 @@ fn create_identity_files(base_path: &str, role: &str, prefix: &str) {
 fn write_genesis_file() {
     let mut validators = vec![];
     let mut relayers = vec![];
-    let mut rpc_gateway = String::new();
+    let rpc_gateway: String;
 
     // Validators
     for i in 1..=9 {
@@ -240,7 +240,11 @@ fn main() {
     println!("Generating Synergy Testnet Beta FN-DSA identities...");
 
     for i in 1..=9 {
-        create_identity_files(&format!("testbeta/validator-{:02}", i), "validator", "synv1");
+        create_identity_files(
+            &format!("testbeta/validator-{:02}", i),
+            "validator",
+            "synv1",
+        );
     }
     for i in 1..=5 {
         create_identity_files(&format!("testbeta/relayer-{:02}", i), "relayer", "synv4");

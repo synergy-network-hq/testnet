@@ -246,8 +246,6 @@ fn test_cartel_detection() {
     let penalties = cartel_detection.detect_cartels(0);
 
     // Verify detection runs without error
-    assert!(penalties.len() >= 0); // May be empty if no cartels detected
-
     println!("✅ Cartel Detection Test Passed");
     println!("   Detected {} potential cartel members", penalties.len());
 }

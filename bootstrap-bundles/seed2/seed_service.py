@@ -1,0 +1,502 @@
+#!/usr/bin/env python3
+import hmac
+import ipaddress
+import json
+import os
+import socket
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import urlparse
+from urllib.request import urlopen, Request
+from urllib.error import URLError
+
+BASE_DIR = Path(__file__).resolve().parent
+CONFIG_PATH = BASE_DIR / "config" / "seed-service.json"
+PEER_PATH = BASE_DIR / "data" / "peers.json"
+PEER_LOCK = threading.Lock()
+STATE = {"generated_at": None, "bootnodes": [], "peers": [], "peer_updated_at": None}
+
+# Peers that haven't re-registered within this window are considered stale and
+# will be purged automatically during the periodic refresh cycle.
+PEER_TTL_SECONDS = int(os.environ.get("SEED_PEER_TTL_SECONDS", 600))  # 10 minutes
+
+
+def load_config():
+    return json.loads(CONFIG_PATH.read_text())
+
+
+def load_peers():
+    if not PEER_PATH.exists():
+        return []
+    try:
+        raw = json.loads(PEER_PATH.read_text())
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(raw, dict):
+        raw = raw.get("peers", [])
+    if not isinstance(raw, list):
+        return []
+    return dedupe_peer_records(raw)
+
+
+def save_peers(peers):
+    PEER_PATH.parent.mkdir(parents=True, exist_ok=True)
+    PEER_PATH.write_text(json.dumps(dedupe_peer_records(peers), indent=2))
+
+
+def parse_int(value):
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def is_plausible_dial_host(host):
+    normalized = str(host or "").strip()
+    if not normalized:
+        return False
+    if normalized.lower() == "localhost":
+        return True
+    try:
+        ipaddress.ip_address(normalized)
+        return True
+    except ValueError:
+        pass
+    return "." in normalized and all(
+        character.isalnum() or character in "-." for character in normalized
+    )
+
+
+def normalize_host_port(host, port):
+    normalized_host = str(host or "").strip().strip("[]").rstrip(".")
+    normalized_port = parse_int(port)
+    if (
+        normalized_port is None
+        or normalized_port <= 0
+        or normalized_port > 65535
+        or not normalized_host
+        or not is_plausible_dial_host(normalized_host)
+    ):
+        return None
+    try:
+        ip_value = ipaddress.ip_address(normalized_host)
+    except ValueError:
+        if ":" in normalized_host:
+            return f"[{normalized_host}]:{normalized_port}"
+        return f"{normalized_host}:{normalized_port}"
+
+    if isinstance(ip_value, ipaddress.IPv6Address):
+        return f"[{normalized_host}]:{normalized_port}"
+    return f"{normalized_host}:{normalized_port}"
+
+
+def normalize_dial_target(value):
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+
+    if "://" in raw:
+        raw = raw.split("://", 1)[1]
+    if "@" in raw:
+        raw = raw.rsplit("@", 1)[1]
+    raw = raw.split("/", 1)[0]
+    raw = raw.split("?", 1)[0]
+    raw = raw.split("#", 1)[0]
+    raw = raw.strip()
+    if not raw:
+        return None
+
+    if raw.startswith("[") and "]:" in raw:
+        host, port = raw[1:].rsplit("]:", 1)
+        return normalize_host_port(host, port)
+    if ":" not in raw:
+        return None
+    host, port = raw.rsplit(":", 1)
+    return normalize_host_port(host, port)
+
+
+def normalize_peer_payload(payload):
+    if not isinstance(payload, dict):
+        return None
+    dial = payload.get("dial") or payload.get("peer") or payload.get("address")
+    host = payload.get("public_host") or payload.get("host") or payload.get("hostname")
+    port = payload.get("p2p_port") or payload.get("port")
+    if not dial and host and port:
+        dial = f"{host}:{port}"
+    dial = normalize_dial_target(dial)
+    if not dial:
+        return None
+    dial_host = dial[1:].split("]:", 1)[0] if dial.startswith("[") else dial.rsplit(":", 1)[0]
+    dial_port = parse_int(dial.rsplit(":", 1)[1])
+    updated_at = parse_int(payload.get("updated_at")) or int(time.time())
+    return {
+        "node_id": payload.get("node_id"),
+        "role_id": payload.get("role_id"),
+        "wallet_address": payload.get("wallet_address"),
+        "public_host": str(host or dial_host).strip() or dial_host,
+        "p2p_port": dial_port,
+        "dial": dial,
+        "updated_at": updated_at,
+    }
+
+
+def merge_peer(peers, incoming):
+    key = incoming.get("node_id") or incoming.get("dial")
+    for idx, peer in enumerate(peers):
+        peer_key = peer.get("node_id") or peer.get("dial")
+        if peer_key == key:
+            merged = dict(peer)
+            merged.update(incoming)
+            peers[idx] = merged
+            return peers
+    peers.append(incoming)
+    return peers
+
+
+def dedupe_peer_records(records):
+    peers = []
+    for entry in records:
+        normalized = normalize_peer_payload(entry)
+        if not normalized:
+            continue
+        peers = merge_peer(peers, normalized)
+    return peers
+
+
+def peer_dials(peers):
+    dials = {
+        entry.get("dial")
+        for entry in dedupe_peer_records(peers)
+        if entry.get("dial")
+    }
+    return sorted(dials)
+
+
+# ---------------------------------------------------------------------------
+# Peer liveness & TTL
+# ---------------------------------------------------------------------------
+
+def is_peer_alive(host, port, timeout=2.0):
+    """Quick TCP connect probe to check if a peer's P2P port is reachable."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def purge_stale_peers(peers, ttl_seconds=None):
+    """Remove peers whose updated_at timestamp is older than the TTL window.
+
+    Peers must re-register (heartbeat) within the TTL window to stay in the
+    directory.  This prevents the seed from serving addresses of nodes that
+    went offline long ago.
+    """
+    if ttl_seconds is None:
+        ttl_seconds = PEER_TTL_SECONDS
+    cutoff = int(time.time()) - ttl_seconds
+    return [peer for peer in peers if (peer.get("updated_at") or 0) >= cutoff]
+
+
+def liveness_filter(peers, timeout=2.0):
+    """Return only peers whose P2P port is currently reachable via TCP."""
+    alive = []
+    for peer in peers:
+        host = peer.get("public_host")
+        port = peer.get("p2p_port")
+        if host and port and is_peer_alive(host, port, timeout=timeout):
+            alive.append(peer)
+    return alive
+
+
+# ---------------------------------------------------------------------------
+# Inter-seed synchronization
+# ---------------------------------------------------------------------------
+
+def sync_peers_from_sibling_seeds(config):
+    """Pull peer lists from sibling seed servers and merge into our directory.
+
+    Each seed maintains its own peers.json independently.  This function
+    periodically fetches /peers from the other seed services and merges any
+    peers we don't already know about, keeping all three directories converged.
+    """
+    my_name = config.get("service_name", "")
+    siblings = [
+        seed for seed in config.get("seed_services", [])
+        if seed.get("name") != my_name
+    ]
+    if not siblings:
+        return
+
+    for sibling in siblings:
+        url = f"http://{sibling['hostname']}:{sibling['http_port']}/peers"
+        try:
+            req = Request(url, headers={"Accept": "application/json"})
+            with urlopen(req, timeout=5) as resp:
+                payload = json.loads(resp.read())
+        except (OSError, URLError, json.JSONDecodeError, ValueError):
+            continue
+
+        remote_peers = payload.get("peers")
+        if not isinstance(remote_peers, list):
+            continue
+
+        with PEER_LOCK:
+            peers = load_peers()
+            merged_count = 0
+            for entry in remote_peers:
+                normalized = normalize_peer_payload(entry)
+                if not normalized:
+                    continue
+                before = len(peers)
+                peers = merge_peer(peers, normalized)
+                if len(peers) > before:
+                    merged_count += 1
+            if merged_count > 0:
+                save_peers(peers)
+                STATE["peers"] = dedupe_peer_records(peers)
+                STATE["peer_updated_at"] = int(time.time())
+
+
+def expected_admin_token(config):
+    token = str(os.environ.get("SEED_ADMIN_TOKEN") or config.get("admin_token") or "").strip()
+    return token or None
+
+
+def request_is_loopback(handler):
+    try:
+        return ipaddress.ip_address(handler.client_address[0]).is_loopback
+    except ValueError:
+        return handler.client_address[0] in {"localhost"}
+
+
+def request_admin_token(handler):
+    bearer = str(handler.headers.get("Authorization") or "").strip()
+    if bearer.lower().startswith("bearer "):
+        return bearer[7:].strip()
+    return str(handler.headers.get("X-Seed-Admin-Token") or "").strip()
+
+
+def is_admin_authorized(handler, config):
+    if request_is_loopback(handler):
+        return True
+    expected = expected_admin_token(config)
+    provided = request_admin_token(handler)
+    if not expected or not provided:
+        return False
+    return hmac.compare_digest(provided, expected)
+
+
+def check_bootnode(host, port, timeout=1.5):
+    started = time.time()
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            latency_ms = int((time.time() - started) * 1000)
+            return {"reachable": True, "latency_ms": latency_ms}
+    except OSError as exc:
+        return {"reachable": False, "error": str(exc)}
+
+
+def rebuild_state(config):
+    snapshot = []
+    for entry in config["bootnodes"]:
+        status = check_bootnode(entry["hostname"], entry["port"])
+        merged = dict(entry)
+        merged.update(status)
+        snapshot.append(merged)
+
+    STATE["generated_at"] = int(time.time())
+    STATE["bootnodes"] = snapshot
+    with PEER_LOCK:
+        peers = load_peers()
+        # Purge peers that haven't heartbeated within the TTL window
+        peers = purge_stale_peers(peers)
+        save_peers(peers)
+        STATE["peers"] = peers
+        STATE["peer_updated_at"] = int(time.time())
+
+
+def refresh_loop(config):
+    interval = max(int(config.get("refresh_seconds", 30)), 5)
+    cycle = 0
+    while True:
+        rebuild_state(config)
+        # Sync from sibling seeds every 3rd cycle (~90s at default interval)
+        cycle += 1
+        if cycle % 3 == 0:
+            sync_peers_from_sibling_seeds(config)
+        time.sleep(interval)
+
+
+class Handler(BaseHTTPRequestHandler):
+    def _send_json(self, payload, status=200):
+        body = json.dumps(payload, indent=2).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _clear_registered_peers(self, config):
+        if not is_admin_authorized(self, config):
+            self._send_json({"error": "forbidden"}, status=403)
+            return
+
+        with PEER_LOCK:
+            cleared = len(load_peers())
+            peers = []
+            save_peers(peers)
+            STATE["peers"] = peers
+            STATE["peer_updated_at"] = int(time.time())
+
+        self._send_json(
+            {
+                "ok": True,
+                "cleared": cleared,
+                "remaining": 0,
+            }
+        )
+
+    def log_message(self, fmt, *args):
+        return
+
+    def do_GET(self):
+        config = load_config()
+        path = urlparse(self.path).path
+
+        if path == "/" or path == "/healthz":
+            self._send_json(
+                {
+                    "ok": True,
+                    "service": config["service_name"],
+                    "generated_at": STATE["generated_at"],
+                }
+            )
+            return
+
+        if path == "/peer-list.json":
+            # Serve only active peers (already TTL-pruned by rebuild_state)
+            active_peers = STATE["peers"]
+            self._send_json(
+                {
+                    "service": config["service_name"],
+                    "public_url": config["public_url"],
+                    "generated_at": STATE["generated_at"],
+                    "bootnodes": STATE["bootnodes"],
+                    "seed_services": config["seed_services"],
+                    "peers": peer_dials(active_peers),
+                    "dnsaddr_bootstrap": [
+                        f"dnsaddr=/dns/{entry['hostname']}/tcp/{entry['port']}"
+                        for entry in config["bootnodes"]
+                    ],
+                }
+            )
+            return
+
+        if path == "/dns/bootstrap.txt":
+            lines = [
+                f"dnsaddr=/dns/{entry['hostname']}/tcp/{entry['port']}"
+                for entry in config["bootnodes"]
+            ]
+            body = ("\n".join(lines) + "\n").encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        if path == "/peers":
+            # Only serve active peers (TTL-pruned)
+            active_peers = dedupe_peer_records(STATE["peers"])
+            self._send_json(
+                {
+                    "service": config["service_name"],
+                    "generated_at": STATE["generated_at"],
+                    "peer_updated_at": STATE["peer_updated_at"],
+                    "peer_ttl_seconds": PEER_TTL_SECONDS,
+                    "active_peer_count": len(active_peers),
+                    "peers": active_peers,
+                }
+            )
+            return
+
+        self._send_json({"error": "not_found"}, status=404)
+
+    def do_POST(self):
+        config = load_config()
+        path = urlparse(self.path).path
+        if path in {"/peers/clear", "/admin/peers/clear"}:
+            self._clear_registered_peers(config)
+            return
+
+        if path != "/peers/register":
+            self._send_json({"error": "not_found"}, status=404)
+            return
+
+        length = int(self.headers.get("Content-Length", 0) or 0)
+        if length <= 0:
+            self._send_json({"error": "missing_body"}, status=400)
+            return
+
+        try:
+            payload = json.loads(self.rfile.read(length))
+        except json.JSONDecodeError:
+            self._send_json({"error": "invalid_json"}, status=400)
+            return
+
+        registrations = payload if isinstance(payload, list) else [payload]
+        updated = 0
+        with PEER_LOCK:
+            peers = load_peers()
+            for entry in registrations:
+                normalized = normalize_peer_payload(entry)
+                if not normalized:
+                    continue
+                # Stamp current time so the TTL window resets on each heartbeat
+                normalized["updated_at"] = int(time.time())
+                peers = merge_peer(peers, normalized)
+                updated += 1
+            save_peers(peers)
+            STATE["peers"] = dedupe_peer_records(peers)
+            STATE["peer_updated_at"] = int(time.time())
+
+        if updated == 0:
+            self._send_json({"error": "invalid_payload"}, status=400)
+            return
+
+        self._send_json(
+            {
+                "ok": True,
+                "registered": updated,
+                "peers": dedupe_peer_records(STATE["peers"]),
+            }
+        )
+
+    def do_DELETE(self):
+        config = load_config()
+        path = urlparse(self.path).path
+        if path in {"/peers", "/peers/clear", "/admin/peers/clear"}:
+            self._clear_registered_peers(config)
+            return
+        self._send_json({"error": "not_found"}, status=404)
+
+
+def main():
+    config = load_config()
+    rebuild_state(config)
+    thread = threading.Thread(target=refresh_loop, args=(config,), daemon=True)
+    thread.start()
+
+    server = ThreadingHTTPServer((config["listen_host"], config["listen_port"]), Handler)
+    print(
+        f"Seed service {config['service_name']} listening on "
+        f"{config['listen_host']}:{config['listen_port']}"
+    )
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

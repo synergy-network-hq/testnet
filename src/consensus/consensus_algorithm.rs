@@ -10,7 +10,8 @@ use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
 use crate::rpc::rpc_server::{SHARED_CHAIN, TX_POOL};
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
-    Validator, ValidatorManager, ValidatorPerformanceUpdate, VALIDATOR_MANAGER,
+    Validator, ValidatorManager, ValidatorPerformanceUpdate, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
+    VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 use crate::{info, warn};
@@ -151,9 +152,22 @@ impl ProofOfSynergy {
                 println!("✅ Validator registry saved to {}", VALIDATOR_REGISTRY_PATH);
             }
         } else {
-            // Registry exists, but ensure validators have stakes
+            // Registry exists.  Re-read genesis.json so any validators that were
+            // added after the node's first run (e.g. multi-node setups where the
+            // genesis.json was populated after initial launch) are registered and
+            // approved, not just staked.
             println!("🔧 Validator registry loaded, ensuring genesis validators have stakes");
             Self::ensure_genesis_validator_stakes(&validator_manager);
+
+            // Persist any newly-registered validators back to disk.
+            if let Err(save_err) = validator_manager.save_registry(VALIDATOR_REGISTRY_PATH) {
+                println!(
+                    "⚠️ Failed to save validator registry after genesis stake check: {}",
+                    save_err
+                );
+            } else {
+                println!("✅ Validator registry saved after genesis stake check");
+            }
         }
 
         let synergy_scores = Self::load_synergy_scores().unwrap_or_else(|| {
@@ -200,7 +214,7 @@ impl ProofOfSynergy {
         let cluster_size = consensus_cfg
             .as_ref()
             .map(|c| c.validator_cluster_size)
-            .unwrap_or(30);
+            .unwrap_or(TESTNET_BETA_VALIDATOR_CLUSTER_SIZE);
         let vrf_enabled = consensus_cfg
             .as_ref()
             .map(|c| c.vrf_enabled)
@@ -313,8 +327,8 @@ impl ProofOfSynergy {
                     .unwrap_or_default();
 
                 if elapsed >= Duration::from_secs(block_time_secs) {
-                    let mut pool = TX_POOL.lock().unwrap();
-                    let mut chain_guard = chain.lock().unwrap();
+                    let pool = TX_POOL.lock().unwrap();
+                    let chain_guard = chain.lock().unwrap();
 
                     if let Some(latest_block) = chain_guard.last() {
                         // Check for epoch boundary
@@ -990,7 +1004,7 @@ impl ProofOfSynergy {
                         validator_array.len()
                     );
 
-                    for validator_data in validator_array {
+                    for (i, validator_data) in validator_array.iter().enumerate() {
                         if let Some(address) = validator_data["address"].as_str() {
                             let stake_amount = allocation_stakes
                                 .get(address)
@@ -1000,7 +1014,56 @@ impl ProofOfSynergy {
                                         .as_str()
                                         .and_then(|s| s.parse::<u64>().ok())
                                 })
-                                .unwrap_or(1);
+                                .unwrap_or(1000);
+
+                            // If this genesis validator is not yet in the registry (e.g. the
+                            // node was first launched before the full genesis.json was written,
+                            // so only the node's own address was registered at that time),
+                            // register and approve it now so it counts toward min_validators.
+                            if validator_manager.get_validator(address).is_none() {
+                                println!(
+                                    "🔧 Genesis validator {} not in registry — registering now",
+                                    address
+                                );
+
+                                let public_key = validator_data["public_key_file"]
+                                    .as_str()
+                                    .and_then(|path| std::fs::read_to_string(path).ok())
+                                    .and_then(|content| {
+                                        serde_json::from_str::<serde_json::Value>(&content).ok()
+                                    })
+                                    .and_then(|j| j["public_key"].as_str().map(|s| s.to_string()))
+                                    .unwrap_or_else(|| "genesis_key".to_string());
+
+                                let validator_name = validator_data["details"]
+                                    .as_object()
+                                    .and_then(|d| d["name"].as_str())
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_else(|| format!("Genesis Validator {}", i + 1));
+
+                                let registration = crate::validator::ValidatorRegistration {
+                                    address: address.to_string(),
+                                    public_key,
+                                    name: validator_name,
+                                    stake_amount,
+                                    submitted_at: Self::current_timestamp(),
+                                    registration_tx_hash: "genesis".to_string(),
+                                };
+
+                                match validator_manager.register_validator(registration) {
+                                    Ok(_) => {
+                                        if let Err(e) = validator_manager.approve_validator(address) {
+                                            println!("⚠️ Failed to approve late-joined genesis validator {}: {}", address, e);
+                                        } else {
+                                            println!("✅ Late-joined genesis validator {} registered and approved", address);
+                                        }
+                                    }
+                                    Err(e) => {
+                                        println!("⚠️ Failed to register late-joined genesis validator {}: {}", address, e);
+                                        continue;
+                                    }
+                                }
+                            }
 
                             validator_manager.update_validator_stake(address, stake_amount);
 
@@ -1079,47 +1142,6 @@ impl ProofOfSynergy {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
-    }
-
-    fn select_validator_for_block(validators: &[Validator], block_height: u64) -> Validator {
-        if validators.is_empty() {
-            // Fallback genesis validator with proper 41-character address format
-            return Validator::new(
-                "synv1a2b3c4d5e6f7g8h9i0j1k2l3m4n5o6p7q8r9s0t1".to_string(),
-                "genesis_key".to_string(),
-                "Genesis Validator".to_string(),
-                1000,
-            );
-        }
-
-        // Use VRF for validator selection based on synergy scores
-        let vrf_consensus = VRFConsensus::new();
-        let seed = VRFSeed::generate();
-        let input = format!(
-            "validator_selection_{}_{}",
-            block_height,
-            hex::encode(&seed.seed)
-        );
-        let vrf_output = vrf_consensus.generate_vrf_proof(&input);
-
-        // Use VRF output to create weighted random selection
-        let total_score: f64 = validators.iter().map(|v| v.synergy_score).sum();
-        let mut cumulative_weight = 0.0;
-
-        // Use VRF output for true randomness
-        let vrf_hash = vrf_output.proof.hash();
-        let random_value = (vrf_hash[0] as f64) / 255.0; // Normalize to 0-1
-        let target = random_value * total_score;
-
-        for validator in validators {
-            cumulative_weight += validator.synergy_score;
-            if cumulative_weight >= target {
-                return validator.clone();
-            }
-        }
-
-        // Fallback to first validator
-        validators[0].clone()
     }
 
     // New PoSy Helper Methods
@@ -1406,7 +1428,7 @@ impl ProofOfSynergy {
         // isn't known locally (remote wallets). If a public key is available, we verify.
         let public_key = Self::get_transaction_public_key(&tx.sender);
         if let Some(public_key) = public_key {
-            let mut pqc = pqc_manager.lock().unwrap();
+            let pqc = pqc_manager.lock().unwrap();
             // Use raw_hash() for signature verification (without prefix)
             let message_bytes = match hex::decode(tx.raw_hash()) {
                 Ok(bytes) => bytes,

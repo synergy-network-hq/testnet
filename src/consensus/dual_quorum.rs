@@ -2,7 +2,7 @@ use crate::block::Block;
 use crate::crypto::pqc::{
     PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey, PQCSignature,
 };
-use crate::validator::ValidatorManager;
+use crate::validator::{ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
 use std::collections::HashMap;
@@ -524,7 +524,7 @@ impl ValidatorRotation {
         ValidatorRotation {
             validator_manager,
             entropy_beacon,
-            target_cluster_size: 30,
+            target_cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
         }
     }
 
@@ -537,9 +537,8 @@ impl ValidatorRotation {
             (active_validators.len() as f64 / self.target_cluster_size as f64).ceil() as usize;
 
         // Assign validators to clusters using deterministic randomness
-        for (i, validator) in active_validators.iter().enumerate() {
-            let cluster_id =
-                self.assign_to_cluster(&validator.address, &epoch_randomness, num_clusters);
+        for validator in &active_validators {
+            self.assign_to_cluster(&validator.address, &epoch_randomness, num_clusters);
             // Update validator's cluster assignment
         }
     }

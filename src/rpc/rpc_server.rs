@@ -199,6 +199,24 @@ fn handle_json_rpc(
             }
         }
 
+        "synergy_getBlockByHash" => {
+            if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
+                let normalized = block_hash.trim().to_lowercase();
+                let chain = chain.lock().unwrap();
+                if let Some(block) = chain
+                    .chain
+                    .iter()
+                    .find(|b| b.hash.trim().eq_ignore_ascii_case(&normalized))
+                {
+                    block_to_explorer_json(block)
+                } else {
+                    json!(null)
+                }
+            } else {
+                json!("Invalid block hash")
+            }
+        }
+
         "synergy_getLatestBlock" => {
             let chain = chain.lock().unwrap();
             if let Some(block) = chain.last() {
@@ -518,7 +536,7 @@ fn handle_json_rpc(
             {
                 if let Ok(mut transaction) = serde_json::from_value::<Transaction>(tx_data.clone())
                 {
-                    if let Ok(mut wallet_manager) = WALLET_MANAGER.lock() {
+                    if let Ok(wallet_manager) = WALLET_MANAGER.lock() {
                         match wallet_manager.sign_transaction(address, &mut transaction) {
                             Ok(result) => {
                                 json!({"success": true, "message": result, "transaction": transaction})
@@ -1330,6 +1348,1092 @@ fn handle_json_rpc(
                     "peers": []
                 })
             }
+        }
+
+        // =====================================================================
+        // Phase 1: Core Blockchain Functionality (New RPC Methods)
+        // =====================================================================
+
+        // 1. synergy_getTransactionReceipt
+        // Get a transaction receipt with execution details.
+        "synergy_getTransactionReceipt" => {
+            if let Some(tx_hash) = params.get(0).and_then(|v| v.as_str()) {
+                let normalized = tx_hash.strip_prefix("0x").unwrap_or(tx_hash).to_lowercase();
+                let raw_hash_search = if normalized.starts_with("syntxn-") {
+                    normalized.strip_prefix("syntxn-").unwrap_or(&normalized)
+                } else if normalized.starts_with("synxxn-") {
+                    normalized.strip_prefix("synxxn-").unwrap_or(&normalized)
+                } else {
+                    &normalized
+                };
+
+                let matches_tx = |tx: &Transaction| -> bool {
+                    let tx_hash_formatted = tx.hash().to_lowercase();
+                    let tx_hash_raw = tx.raw_hash().to_lowercase();
+                    tx_hash_formatted == normalized
+                        || tx_hash_raw == normalized
+                        || tx_hash_raw == raw_hash_search
+                        || (tx_hash_formatted.starts_with("syntxn-")
+                            && tx_hash_formatted.strip_prefix("syntxn-").unwrap_or("") == raw_hash_search)
+                        || (tx_hash_formatted.starts_with("synxxn-")
+                            && tx_hash_formatted.strip_prefix("synxxn-").unwrap_or("") == raw_hash_search)
+                };
+
+                // Search in confirmed transactions
+                let chain = chain.lock().unwrap();
+                for block in &chain.chain {
+                    let mut cumulative_gas: u64 = 0;
+                    for (idx, tx) in block.transactions.iter().enumerate() {
+                        let gas_used = if tx.data.is_some() {
+                            tx.gas_limit.min(tx.estimate_gas())
+                        } else {
+                            crate::gas::constants::GAS_LIMIT_TRANSFER
+                        };
+                        cumulative_gas = cumulative_gas.saturating_add(gas_used);
+
+                        if matches_tx(tx) {
+                            let is_contract_creation = tx.receiver.is_empty()
+                                || tx.receiver == "0x0"
+                                || tx.receiver == "";
+                            let contract_address = if is_contract_creation {
+                                // Derive a deterministic contract address
+                                let hash_input = format!("{}{}", tx.sender, tx.nonce);
+                                let addr_hash = hex::encode(blake3::hash(hash_input.as_bytes()).as_bytes());
+                                Some(format!("sync1{}", &addr_hash[..38]))
+                            } else {
+                                None
+                            };
+
+                            return json!({
+                                "transactionHash": tx.hash(),
+                                "transactionIndex": idx,
+                                "blockHash": block.hash.clone(),
+                                "blockNumber": block.block_index,
+                                "from": tx.sender.clone(),
+                                "to": if is_contract_creation { Value::Null } else { json!(tx.receiver.clone()) },
+                                "cumulativeGasUsed": cumulative_gas,
+                                "gasUsed": gas_used,
+                                "effectiveGasPrice": tx.gas_price,
+                                "status": "0x1",
+                                "logs": [],
+                                "logsBloom": "0x".to_string() + &"0".repeat(512),
+                                "contractAddress": contract_address
+                            });
+                        }
+                    }
+                }
+
+                // Check pending pool - return null (receipt only exists for mined txs)
+                json!(null)
+            } else {
+                json!({"error": "Missing transaction hash parameter"})
+            }
+        }
+
+        // 2. synergy_getTransactionCount
+        // Get the transaction count (nonce) for an address.
+        "synergy_getTransactionCount" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let _block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
+
+                // Count confirmed transactions sent by this address
+                let chain = chain.lock().unwrap();
+                let mut count: u64 = 0;
+                for block in &chain.chain {
+                    for tx in &block.transactions {
+                        if tx.sender.eq_ignore_ascii_case(address) {
+                            count += 1;
+                        }
+                    }
+                }
+
+                // If block_tag is "pending", also count pending txs
+                if _block_tag == "pending" {
+                    let pool = tx_pool.lock().unwrap();
+                    for tx in pool.iter() {
+                        if tx.sender.eq_ignore_ascii_case(address) {
+                            count += 1;
+                        }
+                    }
+                }
+
+                json!(count)
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // 3. synergy_getBalance
+        // Get the SNRG balance for an address (standardized method).
+        "synergy_getBalance" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let token_manager = TOKEN_MANAGER.clone();
+                let balance = token_manager.get_balance(address, "SNRG");
+                json!(balance)
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // 4. synergy_gasPrice
+        // Get the current gas price.
+        "synergy_gasPrice" => {
+            use crate::gas::constants::{DEFAULT_GAS_PRICE, MIN_GAS_PRICE, MAX_GAS_PRICE};
+
+            // Calculate dynamic gas price based on recent block utilization
+            let chain = chain.lock().unwrap();
+            let recent_blocks: Vec<_> = chain.chain.iter().rev().take(10).collect();
+
+            if recent_blocks.is_empty() {
+                json!(DEFAULT_GAS_PRICE)
+            } else {
+                let mut total_gas_used: u64 = 0;
+                let block_gas_limit = crate::gas::constants::BLOCK_GAS_LIMIT;
+
+                for block in &recent_blocks {
+                    let block_gas: u64 = block.transactions.iter().map(|tx| tx.get_fee()).sum();
+                    total_gas_used += block_gas;
+                }
+
+                let avg_gas_per_block = total_gas_used / recent_blocks.len() as u64;
+                let utilization = avg_gas_per_block as f64 / block_gas_limit as f64;
+
+                // Scale gas price based on utilization
+                let gas_price = if utilization > 0.8 {
+                    (DEFAULT_GAS_PRICE as f64 * (1.0 + utilization)) as u64
+                } else if utilization < 0.1 {
+                    DEFAULT_GAS_PRICE
+                } else {
+                    DEFAULT_GAS_PRICE
+                };
+
+                let clamped = gas_price.max(MIN_GAS_PRICE).min(MAX_GAS_PRICE);
+                json!(clamped)
+            }
+        }
+
+        // 5. synergy_call
+        // Execute a contract call locally (read-only, no state change).
+        "synergy_call" => {
+            if let Some(call_obj) = params.get(0) {
+                let _from = call_obj.get("from").and_then(|v| v.as_str()).unwrap_or("");
+                let to = call_obj.get("to").and_then(|v| v.as_str());
+                let _data = call_obj.get("data").and_then(|v| v.as_str()).unwrap_or("0x");
+                let _value = call_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                if let Some(to_addr) = to {
+                    // Check if the target is a known contract
+                    // For now, return empty result since AIVM is disabled
+                    // When AIVM is re-enabled, this will execute the contract call
+                    if to_addr.starts_with("sync1") || to_addr.starts_with("sync0") {
+                        // Contract address detected - AIVM currently disabled
+                        json!({
+                            "result": "0x",
+                            "note": "AIVM contract execution is currently disabled in testnet-beta. Contract calls will return empty results."
+                        })
+                    } else {
+                        // Non-contract address - return the balance as a simple read
+                        json!({
+                            "result": "0x",
+                            "note": "Target address is not a contract"
+                        })
+                    }
+                } else {
+                    json!({"error": "Missing 'to' field in call object"})
+                }
+            } else {
+                json!({"error": "Missing call object parameter"})
+            }
+        }
+
+        // 6. synergy_estimateGas
+        // Estimate the gas required for a transaction.
+        "synergy_estimateGas" => {
+            if let Some(tx_obj) = params.get(0) {
+                let to = tx_obj.get("to").and_then(|v| v.as_str());
+                let data = tx_obj.get("data").and_then(|v| v.as_str());
+                let _value = tx_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
+
+                use crate::gas::GasEstimator;
+
+                let estimated = if to.is_none() || to == Some("") || to == Some("0x0") {
+                    // Contract deployment
+                    let bytecode_size = data.map(|d| {
+                        let d = d.strip_prefix("0x").unwrap_or(d);
+                        d.len() / 2 // hex bytes
+                    }).unwrap_or(0);
+                    GasEstimator::estimate_contract_deploy(bytecode_size).as_u64()
+                } else if data.is_some() && data != Some("") && data != Some("0x") {
+                    // Contract call
+                    let calldata_size = data.map(|d| {
+                        let d = d.strip_prefix("0x").unwrap_or(d);
+                        d.len() / 2
+                    }).unwrap_or(0);
+                    GasEstimator::estimate_contract_call(calldata_size).as_u64()
+                } else {
+                    // Simple transfer
+                    GasEstimator::estimate_transfer().as_u64()
+                };
+
+                json!(estimated)
+            } else {
+                json!({"error": "Missing transaction object parameter"})
+            }
+        }
+
+        // 7. synergy_getLogs
+        // Get event logs matching filters.
+        "synergy_getLogs" => {
+            if let Some(filter) = params.get(0) {
+                let from_block = filter.get("fromBlock").and_then(|v| v.as_u64()).unwrap_or(0);
+                let to_block = filter.get("toBlock").and_then(|v| v.as_u64());
+                let filter_address = filter.get("address").and_then(|v| v.as_str());
+                let _topics = filter.get("topics").and_then(|v| v.as_array());
+                let block_hash = filter.get("blockHash").and_then(|v| v.as_str());
+
+                let chain = chain.lock().unwrap();
+                let to_block = to_block.unwrap_or_else(|| {
+                    chain.last().map_or(0, |b| b.block_index)
+                });
+
+                let mut logs: Vec<Value> = Vec::new();
+                let mut log_index: u64 = 0;
+
+                for block in &chain.chain {
+                    // Filter by block hash if specified
+                    if let Some(bh) = block_hash {
+                        if !block.hash.eq_ignore_ascii_case(bh) {
+                            continue;
+                        }
+                    } else if block.block_index < from_block || block.block_index > to_block {
+                        continue;
+                    }
+
+                    for (tx_idx, tx) in block.transactions.iter().enumerate() {
+                        // Filter by address if specified
+                        if let Some(addr) = filter_address {
+                            if !tx.sender.eq_ignore_ascii_case(addr)
+                                && !tx.receiver.eq_ignore_ascii_case(addr)
+                            {
+                                continue;
+                            }
+                        }
+
+                        // Generate a log entry for each transaction
+                        // (full EVM-style event logs will be available when AIVM is re-enabled)
+                        if tx.data.is_some() || filter_address.is_some() {
+                            logs.push(json!({
+                                "logIndex": log_index,
+                                "transactionIndex": tx_idx,
+                                "transactionHash": tx.hash(),
+                                "blockHash": block.hash.clone(),
+                                "blockNumber": block.block_index,
+                                "address": tx.receiver.clone(),
+                                "data": tx.data.clone().unwrap_or_else(|| "0x".to_string()),
+                                "topics": [],
+                                "removed": false
+                            }));
+                            log_index += 1;
+                        }
+                    }
+                }
+
+                json!(logs)
+            } else {
+                // No filter provided - return empty logs
+                json!([])
+            }
+        }
+
+        // 8. synergy_getCode
+        // Get the code stored at an address.
+        "synergy_getCode" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                // Check if this is a contract address (sync1... prefix)
+                if address.starts_with("sync1") || address.starts_with("sync0") {
+                    // AIVM is currently disabled - return empty code
+                    // When re-enabled, this will look up the contract bytecode
+                    json!("0x")
+                } else {
+                    // Regular wallet address - no code
+                    json!("0x")
+                }
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // 9. synergy_getStorageAt
+        // Get the value from a storage position of a contract/account.
+        "synergy_getStorageAt" => {
+            if let (Some(address), Some(_position)) = (
+                params.get(0).and_then(|v| v.as_str()),
+                params.get(1).and_then(|v| v.as_str()),
+            ) {
+                let _block_tag = params.get(2).and_then(|v| v.as_str()).unwrap_or("latest");
+
+                if address.starts_with("sync1") || address.starts_with("sync0") {
+                    // Contract address - AIVM currently disabled
+                    // When re-enabled, this will read from contract storage
+                    json!("0x" .to_string() + &"0".repeat(64))
+                } else {
+                    // Non-contract address - return zero
+                    json!("0x".to_string() + &"0".repeat(64))
+                }
+            } else {
+                json!({"error": "Missing required parameters: address, position"})
+            }
+        }
+
+        // =====================================================================
+        // Additional Phase 1 utility methods
+        // =====================================================================
+
+        // synergy_getBlockTransactionCount
+        "synergy_getBlockTransactionCount" => {
+            let chain = chain.lock().unwrap();
+            if let Some(block_num) = params.get(0).and_then(|v| v.as_u64()) {
+                if let Some(block) = chain.chain.iter().find(|b| b.block_index == block_num) {
+                    json!(block.transactions.len())
+                } else {
+                    json!(null)
+                }
+            } else if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
+                if let Some(block) = chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash)) {
+                    json!(block.transactions.len())
+                } else {
+                    json!(null)
+                }
+            } else {
+                json!({"error": "Missing block number or block hash parameter"})
+            }
+        }
+
+        // synergy_getBlockReceipts
+        "synergy_getBlockReceipts" => {
+            let chain = chain.lock().unwrap();
+            let block = if let Some(block_num) = params.get(0).and_then(|v| v.as_u64()) {
+                chain.chain.iter().find(|b| b.block_index == block_num)
+            } else if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
+                chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash))
+            } else {
+                return json!({"error": "Missing block number or block hash parameter"});
+            };
+
+            if let Some(block) = block {
+                let mut cumulative_gas: u64 = 0;
+                let receipts: Vec<Value> = block.transactions.iter().enumerate().map(|(idx, tx)| {
+                    let gas_used = if tx.data.is_some() {
+                        tx.gas_limit.min(tx.estimate_gas())
+                    } else {
+                        crate::gas::constants::GAS_LIMIT_TRANSFER
+                    };
+                    cumulative_gas = cumulative_gas.saturating_add(gas_used);
+
+                    let is_contract_creation = tx.receiver.is_empty() || tx.receiver == "0x0";
+                    let contract_address = if is_contract_creation {
+                        let hash_input = format!("{}{}", tx.sender, tx.nonce);
+                        let addr_hash = hex::encode(blake3::hash(hash_input.as_bytes()).as_bytes());
+                        Some(format!("sync1{}", &addr_hash[..38]))
+                    } else {
+                        None
+                    };
+
+                    json!({
+                        "transactionHash": tx.hash(),
+                        "transactionIndex": idx,
+                        "blockHash": block.hash.clone(),
+                        "blockNumber": block.block_index,
+                        "from": tx.sender.clone(),
+                        "to": if is_contract_creation { Value::Null } else { json!(tx.receiver.clone()) },
+                        "cumulativeGasUsed": cumulative_gas,
+                        "gasUsed": gas_used,
+                        "effectiveGasPrice": tx.gas_price,
+                        "status": "0x1",
+                        "logs": [],
+                        "logsBloom": "0x".to_string() + &"0".repeat(512),
+                        "contractAddress": contract_address
+                    })
+                }).collect();
+                json!(receipts)
+            } else {
+                json!(null)
+            }
+        }
+
+        // synergy_getPendingTransactions
+        "synergy_getPendingTransactions" => {
+            let limit = params.get(0).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+            let sort_by = params.get(1).and_then(|v| v.as_str()).unwrap_or("timestamp");
+
+            let pool = tx_pool.lock().unwrap();
+            let mut txs: Vec<&Transaction> = pool.iter().collect();
+
+            match sort_by {
+                "gasPrice" => txs.sort_by(|a, b| b.gas_price.cmp(&a.gas_price)),
+                "nonce" => txs.sort_by(|a, b| a.nonce.cmp(&b.nonce)),
+                _ => txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)),
+            }
+
+            let result: Vec<Value> = txs.iter()
+                .take(limit)
+                .map(|tx| tx_to_explorer_json(tx, "pending", None, None))
+                .collect();
+            json!(result)
+        }
+
+        // synergy_getTransactionByBlockNumberAndIndex
+        "synergy_getTransactionByBlockNumberAndIndex" => {
+            if let (Some(block_num), Some(index)) = (
+                params.get(0).and_then(|v| v.as_u64()),
+                params.get(1).and_then(|v| v.as_u64()),
+            ) {
+                let chain = chain.lock().unwrap();
+                if let Some(block) = chain.chain.iter().find(|b| b.block_index == block_num) {
+                    if let Some(tx) = block.transactions.get(index as usize) {
+                        tx_to_explorer_json(tx, "confirmed", Some(block.block_index), Some(index as usize))
+                    } else {
+                        json!(null)
+                    }
+                } else {
+                    json!(null)
+                }
+            } else {
+                json!({"error": "Missing required parameters: blockNumber, index"})
+            }
+        }
+
+        // synergy_getTransactionByBlockHashAndIndex
+        "synergy_getTransactionByBlockHashAndIndex" => {
+            if let (Some(block_hash), Some(index)) = (
+                params.get(0).and_then(|v| v.as_str()),
+                params.get(1).and_then(|v| v.as_u64()),
+            ) {
+                let chain = chain.lock().unwrap();
+                if let Some(block) = chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash)) {
+                    if let Some(tx) = block.transactions.get(index as usize) {
+                        tx_to_explorer_json(tx, "confirmed", Some(block.block_index), Some(index as usize))
+                    } else {
+                        json!(null)
+                    }
+                } else {
+                    json!(null)
+                }
+            } else {
+                json!({"error": "Missing required parameters: blockHash, index"})
+            }
+        }
+
+        // synergy_maxFeePerGas
+        "synergy_maxFeePerGas" => {
+            use crate::gas::constants::DEFAULT_GAS_PRICE;
+            // In Synergy's fee model, max fee = 2x current gas price
+            let base = DEFAULT_GAS_PRICE;
+            json!(base * 2)
+        }
+
+        // synergy_maxPriorityFeePerGas
+        "synergy_maxPriorityFeePerGas" => {
+            use crate::gas::constants::DEFAULT_GAS_PRICE;
+            // Priority fee tip - typically a fraction of base gas price
+            json!(DEFAULT_GAS_PRICE / 4)
+        }
+
+        // synergy_getFeeHistory
+        "synergy_getFeeHistory" => {
+            let block_count = params.get(0).and_then(|v| v.as_u64()).unwrap_or(10) as usize;
+            let _newest_block = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
+            let reward_percentiles = params.get(2).and_then(|v| v.as_array());
+
+            let chain = chain.lock().unwrap();
+            let recent_blocks: Vec<_> = chain.chain.iter().rev().take(block_count).collect();
+
+            let mut base_fees: Vec<u64> = Vec::new();
+            let mut gas_used_ratios: Vec<f64> = Vec::new();
+            let mut rewards: Vec<Vec<u64>> = Vec::new();
+            let block_gas_limit = crate::gas::constants::BLOCK_GAS_LIMIT;
+
+            for block in recent_blocks.iter().rev() {
+                let block_gas: u64 = block.transactions.iter().map(|tx| tx.get_fee()).sum();
+                let ratio = block_gas as f64 / block_gas_limit as f64;
+
+                base_fees.push(crate::gas::constants::DEFAULT_GAS_PRICE);
+                gas_used_ratios.push(ratio);
+
+                if let Some(percentiles) = reward_percentiles {
+                    let mut gas_prices: Vec<u64> = block.transactions.iter().map(|tx| tx.gas_price).collect();
+                    gas_prices.sort();
+                    let block_rewards: Vec<u64> = percentiles.iter().map(|p| {
+                        let pct = p.as_f64().unwrap_or(50.0) / 100.0;
+                        if gas_prices.is_empty() {
+                            0
+                        } else {
+                            let idx = ((gas_prices.len() as f64 * pct) as usize).min(gas_prices.len() - 1);
+                            gas_prices[idx]
+                        }
+                    }).collect();
+                    rewards.push(block_rewards);
+                }
+            }
+
+            json!({
+                "baseFeePerGas": base_fees,
+                "gasUsedRatio": gas_used_ratios,
+                "reward": rewards,
+                "oldestBlock": recent_blocks.last().map(|b| b.block_index).unwrap_or(0)
+            })
+        }
+
+        // =====================================================================
+        // Phase 2: Enhanced Validator & Staking (New RPC Methods)
+        // =====================================================================
+
+        // synergy_getChainId
+        "synergy_getChainId" => {
+            let config = crate::config::load_node_config(None).ok();
+            let chain_id = config.as_ref().map(|cfg| cfg.blockchain.chain_id).unwrap_or(338639);
+            json!(chain_id)
+        }
+
+        // synergy_getValidatorByCluster
+        "synergy_getValidatorByCluster" => {
+            if let Some(cluster_id) = params.get(0).and_then(|v| v.as_u64()) {
+                let all_validators = validator_manager.get_all_validators();
+                let cluster_validators: Vec<_> = all_validators
+                    .into_iter()
+                    .filter(|v| v.cluster_id == Some(cluster_id))
+                    .collect();
+                json!(cluster_validators)
+            } else {
+                json!({"error": "Missing cluster ID parameter"})
+            }
+        }
+
+        // synergy_getValidatorRewards
+        "synergy_getValidatorRewards" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let _from_epoch = params.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+                let _to_epoch = params.get(2).and_then(|v| v.as_u64());
+
+                // Look up the validator to get block production stats
+                match validator_manager.get_validator(address) {
+                    Some(validator) => {
+                        // Calculate rewards from blocks produced
+                        let chain = chain.lock().unwrap();
+                        let mut rewards: Vec<Value> = Vec::new();
+                        let blocks_by_validator: Vec<_> = chain.chain.iter()
+                            .filter(|b| b.validator_id.eq_ignore_ascii_case(address))
+                            .collect();
+
+                        for block in &blocks_by_validator {
+                            let block_reward = 10_000_000_000u64; // 10 SNRG per block in nWei
+                            let tx_fees: u64 = block.transactions.iter().map(|tx| tx.get_fee()).sum();
+                            rewards.push(json!({
+                                "blockNumber": block.block_index,
+                                "amount": block_reward + tx_fees,
+                                "type": "block",
+                                "timestamp": block.timestamp
+                            }));
+                        }
+
+                        json!({
+                            "address": address,
+                            "totalBlocksProduced": validator.total_blocks_produced,
+                            "rewards": rewards,
+                            "totalRewards": rewards.iter()
+                                .filter_map(|r| r.get("amount").and_then(|a| a.as_u64()))
+                                .sum::<u64>()
+                        })
+                    }
+                    None => json!({"error": "Validator not found"})
+                }
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getValidatorPerformance
+        "synergy_getValidatorPerformance" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                match validator_manager.get_validator(address) {
+                    Some(validator) => {
+                        let chain = chain.lock().unwrap();
+                        let total_blocks = chain.chain.len() as u64;
+                        let blocks_produced: u64 = chain.chain.iter()
+                            .filter(|b| b.validator_id.eq_ignore_ascii_case(address))
+                            .count() as u64;
+
+                        let total_validators = validator_manager.get_validator_count().max(1) as f64;
+                        let expected_blocks = total_blocks as f64 / total_validators;
+                        let proposal_rate = if expected_blocks > 0.0 {
+                            (blocks_produced as f64 / expected_blocks).min(1.0)
+                        } else {
+                            0.0
+                        };
+
+                        json!({
+                            "address": address,
+                            "attestationSuccessRate": validator.uptime_percentage,
+                            "blockProposalSuccessRate": proposal_rate,
+                            "averageInclusionDelay": validator.average_block_time,
+                            "missedAttestations": validator.missed_blocks,
+                            "orphanedBlocks": 0,
+                            "effectiveBalance": validator.stake_amount,
+                            "totalBlocksProduced": blocks_produced,
+                            "synergyScore": validator.synergy_score,
+                            "reputationScore": validator.reputation_score,
+                            "collaborationScore": validator.collaboration_score,
+                            "uptime": validator.uptime_percentage
+                        })
+                    }
+                    None => json!({"error": "Validator not found"})
+                }
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getValidatorQueue
+        "synergy_getValidatorQueue" => {
+            if let Ok(registry) = validator_manager.registry.lock() {
+                let activation_queue: Vec<Value> = registry.pending_registrations.values().map(|r| {
+                    json!({
+                        "address": r.address,
+                        "name": r.name,
+                        "stakeAmount": r.stake_amount,
+                        "submittedAt": r.submitted_at
+                    })
+                }).collect();
+
+                let exit_queue: Vec<Value> = registry.jailed_validators.iter().map(|addr| {
+                    json!({"address": addr})
+                }).collect();
+
+                json!({
+                    "activationQueue": activation_queue,
+                    "activationQueueLength": activation_queue.len(),
+                    "exitQueue": exit_queue,
+                    "exitQueueLength": exit_queue.len(),
+                    "estimatedActivationTime": if activation_queue.is_empty() { 0 } else { current_timestamp() + 3600 },
+                    "estimatedExitTime": if exit_queue.is_empty() { 0 } else { current_timestamp() + 7200 }
+                })
+            } else {
+                json!({"error": "Failed to access validator registry"})
+            }
+        }
+
+        // synergy_requestValidatorExit
+        "synergy_requestValidatorExit" => {
+            if let (Some(address), Some(_signature)) = (
+                params.get(0).and_then(|v| v.as_str()),
+                params.get(1).and_then(|v| v.as_str()),
+            ) {
+                match validator_manager.get_validator(address) {
+                    Some(_validator) => {
+                        if let Ok(registry) = validator_manager.registry.lock() {
+                            let current_epoch = registry.current_epoch;
+                            let exit_epoch = current_epoch + 2; // 2 epoch delay
+                            let epoch_length = registry.epoch_length;
+                            let withdrawal_time = current_timestamp() + (2 * epoch_length);
+
+                            json!({
+                                "success": true,
+                                "message": "Validator exit requested",
+                                "validatorAddress": address,
+                                "currentEpoch": current_epoch,
+                                "exitEpoch": exit_epoch,
+                                "withdrawalAvailableAt": withdrawal_time
+                            })
+                        } else {
+                            json!({"success": false, "error": "Failed to access registry"})
+                        }
+                    }
+                    None => json!({"success": false, "error": "Validator not found"})
+                }
+            } else {
+                json!({"success": false, "error": "Missing required parameters: address, signature"})
+            }
+        }
+
+        // synergy_getValidatorSlashingHistory
+        "synergy_getValidatorSlashingHistory" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                match validator_manager.get_validator(address) {
+                    Some(validator) => {
+                        // Build slashing history from validator state
+                        let mut history: Vec<Value> = Vec::new();
+                        if validator.slashing_penalty > 0.0 {
+                            history.push(json!({
+                                "reason": "Slashing penalty recorded",
+                                "penalty": validator.slashing_penalty,
+                                "doubleSignCount": validator.double_signs,
+                                "missedBlocks": validator.missed_blocks,
+                                "balanceAfter": validator.stake_amount
+                            }));
+                        }
+                        json!({
+                            "address": address,
+                            "slashingEvents": history,
+                            "totalPenalties": validator.slashing_penalty,
+                            "doubleSignCount": validator.double_signs
+                        })
+                    }
+                    None => json!({"error": "Validator not found"})
+                }
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getClusterInfo
+        "synergy_getClusterInfo" => {
+            if let Some(cluster_id) = params.get(0).and_then(|v| v.as_u64()) {
+                if let Ok(registry) = validator_manager.registry.lock() {
+                    if let Some(cluster) = registry.clusters.get(&cluster_id) {
+                        let validator_details: Vec<Value> = cluster.validators.iter().map(|addr| {
+                            if let Some(v) = registry.validators.get(addr) {
+                                json!({
+                                    "address": v.address,
+                                    "name": v.name,
+                                    "stakeAmount": v.stake_amount,
+                                    "synergyScore": v.synergy_score,
+                                    "status": format!("{:?}", v.status)
+                                })
+                            } else {
+                                json!({"address": addr})
+                            }
+                        }).collect();
+
+                        json!({
+                            "clusterId": cluster.id,
+                            "address": cluster.address,
+                            "validators": validator_details,
+                            "validatorCount": cluster.validators.len(),
+                            "totalStake": cluster.total_stake,
+                            "averageSynergyScore": cluster.average_synergy_score,
+                            "createdAt": cluster.created_at,
+                            "lastRotation": cluster.last_rotation,
+                            "group": cluster.group
+                        })
+                    } else {
+                        json!(null)
+                    }
+                } else {
+                    json!({"error": "Failed to access validator registry"})
+                }
+            } else {
+                json!({"error": "Missing cluster ID parameter"})
+            }
+        }
+
+        // synergy_getClusterRewards
+        "synergy_getClusterRewards" => {
+            if let Some(cluster_id) = params.get(0).and_then(|v| v.as_u64()) {
+                let epoch = params.get(1).and_then(|v| v.as_u64()).unwrap_or(0);
+                if let Ok(registry) = validator_manager.registry.lock() {
+                    if let Some(cluster) = registry.clusters.get(&cluster_id) {
+                        let epoch_rewards = registry.calculate_epoch_rewards(epoch);
+                        let cluster_rewards: Vec<Value> = cluster.validators.iter().map(|addr| {
+                            let reward = epoch_rewards.get(addr).copied().unwrap_or(0);
+                            json!({
+                                "validatorAddress": addr,
+                                "rewardAmount": reward
+                            })
+                        }).collect();
+
+                        let total: u64 = cluster_rewards.iter()
+                            .filter_map(|r| r.get("rewardAmount").and_then(|a| a.as_u64()))
+                            .sum();
+
+                        json!({
+                            "clusterId": cluster_id,
+                            "epoch": epoch,
+                            "totalRewards": total,
+                            "distributions": cluster_rewards
+                        })
+                    } else {
+                        json!(null)
+                    }
+                } else {
+                    json!({"error": "Failed to access validator registry"})
+                }
+            } else {
+                json!({"error": "Missing cluster ID parameter"})
+            }
+        }
+
+        // synergy_proposeClusterChange
+        "synergy_proposeClusterChange" => {
+            if let (Some(cluster_id), Some(_proposal), Some(proposer)) = (
+                params.get(0).and_then(|v| v.as_u64()),
+                params.get(1),
+                params.get(2).and_then(|v| v.as_str()),
+            ) {
+                // Verify proposer is a validator
+                match validator_manager.get_validator(proposer) {
+                    Some(_) => {
+                        let proposal_id = format!("prop_{}_{}", cluster_id, current_timestamp());
+                        json!({
+                            "success": true,
+                            "proposalId": proposal_id,
+                            "clusterId": cluster_id,
+                            "proposer": proposer,
+                            "votingEndsAt": current_timestamp() + 86400 // 24 hours
+                        })
+                    }
+                    None => json!({"success": false, "error": "Proposer must be a registered validator"})
+                }
+            } else {
+                json!({"success": false, "error": "Missing required parameters: clusterId, proposal, proposer"})
+            }
+        }
+
+        // synergy_getStakingRewards
+        "synergy_getStakingRewards" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let specific_validator = params.get(1).and_then(|v| v.as_str());
+                let token_manager = TOKEN_MANAGER.clone();
+                let staking_info = token_manager.get_staking_info(address);
+
+                let rewards: Vec<Value> = staking_info.iter()
+                    .filter(|info| {
+                        specific_validator.map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v))
+                    })
+                    .map(|info| {
+                        json!({
+                            "validator": info.validator_address,
+                            "stakedAmount": info.amount,
+                            "rewardsEarned": info.rewards_earned,
+                            "stakingStart": info.stake_start,
+                            "isActive": info.is_active
+                        })
+                    })
+                    .collect();
+
+                let total_rewards: u64 = rewards.iter()
+                    .filter_map(|r| r.get("rewardsEarned").and_then(|a| a.as_u64()))
+                    .sum();
+
+                json!({
+                    "address": address,
+                    "rewards": rewards,
+                    "totalRewardsEarned": total_rewards
+                })
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getStakingAPY
+        "synergy_getStakingAPY" => {
+            let specific_validator = params.get(0).and_then(|v| v.as_str());
+            let token_manager = TOKEN_MANAGER.clone();
+            let total_staked = token_manager.get_staked_balance("*", "SNRG");
+            let total_supply = token_manager.get_all_tokens().iter()
+                .find(|t| t.symbol == "SNRG")
+                .map(|t| t.total_supply)
+                .unwrap_or(0);
+
+            let staking_rate = if total_supply > 0 {
+                total_staked as f64 / total_supply as f64
+            } else {
+                0.0
+            };
+
+            // Base APY: 5% annual, adjusted by staking participation
+            // Lower participation = higher APY to incentivize staking
+            let base_apy = 0.05;
+            let current_apy = if staking_rate > 0.0 && staking_rate < 1.0 {
+                base_apy / staking_rate.max(0.01)
+            } else {
+                base_apy
+            };
+            let capped_apy = current_apy.min(0.20); // Cap at 20%
+
+            let mut result = json!({
+                "currentAPY": capped_apy,
+                "averageAPY": capped_apy, // Simplified: same as current in testnet
+                "networkStakingRate": staking_rate,
+                "totalStaked": total_staked,
+                "totalSupply": total_supply,
+                "baseAPY": base_apy
+            });
+
+            if let Some(validator_addr) = specific_validator {
+                if let Some(validator) = validator_manager.get_validator(validator_addr) {
+                    // Higher synergy score = slightly better APY
+                    let validator_apy = capped_apy * (1.0 + validator.synergy_score * 0.1);
+                    result.as_object_mut().unwrap().insert(
+                        "validatorAPY".to_string(),
+                        json!(validator_apy.min(0.25))
+                    );
+                    result.as_object_mut().unwrap().insert(
+                        "validatorSynergyScore".to_string(),
+                        json!(validator.synergy_score)
+                    );
+                }
+            }
+
+            result
+        }
+
+        // synergy_getDelegatedStakes
+        "synergy_getDelegatedStakes" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let token_manager = TOKEN_MANAGER.clone();
+                let staking_info = token_manager.get_staking_info(address);
+
+                let delegations: Vec<Value> = staking_info.iter()
+                    .filter(|info| info.is_active)
+                    .map(|info| {
+                        json!({
+                            "validator": info.validator_address,
+                            "amount": info.amount,
+                            "rewardsEarned": info.rewards_earned,
+                            "delegatedAt": info.stake_start
+                        })
+                    })
+                    .collect();
+
+                json!({
+                    "address": address,
+                    "delegations": delegations,
+                    "totalDelegated": delegations.iter()
+                        .filter_map(|d| d.get("amount").and_then(|a| a.as_u64()))
+                        .sum::<u64>()
+                })
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getDelegators
+        "synergy_getDelegators" => {
+            if let Some(validator_addr) = params.get(0).and_then(|v| v.as_str()) {
+                let _limit = params.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
+                let token_manager = TOKEN_MANAGER.clone();
+
+                // Get all staking info and filter by validator
+                // We need to scan all known stakers - use balances as a proxy for known addresses
+                let all_balances = token_manager.balances.lock().unwrap();
+                let mut delegators: Vec<Value> = Vec::new();
+
+                for address in all_balances.keys() {
+                    let staking_info = token_manager.get_staking_info(address);
+                    for info in &staking_info {
+                        if info.validator_address.eq_ignore_ascii_case(validator_addr) && info.is_active {
+                            delegators.push(json!({
+                                "address": address,
+                                "amount": info.amount,
+                                "rewardsEarned": info.rewards_earned,
+                                "delegatedAt": info.stake_start
+                            }));
+                        }
+                    }
+                }
+
+                delegators.sort_by(|a, b| {
+                    let a_amt = a.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    let b_amt = b.get("amount").and_then(|v| v.as_u64()).unwrap_or(0);
+                    b_amt.cmp(&a_amt)
+                });
+                delegators.truncate(_limit);
+
+                json!({
+                    "validator": validator_addr,
+                    "delegators": delegators,
+                    "totalDelegators": delegators.len()
+                })
+            } else {
+                json!({"error": "Missing validator address parameter"})
+            }
+        }
+
+        // synergy_claimRewards
+        "synergy_claimRewards" => {
+            if let Some(staker) = params.get(0).and_then(|v| v.as_str()) {
+                let specific_validator = params.get(1).and_then(|v| v.as_str());
+                let token_manager = TOKEN_MANAGER.clone();
+                let staking_info = token_manager.get_staking_info(staker);
+
+                let mut total_claimed: u64 = 0;
+                for info in &staking_info {
+                    if specific_validator.map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v)) {
+                        total_claimed += info.rewards_earned;
+                    }
+                }
+
+                if total_claimed > 0 {
+                    // Credit rewards to staker's balance
+                    match token_manager.mint_tokens(staker, "SNRG", total_claimed) {
+                        Ok(_) => {
+                            json!({
+                                "success": true,
+                                "claimedAmount": total_claimed,
+                                "stakerAddress": staker,
+                                "message": "Rewards claimed successfully"
+                            })
+                        }
+                        Err(e) => json!({"success": false, "error": e})
+                    }
+                } else {
+                    json!({
+                        "success": false,
+                        "error": "No rewards available to claim",
+                        "stakerAddress": staker
+                    })
+                }
+            } else {
+                json!({"success": false, "error": "Missing staker address parameter"})
+            }
+        }
+
+        // synergy_getRewardsProjection
+        "synergy_getRewardsProjection" => {
+            if let (Some(address), Some(amount), Some(duration_days)) = (
+                params.get(0).and_then(|v| v.as_str()),
+                params.get(1).and_then(|v| v.as_u64()),
+                params.get(2).and_then(|v| v.as_u64()),
+            ) {
+                let specific_validator = params.get(3).and_then(|v| v.as_str());
+
+                // Calculate APY for projection
+                let token_manager = TOKEN_MANAGER.clone();
+                let total_staked = token_manager.get_staked_balance("*", "SNRG");
+                let total_supply = token_manager.get_all_tokens().iter()
+                    .find(|t| t.symbol == "SNRG")
+                    .map(|t| t.total_supply)
+                    .unwrap_or(1);
+
+                let staking_rate = (total_staked as f64 / total_supply as f64).max(0.01);
+                let base_apy = 0.05;
+                let apy = (base_apy / staking_rate).min(0.20);
+
+                let daily_rate = apy / 365.0;
+                let projected_reward = (amount as f64 * daily_rate * duration_days as f64) as u64;
+
+                json!({
+                    "address": address,
+                    "stakeAmount": amount,
+                    "durationDays": duration_days,
+                    "estimatedAPY": apy,
+                    "projectedReward": projected_reward,
+                    "projectedTotal": amount + projected_reward,
+                    "validator": specific_validator
+                })
+            } else {
+                json!({"error": "Missing required parameters: address, amount, duration"})
+            }
+        }
+
+        // synergy_getUnstakingPeriod
+        "synergy_getUnstakingPeriod" => {
+            json!({
+                "unstakingPeriodDays": 7,
+                "unstakingPeriodSeconds": 604800,
+                "currentQueueLength": 0,
+                "estimatedWithdrawalTime": current_timestamp() + 604800
+            })
         }
 
         // Legacy support

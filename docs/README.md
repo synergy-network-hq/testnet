@@ -163,6 +163,12 @@ synergy-testbeta/
 │   ├── README.md      # This file
 │   ├── setup-guide.md # Detailed setup instructions
 │   ├── validator-guide.md # Validator setup guide
+│   ├── how-to-set-up-indexer-explorer-node.md # Step-by-step Atlas indexer/explorer node setup
+│   ├── testbeta-dns-records-to-create.md # DNS records still needed for the normalized testbeta hostnames
+│   ├── testbeta-dns-final.csv # Final desired Testnet-Beta DNS state across NameSilo and Cloudflare
+│   ├── testbeta-control-panel-go-live-checklist.md # Remaining work before operators can use the app and Atlas shows live chain data
+│   ├── node-role-functions.md # Technical role/function matrix for all specialized node binaries
+│   ├── node-role-functions-operator.md # Plain-English operator guide to the node roles
 │   ├── api-reference.md # RPC API documentation
 │   ├── config-guide.md # Configuration reference
 │   └── troubleshooting.md # Common issues and solutions

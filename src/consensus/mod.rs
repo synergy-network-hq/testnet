@@ -8,11 +8,11 @@ pub mod consensus_algorithm;
 pub mod dao_governance;
 pub mod dual_quorum;
 pub mod synergy_score;
+#[cfg(test)]
 pub mod tests;
 pub mod vrf;
 
 use self::consensus_algorithm::ProofOfSynergy;
-use self::vrf::VRFConsensus;
 
 /// Starts the consensus mechanism using Proof of Synergy.
 pub fn start_consensus() {
