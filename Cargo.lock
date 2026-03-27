@@ -2736,7 +2736,7 @@ dependencies = [
  "sha3",
  "tokio",
  "toml 0.8.23",
- "wasmtime 21.0.2",
+ "wasmtime 24.0.6",
 ]
 
 [[package]]
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime"
-version = "21.0.2"
+version = "24.0.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69472708b96ee90579a482bdbb908ce97e53a9e5ebbcab59cc29c3977bcab512"
 dependencies = [
