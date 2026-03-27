@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-jit-debug"
-version = "21.0.2"
+version = "24.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0462a46b80d2352ee553b17d626b6468e9cec2220cc58ac31754fd7b58245e"
 dependencies = [
