@@ -2736,7 +2736,7 @@ dependencies = [
  "sha3",
  "tokio",
  "toml 0.8.23",
- "wasmtime",
+ "wasmtime 21.0.2",
 ]
 
 [[package]]
@@ -3266,7 +3266,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69472708b96ee90579a482bdbb908ce97e53a9e5ebbcab59cc29c3977bcab512"
 dependencies = [
@@ -3310,7 +3310,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-asm-macros"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "86292d6a9bf30c669582a40c4a4b8e0b8640e951f3635ee8e0acf7f87809961e"
 dependencies = [
@@ -3319,7 +3319,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-cache"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a180017db1233c902b992fea9484640d265f2fedf03db60eed57894cb2effcc"
 dependencies = [
@@ -3339,7 +3339,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-component-macro"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dc6aca484581f9651886dca45f9dea893e105713b58623d14b06c56d8fe3f3f1"
 dependencies = [
@@ -3354,13 +3354,13 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-component-util"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0aa907cc97ad039c43f98525d772f4841c2ce69a0c11eeec2a3a9c77fc730e87"
 
 [[package]]
 name = "wasmtime-cranelift"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b57d58e220ae223855c5d030ef20753377bc716d0c81b34c1fe74c9f44268774"
 dependencies = [
@@ -3385,7 +3385,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-cranelift-shared"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ba2cfdfdbde42f0f3baeddb62f3555524dee9f836c96da8d466e299f75f5eee"
 dependencies = [
@@ -3401,7 +3401,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-environ"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "abbf3075d9ee7eb1263dc67949aced64d0f0bf27be8098d34d8e5826cf0ff0f2"
 dependencies = [
@@ -3427,7 +3427,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-fiber"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3174f71c8fbd9d2cb1233ad9f912f106bdd2a1a6d11a1b7707974ba3ad5f304a"
 dependencies = [
@@ -3442,7 +3442,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-jit-debug"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4b0462a46b80d2352ee553b17d626b6468e9cec2220cc58ac31754fd7b58245e"
 dependencies = [
@@ -3454,7 +3454,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-jit-icache-coherence"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dacd2aa30fb20fd8cd0eb4e664024a1ab28a02958529fa05bf52117532a098fc"
 dependencies = [
@@ -3465,7 +3465,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-runtime"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d14e97c4bb36d91bcdd194745446d595e67ce8b89916806270fdbee640c747fd"
 dependencies = [
@@ -3495,7 +3495,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-types"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "530b94c627a454d24f520173d3145112d1b807c44c82697a57e1d8e28390cde4"
 dependencies = [
@@ -3508,7 +3508,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-versioned-export-macros"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5399c175ddba4a471b9da45105dea3493059d52b2d54860eadb0df04c813948d"
 dependencies = [
@@ -3519,7 +3519,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-winch"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "729dff119cfd2e2333504b52db6661e49278314c83276a01d15a2a86e566e614"
 dependencies = [
@@ -3536,7 +3536,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-wit-bindgen"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6945fc6cfee04ba81016e9723bea77a2b913108e03904a4d901daedf208365f5"
 dependencies = [
@@ -3548,7 +3548,7 @@ dependencies = [
 
 [[package]]
 name = "wasmtime-wmemcheck"
-version = "18.0.4"
+version = "21.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e1711f429111e782fac0537e0b3eb2ab6f821613cf1ec3013f2a0ff3fde41745"
 
