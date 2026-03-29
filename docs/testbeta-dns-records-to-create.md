@@ -25,12 +25,12 @@ The missing work is on `synergy-network.io`.
 
 ## Records To Create Now
 
-These are the records the current Testnet-Beta control panel, Atlas stack, and deployment scripts still expect.
+These are the records the canonical Testnet-Beta launch surfaces expect.
 
 | Host | Type | Target | Why |
 | --- | --- | --- | --- |
-| `testbeta-core-rpc.synergy-network.io` | `A` | `65.21.202.144` | Canonical public Testbeta RPC endpoint used by the control panel, Atlas backend, Atlas indexer, and node configs |
-| `testbeta-core-ws.synergy-network.io` | `A` | `65.21.202.144` | Canonical public Testbeta WebSocket endpoint used by node configs and generated peer metadata |
+| `testbeta-core-rpc.synergy-network.io` | `A` | `74.208.227.23` | Canonical public Testbeta RPC endpoint used by the control panel, Atlas backend, Atlas indexer, and node configs |
+| `testbeta-core-ws.synergy-network.io` | `A` | `74.208.227.23` | Canonical public Testbeta WebSocket endpoint used by node configs and generated peer metadata |
 | `testbeta-api.synergy-network.io` | `A` | `65.21.202.144` | Testbeta REST/API endpoint used by the control panel `.env.example` and cert scripts |
 | `testbeta-wallet-api.synergy-network.io` | `A` | `65.21.202.144` | Wallet API endpoint used by generated Testbeta peer metadata and control panel defaults |
 | `testbeta-faucet.synergy-network.io` | `A` | `65.21.202.144` | Faucet endpoint used in Testbeta environment defaults and SSL scripts |
@@ -48,12 +48,12 @@ These are not the canonical names anymore, but parts of the repo and operator sc
 
 | Host | Type | Target | Why |
 | --- | --- | --- | --- |
-| `testbeta-rpc.synergy-network.io` | `CNAME` | `testbeta-core-rpc.synergy-network.io` | Validator registration and token scripts still default to this alias |
+| `testbeta-rpc.synergy-network.io` | `CNAME` | `testbeta-core-rpc.synergy-network.io` | Compatibility alias only; canonical launch traffic stays on `testbeta-core-rpc` |
 | `testbeta-explorer-api.synergy-network.io` | `CNAME` | `testbeta-atlas-api.synergy-network.io` | SSL/cert scripts still reference this older explorer API alias |
 
 If your DNS provider does not support `CNAME` the way you want for these aliases, use `A` records pointing at the same IP as the canonical target instead:
 
-- `testbeta-rpc.synergy-network.io` -> `65.21.202.144`
+- `testbeta-rpc.synergy-network.io` -> `74.208.227.23`
 - `testbeta-explorer-api.synergy-network.io` -> `74.208.227.23`
 
 ## Records Already Present

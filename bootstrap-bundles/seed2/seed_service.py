@@ -9,18 +9,13 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
-from urllib.request import urlopen, Request
-from urllib.error import URLError
+
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_PATH = BASE_DIR / "config" / "seed-service.json"
 PEER_PATH = BASE_DIR / "data" / "peers.json"
 PEER_LOCK = threading.Lock()
 STATE = {"generated_at": None, "bootnodes": [], "peers": [], "peer_updated_at": None}
-
-# Peers that haven't re-registered within this window are considered stale and
-# will be purged automatically during the periodic refresh cycle.
-PEER_TTL_SECONDS = int(os.environ.get("SEED_PEER_TTL_SECONDS", 600))  # 10 minutes
 
 
 def load_config():
@@ -174,92 +169,6 @@ def peer_dials(peers):
     return sorted(dials)
 
 
-# ---------------------------------------------------------------------------
-# Peer liveness & TTL
-# ---------------------------------------------------------------------------
-
-def is_peer_alive(host, port, timeout=2.0):
-    """Quick TCP connect probe to check if a peer's P2P port is reachable."""
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def purge_stale_peers(peers, ttl_seconds=None):
-    """Remove peers whose updated_at timestamp is older than the TTL window.
-
-    Peers must re-register (heartbeat) within the TTL window to stay in the
-    directory.  This prevents the seed from serving addresses of nodes that
-    went offline long ago.
-    """
-    if ttl_seconds is None:
-        ttl_seconds = PEER_TTL_SECONDS
-    cutoff = int(time.time()) - ttl_seconds
-    return [peer for peer in peers if (peer.get("updated_at") or 0) >= cutoff]
-
-
-def liveness_filter(peers, timeout=2.0):
-    """Return only peers whose P2P port is currently reachable via TCP."""
-    alive = []
-    for peer in peers:
-        host = peer.get("public_host")
-        port = peer.get("p2p_port")
-        if host and port and is_peer_alive(host, port, timeout=timeout):
-            alive.append(peer)
-    return alive
-
-
-# ---------------------------------------------------------------------------
-# Inter-seed synchronization
-# ---------------------------------------------------------------------------
-
-def sync_peers_from_sibling_seeds(config):
-    """Pull peer lists from sibling seed servers and merge into our directory.
-
-    Each seed maintains its own peers.json independently.  This function
-    periodically fetches /peers from the other seed services and merges any
-    peers we don't already know about, keeping all three directories converged.
-    """
-    my_name = config.get("service_name", "")
-    siblings = [
-        seed for seed in config.get("seed_services", [])
-        if seed.get("name") != my_name
-    ]
-    if not siblings:
-        return
-
-    for sibling in siblings:
-        url = f"http://{sibling['hostname']}:{sibling['http_port']}/peers"
-        try:
-            req = Request(url, headers={"Accept": "application/json"})
-            with urlopen(req, timeout=5) as resp:
-                payload = json.loads(resp.read())
-        except (OSError, URLError, json.JSONDecodeError, ValueError):
-            continue
-
-        remote_peers = payload.get("peers")
-        if not isinstance(remote_peers, list):
-            continue
-
-        with PEER_LOCK:
-            peers = load_peers()
-            merged_count = 0
-            for entry in remote_peers:
-                normalized = normalize_peer_payload(entry)
-                if not normalized:
-                    continue
-                before = len(peers)
-                peers = merge_peer(peers, normalized)
-                if len(peers) > before:
-                    merged_count += 1
-            if merged_count > 0:
-                save_peers(peers)
-                STATE["peers"] = dedupe_peer_records(peers)
-                STATE["peer_updated_at"] = int(time.time())
-
-
 def expected_admin_token(config):
     token = str(os.environ.get("SEED_ADMIN_TOKEN") or config.get("admin_token") or "").strip()
     return token or None
@@ -311,22 +220,14 @@ def rebuild_state(config):
     STATE["bootnodes"] = snapshot
     with PEER_LOCK:
         peers = load_peers()
-        # Purge peers that haven't heartbeated within the TTL window
-        peers = purge_stale_peers(peers)
-        save_peers(peers)
         STATE["peers"] = peers
         STATE["peer_updated_at"] = int(time.time())
 
 
 def refresh_loop(config):
     interval = max(int(config.get("refresh_seconds", 30)), 5)
-    cycle = 0
     while True:
         rebuild_state(config)
-        # Sync from sibling seeds every 3rd cycle (~90s at default interval)
-        cycle += 1
-        if cycle % 3 == 0:
-            sync_peers_from_sibling_seeds(config)
         time.sleep(interval)
 
 
@@ -377,8 +278,6 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/peer-list.json":
-            # Serve only active peers (already TTL-pruned by rebuild_state)
-            active_peers = STATE["peers"]
             self._send_json(
                 {
                     "service": config["service_name"],
@@ -386,7 +285,7 @@ class Handler(BaseHTTPRequestHandler):
                     "generated_at": STATE["generated_at"],
                     "bootnodes": STATE["bootnodes"],
                     "seed_services": config["seed_services"],
-                    "peers": peer_dials(active_peers),
+                    "peers": peer_dials(STATE["peers"]),
                     "dnsaddr_bootstrap": [
                         f"dnsaddr=/dns/{entry['hostname']}/tcp/{entry['port']}"
                         for entry in config["bootnodes"]
@@ -409,16 +308,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/peers":
-            # Only serve active peers (TTL-pruned)
-            active_peers = dedupe_peer_records(STATE["peers"])
             self._send_json(
                 {
                     "service": config["service_name"],
                     "generated_at": STATE["generated_at"],
                     "peer_updated_at": STATE["peer_updated_at"],
-                    "peer_ttl_seconds": PEER_TTL_SECONDS,
-                    "active_peer_count": len(active_peers),
-                    "peers": active_peers,
+                    "peers": dedupe_peer_records(STATE["peers"]),
                 }
             )
             return
@@ -455,8 +350,6 @@ class Handler(BaseHTTPRequestHandler):
                 normalized = normalize_peer_payload(entry)
                 if not normalized:
                     continue
-                # Stamp current time so the TTL window resets on each heartbeat
-                normalized["updated_at"] = int(time.time())
                 peers = merge_peer(peers, normalized)
                 updated += 1
             save_peers(peers)

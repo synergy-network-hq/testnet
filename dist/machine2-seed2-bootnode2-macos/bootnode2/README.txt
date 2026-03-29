@@ -8,7 +8,7 @@ Purpose
 Endpoint
 - Hostname: bootnode2.synergynode.xyz
 - IP: 73.79.66.255
-- P2P Port: 38638
+- P2P Port: 5620
 
 Start
 - Linux/macOS: ./install_and_start.sh
@@ -19,6 +19,6 @@ Control
 - Windows: powershell -ExecutionPolicy Bypass -File .\nodectl.ps1 status
 
 Notes
-- Open TCP 38638 on the target host firewall.
+- Open TCP 5620 on the target host firewall.
 - Publish A record bootnode2.synergynode.xyz -> 73.79.66.255
 - Publish _dnsaddr.bootstrap TXT records from the root DNS_RECORDS.txt file in /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/bootstrap-bundles

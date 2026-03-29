@@ -1,0 +1,195 @@
+# Synergy Testnet-Beta Command Reference
+
+## Frozen Port Model
+
+| Purpose | Canonical Port | Slot 0 | Slot 1 | Slot 2 |
+|---|---:|---:|---:|---:|
+| Bootnode P2P | 5620 | 5620 | 5620 | 5620 |
+| Seed HTTP | 5621 | 5621 | 5621 | 5621 |
+| Validator / Service P2P | 5630 + slot | 5630 | 5631 | 5632 |
+| RPC (HTTP) | 5730 + slot | 5730 | 5731 | 5732 |
+| WebSocket | 5830 + slot | 5830 | 5831 | 5832 |
+| Discovery | 5930 + slot | 5930 | 5931 | 5932 |
+| Metrics | 6030 + slot | 6030 | 6031 | 6032 |
+
+## Canonical Public Endpoints
+
+```text
+https://testbeta-core-rpc.synergy-network.io
+wss://testbeta-core-ws.synergy-network.io
+https://testbeta-api.synergy-network.io
+https://testbeta-explorer.synergy-network.io
+https://testbeta-atlas-api.synergy-network.io
+https://testbeta-rpc.synergy-network.io
+```
+
+## Bootnodes
+
+```text
+snr://bootstrap@bootnode1.synergynode.xyz:5620
+snr://bootstrap@bootnode2.synergynode.xyz:5620
+snr://bootstrap@bootnode3.synergynode.xyz:5620
+```
+
+## Seed Servers
+
+```text
+http://seed1.synergynode.xyz:5621
+http://seed2.synergynode.xyz:5621
+http://seed3.synergynode.xyz:5621
+```
+
+## Process Status
+
+```bash
+pgrep -la synergy-testbeta
+ps aux | grep synergy-testbeta | grep -v grep
+systemctl status synergy-bootnode
+systemctl status synergy-seed
+```
+
+## Node PID Checks
+
+```bash
+cat ~/bootnode1/data/node.pid
+cat ~/seed1/data/seed.pid
+kill -0 "$(cat ~/bootnode1/data/node.pid)" && echo "running" || echo "dead"
+```
+
+## Local Listener Checks
+
+```bash
+lsof -iTCP:5630 -sTCP:LISTEN
+lsof -iTCP:5730 -sTCP:LISTEN
+lsof -iTCP:5830 -sTCP:LISTEN
+lsof -iTCP:6030 -sTCP:LISTEN
+
+ss -tlnp | grep -E '5620|5621|5630|5730|5830|5930|6030'
+netstat -an | grep -E '5620|5621|5630|5730|5830|5930|6030'
+```
+
+## Local RPC
+
+```bash
+curl -s http://127.0.0.1:5730/health
+
+curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}'
+
+curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_getLatestBlock","params":[],"id":1}'
+
+curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_getPeerInfo","params":[],"id":1}'
+
+curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}'
+```
+
+## Public RPC Comparison
+
+```bash
+LOCAL=$(curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
+  | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
+
+PUBLIC=$(curl -s -X POST https://testbeta-core-rpc.synergy-network.io \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
+  | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
+
+echo "Local: $LOCAL | Public: $PUBLIC | Diff: $((PUBLIC - LOCAL))"
+```
+
+## Seed Service Checks
+
+```bash
+curl -s http://seed1.synergynode.xyz:5621/healthz
+curl -s http://seed2.synergynode.xyz:5621/healthz
+curl -s http://seed3.synergynode.xyz:5621/healthz
+
+curl -s http://seed1.synergynode.xyz:5621/peers
+curl -s http://seed1.synergynode.xyz:5621/peer-list.json
+curl -s http://seed1.synergynode.xyz:5621/dns/bootstrap.txt
+
+curl -s -X POST http://seed1.synergynode.xyz:5621/peers/register \
+  -H 'Content-Type: application/json' \
+  -d '{"endpoint":"<your_public_ip>:5630","node_id":"<your_node_id>"}'
+```
+
+## Bootnode Connectivity
+
+```bash
+nc -zv bootnode1.synergynode.xyz 5620
+nc -zv bootnode2.synergynode.xyz 5620
+nc -zv bootnode3.synergynode.xyz 5620
+
+for host in bootnode1 bootnode2 bootnode3; do
+  nc -zv "${host}.synergynode.xyz" 5620 2>&1
+done
+
+timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergynode.xyz/5620' && echo "open" || echo "closed"
+```
+
+## External Accessibility
+
+```bash
+curl -s https://api.ipify.org
+
+nc -zv <your_public_ip> 5630
+ss -tlnp | grep 5730
+
+curl -s https://portchecker.io/api/port-checker \
+  -H 'Content-Type: application/json' \
+  -d "{\"host\":\"$(curl -s https://api.ipify.org)\",\"ports\":[5630]}"
+
+sudo iptables -L INPUT -n | grep 5630
+sudo ufw status | grep 5630
+```
+
+## Metrics
+
+```bash
+curl -s http://127.0.0.1:6030/metrics | head -40
+curl -s http://127.0.0.1:6030/metrics | grep synergy_block_height
+watch -n 5 "curl -s http://127.0.0.1:6030/metrics | grep synergy_block_height"
+```
+
+## Launch Package Commands
+
+```bash
+nohup synergy-testbeta start \
+  --config ~/.synergy/testnet-beta/node-01/config/node.toml \
+  > ~/.synergy/testnet-beta/node-01/logs/node.out 2>&1 &
+
+tail -f ~/.synergy/testnet-beta/node-01/logs/node.out
+tail -f ~/.synergy/testnet-beta/node-01/data/logs/validator.log
+```
+
+## Bootnode / Seed Bundle Health
+
+```bash
+curl -s http://127.0.0.1:5621/healthz
+curl -s -X DELETE http://127.0.0.1:5621/peers
+
+curl -s http://seed1.synergynode.xyz:5621/peers | python3 -m json.tool
+curl -s http://seed1.synergynode.xyz:5621/peer-list.json | python3 -m json.tool
+```
+
+## Quick Smoke Check
+
+```bash
+echo "=== Process ===" && pgrep -la synergy-testbeta || echo "NOT RUNNING"
+echo "=== P2P ===" && lsof -iTCP:5630 -sTCP:LISTEN || echo "NOT LISTENING"
+echo "=== RPC ===" && lsof -iTCP:5730 -sTCP:LISTEN || echo "NOT LISTENING"
+echo "=== Metrics ===" && lsof -iTCP:6030 -sTCP:LISTEN || echo "NOT LISTENING"
+echo "=== Seed Health ===" && curl -s http://seed1.synergynode.xyz:5621/healthz
+echo "=== Latest Block ===" && curl -s -X POST http://127.0.0.1:5730 \
+  -H 'Content-Type: application/json' \
+  -d '{"jsonrpc":"2.0","method":"synergy_getLatestBlock","params":[],"id":1}'
+```

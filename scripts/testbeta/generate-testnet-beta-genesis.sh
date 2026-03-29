@@ -11,50 +11,64 @@ if [[ ! -f "$INVENTORY_FILE" ]]; then
   exit 1
 fi
 
-if [[ ! -f "$NODE_ADDRESSES_FILE" ]]; then
-  echo "Missing node address file: $NODE_ADDRESSES_FILE" >&2
-  echo "Run scripts/testbeta/generate-node-keys.sh first." >&2
-  exit 1
-fi
-
 mkdir -p "$(dirname "$OUTPUT_FILE")"
 
-python3 - "$INVENTORY_FILE" "$NODE_ADDRESSES_FILE" "$OUTPUT_FILE" <<'PY'
+python3 - "$ROOT_DIR" "$INVENTORY_FILE" "$NODE_ADDRESSES_FILE" "$OUTPUT_FILE" <<'PY'
 import csv
 import json
 import os
 import sys
+from pathlib import Path
 
-inventory_file, addresses_file, output_file = sys.argv[1:4]
+root_dir, inventory_file, addresses_file, output_file = sys.argv[1:5]
 
 chain_id = int(os.environ.get("TESTBETA_CHAIN_ID", "338639"))
 genesis_time = os.environ.get("TESTBETA_GENESIS_TIME", "2026-01-01T00:00:00Z")
-validator_stake = int(os.environ.get("TESTBETA_VALIDATOR_STAKE", "5000000000000"))
+validator_stake = int(os.environ.get("TESTBETA_VALIDATOR_STAKE", "50000000000000"))
+validator_limit = int(os.environ.get("TESTBETA_GENESIS_VALIDATOR_LIMIT", "4"))
+minimum_stake_amount = int(os.environ.get("TESTBETA_MIN_STAKE_AMOUNT", "5000000000000"))
 
-faucet_address = os.environ.get("TESTBETA_FAUCET_ADDRESS", "synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07")
-rewards_pool_address = os.environ.get("TESTBETA_REWARDS_POOL_ADDRESS", "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg")
-treasury_address = os.environ.get("TESTBETA_TREASURY_ADDRESS", "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd")
-foundation_address = os.environ.get("TESTBETA_FOUNDATION_ADDRESS", "synw1v6fhr0x7v6e2hxf9d9l72z2fcmn2c4k4m6m7d8")
-test_pool_address = os.environ.get("TESTBETA_TEST_POOL_ADDRESS", "synw1q0a8jzk24y8ra9qy0wqp6lx8kclha04r6w3lmf")
+treasury_address = os.environ.get("TESTBETA_TREASURY_ADDRESS", "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh")
+team_address = os.environ.get("TESTBETA_TEAM_ADDRESS", "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv")
+ecosystem_address = os.environ.get("TESTBETA_ECOSYSTEM_ADDRESS", "synw1vkn2dq8mftcn7nkdhyv5t0jrv83thf0cakkj")
+faucet_address = os.environ.get("TESTBETA_FAUCET_ADDRESS", "synw1prdr55ggjhupx0d7jycftrl2hzs3k8zuw5ad")
+public_sale_address = os.environ.get("TESTBETA_PUBLIC_SALE_ADDRESS", "synw1f2kpjt9flxl6y4e3uez0zp3hjanamrlew5ja")
+dao_address = os.environ.get("TESTBETA_DAO_ADDRESS", "syndao1lf6q9zmfh4w4t30d04j05nmsku03te4685t5vn")
 
-faucet_balance = int(os.environ.get("TESTBETA_FAUCET_BALANCE", "1500000000000000000"))
-rewards_pool_balance = int(os.environ.get("TESTBETA_REWARDS_POOL_BALANCE", "1500000000000000000"))
-treasury_balance = int(os.environ.get("TESTBETA_TREASURY_BALANCE", "8800000000000000000"))
-foundation_balance = int(os.environ.get("TESTBETA_FOUNDATION_BALANCE", "50000000000000000"))
-test_pool_balance = int(os.environ.get("TESTBETA_TEST_POOL_BALANCE", "100000000000000000"))
+treasury_balance = int(os.environ.get("TESTBETA_TREASURY_BALANCE", "400000000000000"))
+team_balance = int(os.environ.get("TESTBETA_TEAM_BALANCE", "150000000000000"))
+ecosystem_balance = int(os.environ.get("TESTBETA_ECOSYSTEM_BALANCE", "200000000000000"))
+faucet_balance = int(os.environ.get("TESTBETA_FAUCET_BALANCE", "100000000000000"))
+public_sale_balance = int(os.environ.get("TESTBETA_PUBLIC_SALE_BALANCE", "100000000000000"))
 
 def parse_bool(raw: str) -> bool:
     value = (raw or "").strip().lower()
     return value in {"1", "true", "yes", "on"}
 
 addresses = {}
-with open(addresses_file, newline="", encoding="utf-8") as handle:
-    reader = csv.DictReader(handle)
-    for row in reader:
-        machine_id = row.get("machine_id", "").strip()
-        address = row.get("address", "").strip()
-        if machine_id and address:
-            addresses[machine_id] = address
+if Path(addresses_file).is_file():
+    with open(addresses_file, newline="", encoding="utf-8") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            machine_id = row.get("machine_id", "").strip()
+            address = row.get("address", "").strip()
+            if machine_id and address:
+                addresses[machine_id] = address
+else:
+    fallback_dir = Path(root_dir) / "config" / "genesis-validators"
+    if not fallback_dir.is_dir():
+        fallback_dir = Path(root_dir) / "testbeta" / "lean15" / "keys"
+    for index in range(1, validator_limit + 1):
+        identity_path = fallback_dir / f"node-{index:02}.identity.json"
+        if not identity_path.is_file():
+            continue
+        try:
+            identity = json.loads(identity_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            continue
+        address = str(identity.get("address") or "").strip()
+        if address:
+            addresses[f"machine-{index:02}"] = address
 
 inventory_rows = []
 with open(inventory_file, newline="", encoding="utf-8") as handle:
@@ -62,20 +76,13 @@ with open(inventory_file, newline="", encoding="utf-8") as handle:
     for row in reader:
         inventory_rows.append(row)
 
-machine_by_id = {row["machine_id"]: row for row in inventory_rows}
+bootnodes = [
+    "snr://bootstrap@bootnode1.synergynode.xyz:5620",
+    "snr://bootstrap@bootnode2.synergynode.xyz:5620",
+    "snr://bootstrap@bootnode3.synergynode.xyz:5620",
+]
 
-bootnodes = []
-for bootnode_id in ("machine-01", "machine-02"):
-    row = machine_by_id.get(bootnode_id)
-    if not row:
-        continue
-    endpoint_ip = row.get("vpn_ip") or row.get("host")
-    p2p_port = row.get("p2p_port")
-    address = addresses.get(bootnode_id)
-    if endpoint_ip and p2p_port and address:
-        bootnodes.append(f"snr://{address}@{endpoint_ip}:{p2p_port}")
-
-validator_rows = [row for row in inventory_rows if parse_bool(row.get("auto_register_validator", ""))]
+validator_rows = [row for row in inventory_rows if parse_bool(row.get("auto_register_validator", ""))][:validator_limit]
 validators = []
 validator_allocations = []
 for index, row in enumerate(validator_rows, start=1):
@@ -87,16 +94,16 @@ for index, row in enumerate(validator_rows, start=1):
     validators.append(
         {
             "address": address,
-            "public_key_file": f"testbeta/lean15/keys/{machine_id}/identity.json",
+            "public_key_file": f"config/genesis-validators/node-{index:02}.identity.json",
             "stake": str(validator_stake),
             "commission_rate": 0.05,
             "min_self_delegation": "1",
             "max_delegations": 1000,
             "details": {
-                "name": f"{node_id} validator",
-                "identity": node_id,
-                "website": "https://synergy.local",
-                "security_contact": "security@synergy.local",
+                "name": f"Synergy Validator {index}",
+                "identity": f"genesis-validator-{index}",
+                "website": "https://synergy-network.io",
+                "security_contact": "security@synergy-network.io",
                 "class": int(row.get("address_class") or 1),
             },
         }
@@ -107,40 +114,40 @@ for index, row in enumerate(validator_rows, start=1):
             "address": address,
             "balance": str(validator_stake),
             "stake": str(validator_stake),
-            "description": f"Testbeta validator allocation for {node_id}",
+            "description": f"Genesis allocation for Synergy Validator {index}",
         }
     )
 
 genesis_allocations = [
     {
-        "type": "faucet_wallet",
-        "address": faucet_address,
-        "balance": str(faucet_balance),
-        "description": "Closed-testbeta faucet wallet",
-    },
-    {
-        "type": "rewards_pool",
-        "address": rewards_pool_address,
-        "balance": str(rewards_pool_balance),
-        "description": "Validator rewards pool",
-    },
-    {
         "type": "treasury",
         "address": treasury_address,
         "balance": str(treasury_balance),
-        "description": "Protocol treasury",
+        "description": "Foundation/Treasury",
     },
     {
-        "type": "foundation_wallet",
-        "address": foundation_address,
-        "balance": str(foundation_balance),
-        "description": "Foundation/devops wallet",
+        "type": "team_wallet",
+        "address": team_address,
+        "balance": str(team_balance),
+        "description": "Team",
     },
     {
-        "type": "test_wallet_pool",
-        "address": test_pool_address,
-        "balance": str(test_pool_balance),
-        "description": "Load and integration testing wallet pool",
+        "type": "ecosystem_wallet",
+        "address": ecosystem_address,
+        "balance": str(ecosystem_balance),
+        "description": "Ecosystem Development",
+    },
+    {
+        "type": "faucet_wallet",
+        "address": faucet_address,
+        "balance": str(faucet_balance),
+        "description": "Testnet Faucet Reserve",
+    },
+    {
+        "type": "public_sale_wallet",
+        "address": public_sale_address,
+        "balance": str(public_sale_balance),
+        "description": "Future Public Sale",
     },
 ]
 genesis_allocations.extend(validator_allocations)
@@ -154,12 +161,12 @@ for allocation in genesis_allocations:
 
 genesis = {
     "metadata": {
-        "network_name": "Synergy Closed Testnet Beta",
-        "network_id": "synergy-testbeta-closed-001",
+        "network_name": "Synergy Testnet Beta",
+        "network_id": "synergy-testnet-beta",
         "genesis_time": genesis_time,
         "chain_id": str(chain_id),
         "version": "2.1.0-testbeta",
-        "description": "Closed, WireGuard-only deterministic testbeta genesis",
+        "description": "Synergy Testnet-Beta genesis configuration",
     },
     "consensus": {
         "algorithm": "PoSy",
@@ -167,12 +174,12 @@ genesis = {
         "parameters": {
             "block_time_ms": 2000,
             "epoch_length": 50,
-            "min_validators": 3,
-            "max_validators": 15,
+            "min_validators": validator_limit,
+            "max_validators": validator_limit,
             "quorum_threshold": 0.67,
-            "min_stake_amount": str(validator_stake),
+            "min_stake_amount": str(minimum_stake_amount),
             "allow_zero_stake_validators": False,
-            "dynamic_validator_registration": True,
+            "dynamic_validator_registration": False,
             "slashing_conditions": {
                 "double_sign_penalty": 1000000,
                 "downtime_penalty": 100000,
@@ -183,14 +190,14 @@ genesis = {
     },
     "network": {
         "chain_id": chain_id,
-        "rpc_endpoint": "http://10.50.0.7:48650",
-        "websocket_endpoint": "ws://10.50.0.7:58650",
-        "api_endpoint": "http://10.50.0.7:48650",
+        "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io",
+        "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
+        "api_endpoint": "https://testbeta-api.synergy-network.io",
         "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
-        "rpc_port": 48650,
-        "p2p_port": 38638,
-        "websocket_port": 58650,
-        "metrics_port": 9090,
+        "rpc_port": 5730,
+        "p2p_port": 5630,
+        "websocket_port": 5830,
+        "metrics_port": 6030,
         "bootnodes": bootnodes,
     },
     "supply": {
@@ -203,7 +210,7 @@ genesis = {
     "genesis_allocations": genesis_allocations,
     "validators": validators,
     "governance": {
-        "dao_address": "syndao17qw77teuxfejlupqpadzzj9exavmtmhysac2uq",
+        "dao_address": dao_address,
         "treasury_address": treasury_address,
         "proposal_deposit": "10000",
         "voting_period": 100,

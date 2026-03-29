@@ -5,20 +5,20 @@
     "genesis_time": "2026-01-01T00:00:00Z",
     "chain_id": "338639",
     "version": "2.1.0-testbeta",
-    "description": "Synergy Testnet Beta genesis configuration"
+    "description": "Synergy Testnet-Beta genesis configuration"
   },
   "consensus": {
     "algorithm": "PoSy",
     "version": "2.1",
     "parameters": {
-      "block_time_ms": 2000,
-      "epoch_length": 50,
-      "min_validators": 3,
-      "max_validators": 15,
-      "quorum_threshold": 0.67,
-      "min_stake_amount": "5000000000000",
-      "allow_zero_stake_validators": false,
-      "dynamic_validator_registration": true,
+        "block_time_ms": 2000,
+        "epoch_length": 50,
+        "min_validators": 4,
+        "max_validators": 4,
+        "quorum_threshold": 0.67,
+        "min_stake_amount": "5000000000000",
+        "allow_zero_stake_validators": false,
+        "dynamic_validator_registration": false,
       "slashing_conditions": {
         "double_sign_penalty": 1000000,
         "downtime_penalty": 100000,
@@ -29,22 +29,22 @@
   },
   "network": {
     "chain_id": 338639,
-    "rpc_endpoint": "https://testbeta-rpc.synergy-network.io",
-    "websocket_endpoint": "wss://testbeta-ws.synergy-network.io",
-    "api_endpoint": "https://testbeta-rpc.synergy-network.io",
+    "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io",
+    "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
+    "api_endpoint": "https://testbeta-api.synergy-network.io",
     "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
-    "rpc_port": 48650,
-    "p2p_port": 38638,
-    "websocket_port": 58650,
-    "metrics_port": 9090,
+    "rpc_port": 5730,
+    "p2p_port": 5630,
+    "websocket_port": 5830,
+    "metrics_port": 6030,
     "bootnodes": [
-      "snr://bootstrap@bootnode1.synergynode.xyz:38638",
-      "snr://bootstrap@bootnode2.synergynode.xyz:38638",
-      "snr://bootstrap@bootnode3.synergynode.xyz:38638"
+      "snr://bootstrap@bootnode1.synergynode.xyz:5620",
+      "snr://bootstrap@bootnode2.synergynode.xyz:5620",
+      "snr://bootstrap@bootnode3.synergynode.xyz:5620"
     ]
   },
   "supply": {
-    "total_supply": "11950035000000000000",
+    "total_supply": "1150000000000000",
     "token_symbol": "SNRG",
     "token_name": "Synergy Token",
     "decimals": 9,
@@ -52,212 +52,134 @@
   },
   "genesis_allocations": [
     {
-      "type": "faucet_wallet",
-      "address": "synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07",
-      "balance": "1500000000000000000",
-      "description": "Closed-testbeta faucet wallet"
-    },
-    {
-      "type": "rewards_pool",
-      "address": "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg",
-      "balance": "1500000000000000000",
-      "description": "Validator rewards pool"
-    },
-    {
       "type": "treasury",
-      "address": "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd",
-      "balance": "8800000000000000000",
-      "description": "Protocol treasury"
+      "address": "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh",
+      "balance": "400000000000000",
+      "description": "Foundation/Treasury"
     },
     {
-      "type": "foundation_wallet",
-      "address": "synw1v6fhr0x7v6e2hxf9d9l72z2fcmn2c4k4m6m7d8",
-      "balance": "50000000000000000",
-      "description": "Foundation/devops wallet"
+      "type": "team_wallet",
+      "address": "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv",
+      "balance": "150000000000000",
+      "description": "Team"
     },
     {
-      "type": "test_wallet_pool",
-      "address": "synw1q0a8jzk24y8ra9qy0wqp6lx8kclha04r6w3lmf",
-      "balance": "100000000000000000",
-      "description": "Load and integration testing wallet pool"
+      "type": "ecosystem_wallet",
+      "address": "synw1vkn2dq8mftcn7nkdhyv5t0jrv83thf0cakkj",
+      "balance": "200000000000000",
+      "description": "Ecosystem Development"
     },
     {
-      "type": "fee_collector",
-      "address": "synf1vt378ycuswrxfk6p73srtyf5972hek6avgqc68",
-      "balance": "0",
-      "description": "Transaction fee collector — accumulates gas fees from all transactions"
+      "type": "faucet_wallet",
+      "address": "synw1prdr55ggjhupx0d7jycftrl2hzs3k8zuw5ad",
+      "balance": "100000000000000",
+      "description": "Testnet Faucet Reserve"
     },
     {
-      "type": "stake_vault",
-      "address": "synl1dwnssqdyp7nqlc9253ydy9957m6n5pggnpzqgl",
-      "balance": "0",
-      "description": "Stake vault — holds delegated validator stakes"
-    },
-    {
-      "type": "validator_wallet",
-      "address": "synv1199526ap3rjxsjkn9hmdtn7lvz30n7dats8epfv",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for consensus-01"
+      "type": "public_sale_wallet",
+      "address": "synw1f2kpjt9flxl6y4e3uez0zp3hjanamrlew5ja",
+      "balance": "100000000000000",
+      "description": "Future Public Sale"
     },
     {
       "type": "validator_wallet",
-      "address": "synv11szw4gam8qz33xa00xar5m2yppdxs4euq3emxw9",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for consensus-02"
+      "address": "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
+      "balance": "50000000000000",
+      "stake": "50000000000000",
+      "description": "Genesis allocation for Synergy Validator 1"
     },
     {
       "type": "validator_wallet",
-      "address": "synv11jnpq8009mkc5peeaea97hlvte077gjsgxrpu35",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for consensus-03"
+      "address": "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
+      "balance": "50000000000000",
+      "stake": "50000000000000",
+      "description": "Genesis allocation for Synergy Validator 2"
     },
     {
       "type": "validator_wallet",
-      "address": "synv11lcluc0n2ps4ympdl7jv9dskcs0zqm6nwxgrx52",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for consensus-04"
+      "address": "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
+      "balance": "50000000000000",
+      "stake": "50000000000000",
+      "description": "Genesis allocation for Synergy Validator 3"
     },
     {
       "type": "validator_wallet",
-      "address": "synv11pvqw0rev506yr2jlyw2rdyqfhvz3ew095fmzg6",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for consensus-05"
-    },
-    {
-      "type": "validator_wallet",
-      "address": "synv4164p0t0nrrq3js0fljanpr8gwpr9aqwej0rk88x",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for governance-01"
-    },
-    {
-      "type": "validator_wallet",
-      "address": "synv41plc0989mplw58tjeesceujjxj5vnjz5yydpl9g",
-      "balance": "5000000000000",
-      "stake": "5000000000000",
-      "description": "Testbeta validator allocation for governance-02"
+      "address": "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
+      "balance": "50000000000000",
+      "stake": "50000000000000",
+      "description": "Genesis allocation for Synergy Validator 4"
     }
   ],
   "validators": [
     {
-      "address": "synv1199526ap3rjxsjkn9hmdtn7lvz30n7dats8epfv",
-      "public_key_file": "testbeta/lean15/keys/node-01/identity.json",
-      "stake": "5000000000000",
+      "address": "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
+      "public_key_file": "config/genesis-validators/node-01.identity.json",
+      "stake": "50000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
       "max_delegations": 1000,
       "details": {
-        "name": "consensus-01 validator",
-        "identity": "consensus-01",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
+        "name": "Synergy Validator 1",
+        "identity": "genesis-validator-1",
+        "website": "https://synergy-network.io",
+        "security_contact": "security@synergy-network.io",
         "class": 1
       }
     },
     {
-      "address": "synv11szw4gam8qz33xa00xar5m2yppdxs4euq3emxw9",
-      "public_key_file": "testbeta/lean15/keys/node-02/identity.json",
-      "stake": "5000000000000",
+      "address": "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
+      "public_key_file": "config/genesis-validators/node-02.identity.json",
+      "stake": "50000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
       "max_delegations": 1000,
       "details": {
-        "name": "consensus-02 validator",
-        "identity": "consensus-02",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
+        "name": "Synergy Validator 2",
+        "identity": "genesis-validator-2",
+        "website": "https://synergy-network.io",
+        "security_contact": "security@synergy-network.io",
         "class": 1
       }
     },
     {
-      "address": "synv11jnpq8009mkc5peeaea97hlvte077gjsgxrpu35",
-      "public_key_file": "testbeta/lean15/keys/node-03/identity.json",
-      "stake": "5000000000000",
+      "address": "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
+      "public_key_file": "config/genesis-validators/node-03.identity.json",
+      "stake": "50000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
       "max_delegations": 1000,
       "details": {
-        "name": "consensus-03 validator",
-        "identity": "consensus-03",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
+        "name": "Synergy Validator 3",
+        "identity": "genesis-validator-3",
+        "website": "https://synergy-network.io",
+        "security_contact": "security@synergy-network.io",
         "class": 1
       }
     },
     {
-      "address": "synv11lcluc0n2ps4ympdl7jv9dskcs0zqm6nwxgrx52",
-      "public_key_file": "testbeta/lean15/keys/node-04/identity.json",
-      "stake": "5000000000000",
+      "address": "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
+      "public_key_file": "config/genesis-validators/node-04.identity.json",
+      "stake": "50000000000000",
       "commission_rate": 0.05,
       "min_self_delegation": "1",
       "max_delegations": 1000,
       "details": {
-        "name": "consensus-04 validator",
-        "identity": "consensus-04",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
+        "name": "Synergy Validator 4",
+        "identity": "genesis-validator-4",
+        "website": "https://synergy-network.io",
+        "security_contact": "security@synergy-network.io",
         "class": 1
-      }
-    },
-    {
-      "address": "synv11pvqw0rev506yr2jlyw2rdyqfhvz3ew095fmzg6",
-      "public_key_file": "testbeta/lean15/keys/node-05/identity.json",
-      "stake": "5000000000000",
-      "commission_rate": 0.05,
-      "min_self_delegation": "1",
-      "max_delegations": 1000,
-      "details": {
-        "name": "consensus-05 validator",
-        "identity": "consensus-05",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
-        "class": 1
-      }
-    },
-    {
-      "address": "synv4164p0t0nrrq3js0fljanpr8gwpr9aqwej0rk88x",
-      "public_key_file": "testbeta/lean15/keys/node-10/identity.json",
-      "stake": "5000000000000",
-      "commission_rate": 0.05,
-      "min_self_delegation": "1",
-      "max_delegations": 1000,
-      "details": {
-        "name": "governance-01 validator",
-        "identity": "governance-01",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
-        "class": 4
-      }
-    },
-    {
-      "address": "synv41plc0989mplw58tjeesceujjxj5vnjz5yydpl9g",
-      "public_key_file": "testbeta/lean15/keys/node-11/identity.json",
-      "stake": "5000000000000",
-      "commission_rate": 0.05,
-      "min_self_delegation": "1",
-      "max_delegations": 1000,
-      "details": {
-        "name": "governance-02 validator",
-        "identity": "governance-02",
-        "website": "https://synergy.local",
-        "security_contact": "security@synergy.local",
-        "class": 4
       }
     }
   ],
   "governance": {
     "dao_address": "syndao1lf6q9zmfh4w4t30d04j05nmsku03te4685t5vn",
-    "treasury_address": "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd",
+    "treasury_address": "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh",
     "proposal_deposit": "10000",
     "voting_period": 100,
     "execution_delay": 10,
     "quorum_percentage": 33.4,
-    "pass_threshold": 51.0
+    "pass_threshold": 51
   },
   "cryptography": {
     "signature_algorithm": "FN-DSA-1024",

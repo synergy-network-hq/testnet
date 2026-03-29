@@ -1,15 +1,15 @@
 [network]
-name = "synergy-testbeta"
+name = "synergy-testnet-beta"
 chain_id = 338639
-p2p_port = 38638
-rpc_port = 48638
-ws_port = 58638
+p2p_port = 5630
+rpc_port = 5730
+ws_port = 5830
 
 [node]
 role = "validator"
 enable_rpc = true
 enable_metrics = true
-metrics_port = 9090
+metrics_port = 6030
 
 [logging]
 log_level = "info"

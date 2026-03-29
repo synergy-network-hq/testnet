@@ -5,13 +5,14 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${BOOTSTRAP_OUT_DIR:-$ROOT_DIR/bootstrap-bundles}"
 BINARIES_DIR="${BOOTSTRAP_BINARIES_DIR:-$ROOT_DIR/binaries}"
 DOMAIN="${BOOTSTRAP_DOMAIN:-synergynode.xyz}"
-P2P_PORT="${BOOTSTRAP_P2P_PORT:-38638}"
-SEED_HTTP_PORT="${BOOTSTRAP_SEED_HTTP_PORT:-18080}"
+P2P_PORT="${BOOTSTRAP_P2P_PORT:-5620}"
+SEED_HTTP_PORT="${BOOTSTRAP_SEED_HTTP_PORT:-5621}"
+GENESIS_VALIDATOR_COUNT="${BOOTSTRAP_GENESIS_VALIDATOR_COUNT:-4}"
 
-BOOTNODE_RPC_PORT=48638
-BOOTNODE_WS_PORT=58638
+BOOTNODE_RPC_PORT=5730
+BOOTNODE_WS_PORT=5830
 BOOTNODE_GRPC_PORT=50051
-BOOTNODE_DISCOVERY_PORT=39638
+BOOTNODE_DISCOVERY_PORT=5930
 
 BOOTNODES=(
   "bootnode1|74.208.227.23"
@@ -125,9 +126,9 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
-min_validators = 3
-validator_cluster_size = 7
-max_validators = 21
+min_validators = ${GENESIS_VALIDATOR_COUNT}
+validator_cluster_size = ${GENESIS_VALIDATOR_COUNT}
+max_validators = ${GENESIS_VALIDATOR_COUNT}
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -1214,6 +1215,88 @@ EOF
 }
 
 write_root_files() {
+  cat > "$OUT_DIR/DEPLOYMENT_GUIDE.md" <<EOF
+# Synergy Testnet-Beta Bootstrap Deployment Guide
+
+## Launch Baseline
+
+- Chain ID: 338639
+- Network ID: synergy-testnet-beta
+- Token symbol: SNRG
+- Genesis validators: ${GENESIS_VALIDATOR_COUNT}
+- Bootnodes: 3
+- Seed services: 3
+
+## Assigned Bootstrap Hosts
+
+| Role | Hostname | IP | Port |
+| --- | --- | --- | --- |
+| bootnode1 | bootnode1.${DOMAIN} | 74.208.227.23 | ${P2P_PORT}/tcp |
+| bootnode2 | bootnode2.${DOMAIN} | 73.79.66.255 | ${P2P_PORT}/tcp |
+| bootnode3 | bootnode3.${DOMAIN} | 64.227.107.57 | ${P2P_PORT}/tcp |
+| seed1 | seed1.${DOMAIN} | 74.208.227.23 | ${SEED_HTTP_PORT}/tcp |
+| seed2 | seed2.${DOMAIN} | 73.79.66.255 | ${SEED_HTTP_PORT}/tcp |
+| seed3 | seed3.${DOMAIN} | 64.227.107.57 | ${SEED_HTTP_PORT}/tcp |
+
+## Port Freeze
+
+| Purpose | Value |
+| --- | --- |
+| Bootnode listener | ${P2P_PORT}/tcp |
+| Seed-service listener | ${SEED_HTTP_PORT}/tcp |
+| Reserved conflict port | 5622 |
+| Slotted node P2P base | 5630 + port_slot |
+| Slotted node RPC base | 5730 + port_slot |
+| Slotted node WS base | 5830 + port_slot |
+| Slotted node discovery base | 5930 + port_slot |
+| Slotted node metrics base | 6030 + port_slot |
+
+## Bootnode Deployment
+
+1. Download the assigned bootnode bundle from the Genesis Dashboard.
+2. Transfer the bundle to the target host.
+3. Extract the archive on the target host.
+4. Open inbound TCP ${P2P_PORT} on the host firewall.
+5. Confirm the A record for the assigned hostname points to the target IP.
+6. Start the bundle with \`./install_and_start.sh\` on Linux or macOS, or \`install_and_start.ps1\` on Windows.
+7. Confirm the process is running with \`./nodectl.sh status\` or \`nodectl.ps1 status\`.
+
+## Seed-Service Deployment
+
+1. Download the assigned seed bundle from the Genesis Dashboard.
+2. Transfer the bundle to the target host.
+3. Extract the archive on the target host.
+4. Open inbound TCP ${SEED_HTTP_PORT} on the host firewall.
+5. Confirm the A record for the assigned hostname points to the target IP.
+6. Start the service with \`./install_and_start.sh\` on Linux or macOS, or \`install_and_start.ps1\` on Windows.
+7. Confirm the process is running with \`./nodectl.sh status\` or \`nodectl.ps1 status\`.
+
+## Verification
+
+Run these checks after the assigned bundle is started.
+
+\`\`\`bash
+# Bootnode reachability
+nc -zv bootnode1.${DOMAIN} ${P2P_PORT}
+nc -zv bootnode2.${DOMAIN} ${P2P_PORT}
+nc -zv bootnode3.${DOMAIN} ${P2P_PORT}
+
+# Seed-service health
+curl -s http://seed1.${DOMAIN}:${SEED_HTTP_PORT}/healthz
+curl -s http://seed2.${DOMAIN}:${SEED_HTTP_PORT}/healthz
+curl -s http://seed3.${DOMAIN}:${SEED_HTTP_PORT}/healthz
+
+# Seed-service discovery payload
+curl -s http://seed1.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+curl -s http://seed2.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+curl -s http://seed3.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+\`\`\`
+
+## DNS
+
+Use the exact records in \`DNS_RECORDS.txt\`.
+EOF
+
   cat > "$OUT_DIR/DNS_RECORDS.txt" <<EOF
 Required A records
 bootnode1.${DOMAIN} -> 74.208.227.23

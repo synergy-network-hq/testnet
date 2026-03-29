@@ -24,9 +24,9 @@ export class SynergyReporter {
     // Test connection
     try {
       const version = await this.provider.send('web3_clientVersion', []);
-      this.logger.info(`[Reporter] Connected to Synergy devnet: ${version}`);
+      this.logger.info(`[Reporter] Connected to Synergy Testnet-Beta: ${version}`);
     } catch (error) {
-      this.logger.error(`[Reporter] Failed to connect to Synergy devnet: ${error.message}`);
+      this.logger.error(`[Reporter] Failed to connect to Synergy Testnet-Beta: ${error.message}`);
       throw error;
     }
 
@@ -35,7 +35,7 @@ export class SynergyReporter {
   }
 
   /**
-   * Submit an attestation result to Synergy devnet
+   * Submit an attestation result to Synergy Testnet-Beta
    */
   async submitAttestation(attestation) {
     try {
@@ -72,7 +72,7 @@ export class SynergyReporter {
   }
 
   /**
-   * Send heartbeat to Synergy devnet
+   * Send heartbeat to Synergy Testnet-Beta
    */
   async sendHeartbeat() {
     try {

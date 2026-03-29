@@ -2156,37 +2156,37 @@ mod tests {
     #[test]
     fn parse_bootnode_dial_address_normalizes_identity_and_ipv6() {
         assert_eq!(
-            parse_bootnode_dial_address("snr://peer@24.181.87.76:38638"),
-            Some("24.181.87.76:38638".to_string())
+            parse_bootnode_dial_address("snr://peer@74.208.227.23:5620"),
+            Some("74.208.227.23:5620".to_string())
         );
         assert_eq!(
             parse_bootnode_dial_address(
-                "snr://synv1156xl3ct9cxc4cl9pdn5ww9myxudavl0hxrq7zv@2a02:1812:172a:e900:1497:71dc:d720:e28e:38638",
+                "snr://synv1156xl3ct9cxc4cl9pdn5ww9myxudavl0hxrq7zv@2a02:1812:172a:e900:1497:71dc:d720:e28e:5620",
             ),
-            Some("[2a02:1812:172a:e900:1497:71dc:d720:e28e]:38638".to_string())
+            Some("[2a02:1812:172a:e900:1497:71dc:d720:e28e]:5620".to_string())
         );
     }
 
     #[test]
     fn parse_bootnode_dial_address_rejects_invalid_bare_host_targets() {
-        assert_eq!(parse_bootnode_dial_address("snr://peer@test:38638"), None);
+        assert_eq!(parse_bootnode_dial_address("snr://peer@test:5620"), None);
         assert_eq!(parse_bootnode_dial_address(""), None);
     }
 
     #[test]
     fn collect_known_peer_addresses_includes_discovered_targets() {
         let mut config = NodeConfig::default();
-        config.p2p.public_address = "24.181.87.76:38638".to_string();
-        config.network.additional_dial_targets = vec!["73.79.66.255:39638".to_string()];
+        config.p2p.public_address = "74.208.227.23:5620".to_string();
+        config.network.additional_dial_targets = vec!["73.79.66.255:5620".to_string()];
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
         let discovered_targets: DialTargetsArc =
-            Arc::new(Mutex::new(vec!["64.227.107.57:39638".to_string()]));
+            Arc::new(Mutex::new(vec!["64.227.107.57:5620".to_string()]));
 
         let addresses =
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
-        assert!(addresses.contains(&"24.181.87.76:38638".to_string()));
-        assert!(addresses.contains(&"73.79.66.255:39638".to_string()));
-        assert!(addresses.contains(&"64.227.107.57:39638".to_string()));
+        assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
+        assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
+        assert!(addresses.contains(&"64.227.107.57:5620".to_string()));
     }
 }

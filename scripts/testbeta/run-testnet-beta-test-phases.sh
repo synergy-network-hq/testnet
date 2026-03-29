@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-RPC_URL="${RPC_URL:-http://127.0.0.1:48650}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5730}"
 AUTO_FAILURES="false"
 
 RUN_NODE_SCRIPT="$ROOT_DIR/scripts/testbeta/run-node.sh"

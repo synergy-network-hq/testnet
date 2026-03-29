@@ -526,7 +526,7 @@ interval_seconds = 15
 
 [monitoring.exporters]
 prometheus_enabled = true
-prometheus_port = 9090
+prometheus_port = 6030
 
 influxdb_enabled = false
 influxdb_url = "http://localhost:8086"

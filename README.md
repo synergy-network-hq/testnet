@@ -22,7 +22,7 @@ The **Synergy Network** is a next-generation blockchain platform featuring revol
 
 ### 💰 Advanced Token System
 - **Multi-Token Support**: Create and manage multiple token types
-- **Native Token (SNRG)**: 12 billion initial supply with 9 decimals
+- **Native Token (SNRG)**: 1,150,000 initial supply with 9 decimals
 - **Staking Integration**: Lock tokens to earn rewards
 - **Token Operations**: Mint, burn, transfer, and query balances
 
@@ -129,16 +129,16 @@ curl -X POST http://localhost:8545 \
 ```toml
 # config/network-config.toml
 [network]
-name = "synergy-testbeta"
+name = "synergy-testnet-beta"
 chain_id = 338639
-p2p_port = 30303
-rpc_port = 8545
-ws_port = 8546
+p2p_port = 5630
+rpc_port = 5730
+ws_port = 5830
 
 [consensus]
 algorithm = "proof_of_synergy"
 block_time = 5
-max_validators = 100
+max_validators = 4
 ```
 
 ### Node Configuration
@@ -150,8 +150,8 @@ enable_console = true
 log_file = "data/logs/synergy-node.log"
 
 [rpc]
-http_port = 8545
-ws_port = 8546
+http_port = 5730
+ws_port = 5830
 max_connections = 100
 ```
 
@@ -198,7 +198,7 @@ We welcome contributions from the community! Here's how to get involved:
 - **Block Time**: 5 seconds
 - **Consensus**: Proof of Synergy
 - **Native Token**: SNRG (9 decimals)
-- **Total Supply**: 12,000,000,000 SNRG
+- **Total Supply**: 1,150,000 SNRG
 
 ### Performance Metrics
 - **Average TPS**: Variable based on network load

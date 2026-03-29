@@ -2,7 +2,7 @@
 # Real-time block monitor for Synergy Devnet
 # Usage: ./monitor-blocks.sh
 
-RPC_URL="${RPC_URL:-http://127.0.0.1:48638/rpc}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5730/rpc}"
 
 # Allow overriding via CLI argument
 if [[ "$1" == "--rpc" && -n "$2" ]]; then

@@ -26,7 +26,7 @@ const logger = console;
  * 2. Collect signatures from peer relayers via quorum coordinator
  * 3. Sign locally using PQC (ML-DSA/FN-DSA via Aegis-PQVM)
  * 4. Submit attestation bundle to destination chain once quorum reached
- * 5. Report result to Synergy devnet
+ * 5. Report result to Synergy Testnet-Beta
  */
 
 class SXCPRelayer {
@@ -47,7 +47,7 @@ class SXCPRelayer {
       // Default configuration
       sepoliaChainId: 11155111,
       amoyChainId: 80002,
-      destinationChainId: 31337, // Synergy devnet
+      destinationChainId: 338639, // Synergy Testnet-Beta
       relayerAddress: process.env.RELAYER_ADDRESS || '',
       pqcAlgorithm: process.env.PQC_ALGORITHM || 'fndsa',
       pqcPublicKeyB64: process.env.PQC_PUBLIC_KEY_B64 || '',
@@ -98,7 +98,7 @@ class SXCPRelayer {
     // Initialize coordinator (quorum manager)
     this.coordinator = new QuorumCoordinator(
       this.config.relayerAddress,
-      process.env.SYNERGY_RPC_URL || 'http://localhost:48638',
+      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5730',
       this.store,
       {
         pqcAlgorithm: this.config.pqcAlgorithm,
@@ -115,9 +115,9 @@ class SXCPRelayer {
       maxRetries: this.config.maxRetries,
     });
 
-    // Initialize reporter (Synergy devnet)
+    // Initialize reporter (Synergy Testnet-Beta)
     this.reporter = new SynergyReporter(
-      process.env.SYNERGY_RPC_URL || 'http://localhost:48638',
+      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5730',
       this.config.relayerAddress,
       {
         heartbeatInterval: 60,

@@ -231,12 +231,12 @@ curl -X POST -H "Content-Type: application/json" \
 
 ### Control panel RPC timeout
 
-**Symptoms**: The validator control panel reports `Connection to https://testbeta-rpc.synergy-network.io/rpc timed out` when you try to register a validator. The bundled `.env` (see `archive/ENV_FILE_REVIEW.md` under the `SYNERGY_RPC_ENDPOINT` block) points at the upstream RPC proxy, so the control panel immediately tries to speak to that host.
+**Symptoms**: The validator control panel reports `Connection to https://testbeta-core-rpc.synergy-network.io/rpc timed out` when you try to register a validator. The bundled `.env` (see `archive/ENV_FILE_REVIEW.md` under the `SYNERGY_RPC_ENDPOINT` block) points at the upstream RPC proxy, so the control panel immediately tries to speak to that host.
 
 **Diagnosis**: The upstream gateway is currently unresponsive. Run the same RPC request manually and watch it hang:
 
 ```bash
-curl -s -X POST https://testbeta-rpc.synergy-network.io/rpc \
+curl -s -X POST https://testbeta-core-rpc.synergy-network.io/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}'
 ```
@@ -245,19 +245,19 @@ If this command hangs for more than a few seconds (our test timed out after 120s
 
 **Workaround**:
 
-1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:48638`. The repo already provides `scripts/reset-testbeta.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
+1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:5730`. The repo already provides `scripts/reset-testbeta.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
 2. Point the control panel at your node instead of the remote proxy. Set the environment overrides before starting the UI (or paste them into your `.env`):
 
 ```bash
-export SYNERGY_RPC_ENDPOINT=http://localhost:48638/rpc
-export SYNERGY_WS_ENDPOINT=ws://localhost:58638
+export SYNERGY_RPC_ENDPOINT=http://localhost:5730/rpc
+export SYNERGY_WS_ENDPOINT=ws://localhost:5830
 ```
 
 3. Restart the control panel after updating the variables so it reconnects to the local RPC.
 
-When the upstream proxy is healthy again, you can switch the variables back to `https://testbeta-rpc.synergy-network.io` (and the matching WS endpoint).
+When the upstream proxy is healthy again, you can switch the variables back to `https://testbeta-core-rpc.synergy-network.io` and `wss://testbeta-core-ws.synergy-network.io`.
 
-4. If the control panel runs on remote operator devices, make sure they resolve `testbeta-rpc.synergy-network.io` to this machine and can reach ports `48638`/`58638`. Do not change the control panel to `localhost` from those devices—the RPC endpoint must point to this host over the network (proxy or firewall rules permitting) so that registrations come through the real testnet-beta node you're running locally.
+4. If the control panel runs on remote operator devices, make sure they resolve `testbeta-core-rpc.synergy-network.io` and `testbeta-core-ws.synergy-network.io` to this machine and can reach the proxied public surfaces. Do not change the control panel to `localhost` from those devices—the RPC endpoint must point to this host over the network (proxy or firewall rules permitting) so that registrations come through the real testnet-beta node you're running locally.
 
 ### Sync Issues
 

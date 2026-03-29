@@ -11,7 +11,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-rpc.synergy-network.io/rpc}"
+RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergy-network.io/rpc}"
 
 # Check arguments
 if [ $# -lt 2 ]; then

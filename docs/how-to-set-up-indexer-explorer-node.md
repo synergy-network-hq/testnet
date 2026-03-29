@@ -188,7 +188,7 @@ PORT=3020
 DATABASE_URL=postgres://synergy:change-this-password@127.0.0.1:5432/synergy_explorer
 
 SYNERGY_ENV=testnet
-SYNERGY_CORE_RPC_URL=http://127.0.0.1:48638
+SYNERGY_CORE_RPC_URL=http://127.0.0.1:5730
 SYNERGY_CORE_RPC_FALLBACK_URL=http://<archive-or-rpc-gateway-host>:<port>
 
 CORS_ORIGIN=https://<your-explorer-domain>
@@ -208,7 +208,7 @@ NODE_ENV=production
 DATABASE_URL=postgres://synergy:change-this-password@127.0.0.1:5432/synergy_explorer
 
 SYNERGY_ENV=testnet
-SYNERGY_CORE_RPC_URL=http://127.0.0.1:48638
+SYNERGY_CORE_RPC_URL=http://127.0.0.1:5730
 SYNERGY_CORE_RPC_FALLBACK_URL=http://<archive-or-rpc-gateway-host>:<port>
 
 START_BLOCK=

@@ -1,10 +1,10 @@
 [network]
 node_name = "bootnode1-validator"
-listen_address = "0.0.0.0:38638"
-public_address = "bootnode1.synergynode.xyz:38638"
+listen_address = "0.0.0.0:5620"
+public_address = "bootnode1.synergynode.xyz:5620"
 # Bootnode1 - First validator node (other nodes will connect to this)
 bootnodes = []
-p2p_port = 38638
+p2p_port = 5620
 
 [validator]
 # Validator identity - using generated FN-DSA-1024 keys
@@ -17,7 +17,7 @@ cluster_id = "syngrp116xlcwtcuwd8cdkqrftdww5dpqvm699uanux4mc"
 [consensus]
 algorithm = "PoSy"
 block_time_secs = 3
-max_validators = 21
+max_validators = 4
 synergetic_mode = true
 vrf_enabled = true
 vrf_seed_interval = 100
@@ -28,8 +28,8 @@ log_file = "logs/bootnode1.log"
 enable_console = true
 
 [rpc]
-http_port = 48638
-ws_port = 58638
+http_port = 5730
+ws_port = 5830
 enable_cors = true
 external_http = "https://testbeta-core-rpc.synergy-network.io"
 external_ws = "wss://testbeta-core-ws.synergy-network.io"
@@ -38,4 +38,4 @@ external_ws = "wss://testbeta-core-ws.synergy-network.io"
 role = "validator"
 enable_rpc = true
 enable_metrics = true
-metrics_port = 9090
+metrics_port = 6030

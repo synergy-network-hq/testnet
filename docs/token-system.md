@@ -26,7 +26,7 @@ The Synergy Network has a native token called Synergy Coin (SNRG):
 - **Symbol**: SNRG
 - **Name**: SynergyCoin
 - **Decimals**: 9
-- **Max Supply**: 12,000,000,000 SNRG (12 billion)
+- **Max Supply**: 1,150,000 SNRG (fixed beta launch cap)
 - **Mintable**: No
 - **Burnable**: Yes
 

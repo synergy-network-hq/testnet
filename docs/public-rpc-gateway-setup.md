@@ -11,13 +11,13 @@ After this is done, `https://testbeta-core-rpc.synergy-network.io` and `wss://te
 ```
 Internet
   │
-  ├─ HTTPS :443 → nginx → 127.0.0.1:48638  (RPC HTTP / JSON-RPC)
-  └─ WSS   :443 → nginx → 127.0.0.1:58638  (WebSocket)
+  ├─ HTTPS :443 → nginx → 127.0.0.1:5730  (RPC HTTP / JSON-RPC)
+  └─ WSS   :443 → nginx → 127.0.0.1:5830  (WebSocket)
 
 synergy-testbeta binary (rpc_gateway role)
-  ├─ P2P     :38638  (must be open in firewall — peer discovery)
-  ├─ RPC     :48638  (loopback only — nginx proxies it)
-  └─ WS      :58638  (loopback only — nginx proxies it)
+  ├─ P2P     :5630  (must be open in firewall — peer discovery)
+  ├─ RPC     :5730  (loopback only — nginx proxies it)
+  └─ WS      :5830  (loopback only — nginx proxies it)
 ```
 
 The node binary listens on loopback for RPC/WS. nginx handles TLS termination and proxies public traffic in. The P2P port is the only one that needs to be publicly reachable directly.
@@ -72,12 +72,12 @@ apt update && apt install -y nginx python3-certbot-nginx ufw
 ufw allow 22/tcp        # SSH — do this first so you don't lock yourself out
 ufw allow 80/tcp        # HTTP — needed for certbot ACME challenge
 ufw allow 443/tcp       # HTTPS — the public RPC endpoint
-ufw allow 38638/tcp     # P2P — node peer connectivity
+ufw allow 5630/tcp      # P2P — node peer connectivity
 ufw --force enable
 ufw status
 ```
 
-The RPC port (48638) and WS port (58638) do **not** need to be open — nginx proxies them from 443.
+The RPC port (5730) and WS port (5830) do **not** need to be open — nginx proxies them from 443.
 
 ---
 
@@ -100,7 +100,7 @@ After setup, note the workspace path shown in the node detail view. It will look
 ```
 
 The workspace will contain:
-- `config/node.toml` — node configuration (with `public_address = "74.208.227.23:38638"`)
+- `config/node.toml` — node configuration (with `public_address = "74.208.227.23:5630"`)
 - `config/peers.toml` — bootstrap peer list
 - `config/aegis.toml` — security overlay
 - `nginx.conf` — ready-to-deploy nginx reverse proxy config
@@ -113,7 +113,7 @@ Open `config/node.toml` in the workspace and confirm the server's IP was picked 
 
 ```toml
 [p2p]
-public_address = "74.208.227.23:38638"   # ← should match what you entered in the wizard
+public_address = "74.208.227.23:5630"   # ← should match what you entered in the wizard
 
 [rpc]
 bind_address = "0.0.0.0"
@@ -291,20 +291,20 @@ The SSL certificate doesn't exist yet. Follow the note in Step 7 to temporarily 
 - Confirm nginx is running and serving the acme-challenge location
 
 **Node starts but shows no peers**
-- Confirm P2P port 38638 is open in the firewall
+- Confirm P2P port 5630 is open in the firewall
 - Check `config/peers.toml` has the correct bootnode and seed server entries
 - Tail the node log for connection attempt details
 
 **Node starts but RPC returns errors**
 - Confirm the node has synced (check block height in logs)
 - Check `config/node.toml` has `bind_address = "0.0.0.0"` under `[rpc]`
-- Confirm nginx is proxying to the correct port (`48638` for RPC, `58638` for WS)
+- Confirm nginx is proxying to the correct port (`5730` for RPC, `5830` for WS)
 
 **"public_address" in node.toml is wrong**
 Edit `/opt/synergy/rpc-gateway/config/node.toml` directly on the server:
 ```toml
 [p2p]
-public_address = "74.208.227.23:38638"
+public_address = "74.208.227.23:5630"
 ```
 Then restart: `systemctl restart synergy-rpc-gateway`
 
@@ -317,7 +317,7 @@ Then restart: `systemctl restart synergy-rpc-gateway`
 | 22 | TCP | Yes | SSH |
 | 80 | TCP | Yes | HTTP (certbot ACME + redirect to HTTPS) |
 | 443 | TCP | Yes | HTTPS — RPC and WS via nginx |
-| 38638 | TCP | Yes | P2P peer connectivity |
-| 48638 | TCP | **No** | RPC (loopback only, nginx proxies) |
-| 58638 | TCP | **No** | WebSocket (loopback only, nginx proxies) |
-| 30301 | TCP | Optional | Discovery port |
+| 5630 | TCP | Yes | P2P peer connectivity |
+| 5730 | TCP | **No** | RPC (loopback only, nginx proxies) |
+| 5830 | TCP | **No** | WebSocket (loopback only, nginx proxies) |
+| 5930 | TCP | Optional | Discovery port |

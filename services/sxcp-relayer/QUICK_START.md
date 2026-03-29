@@ -3,7 +3,7 @@
 ## 1. Setup (5 minutes)
 
 ```bash
-cd /sessions/admiring-serene-hypatia/mnt/synergy-devnet/services/sxcp-relayer
+cd /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/services/sxcp-relayer
 
 # Copy environment template
 cp .env.example .env
@@ -78,7 +78,7 @@ Look for log lines like:
 [Relayer] Starting SXCP Relayer daemon...
 [Watcher:11155111] Initialized on chain 11155111 at block XXXXX
 [Watcher:80002] Initialized on chain 80002 at block XXXXX
-[Reporter] Connected to Synergy devnet: ...
+[Reporter] Connected to Synergy Testnet-Beta: ...
 [Relayer] Running...
 ```
 
@@ -92,7 +92,7 @@ Look for log lines like:
 | SEPOLIA_WS_URL | Sepolia WebSocket RPC | wss://eth-sepolia.g.alchemy.com/v2/KEY |
 | AMOY_RPC_URL | Amoy HTTP RPC | https://polygon-amoy.g.alchemy.com/v2/KEY |
 | AMOY_WS_URL | Amoy WebSocket RPC | wss://polygon-amoy.g.alchemy.com/v2/KEY |
-| SYNERGY_RPC_URL | Synergy devnet RPC | http://localhost:48638 |
+| SYNERGY_RPC_URL | Synergy Testnet-Beta RPC | http://127.0.0.1:5730 |
 | RELAYER_ADDRESS | Your relayer address | 0x... |
 | PQC_ALGORITHM | PQC algorithm | fndsa / mldsa / slhdsa |
 | PQC_PUBLIC_KEY_B64 | Base64 public key | ... |
@@ -100,13 +100,13 @@ Look for log lines like:
 | SXCP_RELAYER_CONFIG_PATH | Config file path | ../../sxcp/... |
 | SQLITE_DB_PATH | Database file path | ./data/relayer.db |
 
-### Runtime Configuration (devnet-sxcp-relayer-config.json)
+### Runtime Configuration (testbeta-sxcp-relayer-config.json)
 
 ```json
 {
   "sepoliaChainId": 11155111,
   "amoyChainId": 80002,
-  "destinationChainId": 31337,
+  "destinationChainId": 338639,
   "sxcpIntentHubAddress": "0x...",
   "sxcpVaultAddress": "0x...",
   "threshold": 2,

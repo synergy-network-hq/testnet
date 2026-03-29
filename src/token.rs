@@ -128,10 +128,10 @@ impl TokenManager {
         let snrg_token = Token::new(
             "SNRG".to_string(),
             "SynergyCoin".to_string(),
-            9,                                   // 9 decimals for better usability
+            9, // 9 decimals for better usability
             0, // Start with 0, genesis allocations will mint the initial supply
-            Some(12_000_000_000 * 10u64.pow(9)), // 12 billion max supply
-            true, // mintable
+            Some(1_150_000 * 10u64.pow(9)), // Fixed beta launch cap
+            true, // mintable during bootstrap
             true, // burnable
             "genesis".to_string(),
         );
@@ -146,6 +146,13 @@ impl TokenManager {
 
         // Distribute initial supply to genesis accounts
         self.distribute_genesis_supply();
+
+        // Testnet-Beta SNRG supply is fixed after genesis bootstrap.
+        if let Ok(mut tokens) = self.tokens.lock() {
+            if let Some(token) = tokens.get_mut("SNRG") {
+                token.mintable = false;
+            }
+        }
     }
 
     fn distribute_genesis_supply(&self) {
@@ -197,40 +204,41 @@ impl TokenManager {
             // Fallback to hardcoded allocations if genesis.json is not available.
             // These MUST match the genesis.json allocations exactly.
             let genesis_allocations = [
-                // Faucet wallet — distributes tokens to test accounts
                 (
-                    "synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07",
-                    1_500_000_000_000_000_000u64, // 1.5B SNRG
+                    "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh",
+                    400_000_000_000_000u64,
                 ),
-                // Validator rewards pool
                 (
-                    "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg",
-                    1_500_000_000_000_000_000u64, // 1.5B SNRG
+                    "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv",
+                    150_000_000_000_000u64,
                 ),
-                // Protocol treasury
                 (
-                    "synw14lswrh8z7kremft633xym9wtr5l9vkm3rd6lvd",
-                    8_800_000_000_000_000_000u64, // 8.8B SNRG
+                    "synw1vkn2dq8mftcn7nkdhyv5t0jrv83thf0cakkj",
+                    200_000_000_000_000u64,
                 ),
-                // Foundation / DevOps wallet
                 (
-                    "synw1v6fhr0x7v6e2hxf9d9l72z2fcmn2c4k4m6m7d8",
-                    50_000_000_000_000_000u64, // 50M SNRG
+                    "synw1prdr55ggjhupx0d7jycftrl2hzs3k8zuw5ad",
+                    100_000_000_000_000u64,
                 ),
-                // Test wallet pool
                 (
-                    "synw1q0a8jzk24y8ra9qy0wqp6lx8kclha04r6w3lmf",
-                    100_000_000_000_000_000u64, // 100M SNRG
+                    "synw1f2kpjt9flxl6y4e3uez0zp3hjanamrlew5ja",
+                    100_000_000_000_000u64,
                 ),
-                // Fee collector — starts at zero, accumulates gas fees
                 (
-                    "synf1vt378ycuswrxfk6p73srtyf5972hek6avgqc68",
-                    0u64,
+                    "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
+                    50_000_000_000_000u64,
                 ),
-                // Stake vault — holds delegated stakes
                 (
-                    "synl1dwnssqdyp7nqlc9253ydy9957m6n5pggnpzqgl",
-                    0u64,
+                    "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
+                    50_000_000_000_000u64,
+                ),
+                (
+                    "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
+                    50_000_000_000_000u64,
+                ),
+                (
+                    "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
+                    50_000_000_000_000u64,
                 ),
             ];
 

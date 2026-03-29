@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RPC_URL="${RPC_URL:-http://127.0.0.1:48650}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5730}"
 ITERATIONS="${ITERATIONS:-200}"
 CONCURRENCY="${CONCURRENCY:-10}"
 

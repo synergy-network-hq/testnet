@@ -158,10 +158,10 @@ impl Default for NodeConfig {
         NodeConfig {
             network: NetworkConfig {
                 id: 338639,
-                name: "Synergy Closed Testnet Beta".to_string(),
-                p2p_port: 30303,
-                rpc_port: 8545,
-                ws_port: 8546,
+                name: "Synergy Testnet-Beta".to_string(),
+                p2p_port: 5630,
+                rpc_port: 5730,
+                ws_port: 5830,
                 max_peers: 50,
                 bootnodes: vec![],
                 seed_servers: vec![],
@@ -199,22 +199,22 @@ impl Default for NodeConfig {
                 max_files: 5,
             },
             rpc: RPCConfig {
-                bind_address: "127.0.0.1:8545".to_string(),
+                bind_address: "127.0.0.1:5730".to_string(),
                 enable_http: true,
-                http_port: 8545,
+                http_port: 5730,
                 enable_ws: true,
-                ws_port: 8546,
+                ws_port: 5830,
                 enable_grpc: true,
-                grpc_port: 50051,
+                grpc_port: 5730,
                 cors_enabled: false,
                 cors_origins: vec![],
             },
             p2p: P2PConfig {
-                listen_address: "127.0.0.1:30303".to_string(),
-                public_address: "127.0.0.1:30303".to_string(),
+                listen_address: "127.0.0.1:5630".to_string(),
+                public_address: "127.0.0.1:5630".to_string(),
                 node_name: "synergy-node-01".to_string(),
                 enable_discovery: false,
-                discovery_port: 30301,
+                discovery_port: 5930,
                 heartbeat_interval: 30,
             },
             storage: StorageConfig {
@@ -780,11 +780,11 @@ address = "synv1test"
 label = "Validator Node 01"
 
 [network]
-chain_name = "synergy-testbeta-closed"
+chain_name = "synergy-testnet-beta"
 chain_id = 338639
-p2p_listen = "0.0.0.0:38638"
-bootnodes = ["bootnode1.synergynode.xyz:38638"]
-seed_servers = ["http://seed1.synergynode.xyz:18080"]
+p2p_listen = "0.0.0.0:5630"
+bootnodes = ["bootnode1.synergynode.xyz:5620"]
+seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["24.181.87.76:39638"]
 max_peers = 128
@@ -803,18 +803,18 @@ log_level = "debug"
 
         assert_eq!(config.identity.role, "validator");
         assert_eq!(config.role.compiled_profile, "validator_node");
-        assert_eq!(config.network.name, "synergy-testbeta-closed");
+        assert_eq!(config.network.name, "synergy-testnet-beta");
         assert_eq!(config.network.id, 338639);
         assert_eq!(config.blockchain.chain_id, 338639);
-        assert_eq!(config.network.p2p_port, 38638);
-        assert_eq!(config.p2p.listen_address, "0.0.0.0:38638");
+        assert_eq!(config.network.p2p_port, 5630);
+        assert_eq!(config.p2p.listen_address, "0.0.0.0:5630");
         assert_eq!(
             config.network.bootnodes,
-            vec!["bootnode1.synergynode.xyz:38638".to_string()]
+            vec!["bootnode1.synergynode.xyz:5620".to_string()]
         );
         assert_eq!(
             config.network.seed_servers,
-            vec!["http://seed1.synergynode.xyz:18080".to_string()]
+            vec!["http://seed1.synergynode.xyz:5621".to_string()]
         );
         assert_eq!(
             config.network.bootstrap_dns_records,
@@ -844,11 +844,11 @@ log_level = "debug"
             r#"
 [network]
 id = 338639
-name = "synergy-testbeta-closed"
-p2p_port = 38638
-rpc_port = 48638
-ws_port = 58638
-bootnodes = ["bootnode1.synergynode.xyz:38638"]
+name = "synergy-testnet-beta"
+p2p_port = 5630
+rpc_port = 5730
+ws_port = 5830
+bootnodes = ["bootnode1.synergynode.xyz:5620"]
 
 [blockchain]
 block_time = 5
@@ -859,8 +859,8 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
-validator_cluster_size = 5
-max_validators = 21
+validator_cluster_size = 4
+max_validators = 4
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -881,20 +881,20 @@ max_files = 5
 
 [rpc]
 enable_http = true
-http_port = 48638
+http_port = 5730
 enable_ws = true
-ws_port = 58638
+ws_port = 5830
 enable_grpc = true
-grpc_port = 48638
+grpc_port = 5730
 cors_enabled = false
 cors_origins = []
 
 [p2p]
-listen_address = "0.0.0.0:38638"
-public_address = "127.0.0.1:38638"
+listen_address = "0.0.0.0:5630"
+public_address = "127.0.0.1:5630"
 node_name = "node-01"
 enable_discovery = true
-discovery_port = 30301
+discovery_port = 5930
 heartbeat_interval = 30
 
 [storage]
@@ -910,8 +910,8 @@ pruning_interval = 86400
             &peers_path,
             r#"
 [global]
-bootnodes = ["bootnode2.synergynode.xyz:38638"]
-seed_servers = ["http://seed2.synergynode.xyz:18080"]
+bootnodes = ["bootnode2.synergynode.xyz:5620"]
+seed_servers = ["http://seed2.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["73.79.66.255:39638"]
 "#,
@@ -926,14 +926,14 @@ additional_dial_targets = ["73.79.66.255:39638"]
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode1.synergynode.xyz:38638".to_string()));
+            .contains(&"bootnode1.synergynode.xyz:5620".to_string()));
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode2.synergynode.xyz:38638".to_string()));
+            .contains(&"bootnode2.synergynode.xyz:5620".to_string()));
         assert_eq!(
             config.network.seed_servers,
-            vec!["http://seed2.synergynode.xyz:18080".to_string()]
+            vec!["http://seed2.synergynode.xyz:5621".to_string()]
         );
         assert_eq!(
             config.network.bootstrap_dns_records,

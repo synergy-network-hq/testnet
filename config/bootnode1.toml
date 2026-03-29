@@ -4,9 +4,9 @@
 [network]
 id = 338639
 name = "Synergy Testnet Beta"
-p2p_port = 38638
-rpc_port = 48638
-ws_port = 58638
+p2p_port = 5620
+rpc_port = 5730
+ws_port = 5830
 max_peers = 50
 bootnodes = []
 
@@ -19,8 +19,8 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
-validator_cluster_size = 3
-max_validators = 21
+validator_cluster_size = 4
+max_validators = 4
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -41,9 +41,9 @@ max_files = 5
 
 [rpc]
 enable_http = true
-http_port = 48638
+http_port = 5730
 enable_ws = true
-ws_port = 58638
+ws_port = 5830
 enable_grpc = true
 grpc_port = 50051
 cors_enabled = true
@@ -52,11 +52,11 @@ external_http = "https://testbeta-core-rpc.synergy-network.io"
 external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [p2p]
-listen_address = "0.0.0.0:38638"
-public_address = "bootnode1.synergynode.xyz:38638"
+listen_address = "0.0.0.0:5620"
+public_address = "bootnode1.synergynode.xyz:5620"
 node_name = "bootnode1-validator"
 enable_discovery = true
-discovery_port = 38639
+discovery_port = 5930
 heartbeat_interval = 30
 
 [storage]

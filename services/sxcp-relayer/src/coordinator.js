@@ -22,7 +22,7 @@ export class QuorumCoordinator {
 
   async initialize() {
     this.synergyProvider = new ethers.JsonRpcProvider(this.synergyRpcUrl);
-    this.logger.info('[Coordinator] Initialized with Synergy devnet');
+    this.logger.info('[Coordinator] Initialized with Synergy Testnet-Beta');
   }
 
   /**

@@ -200,7 +200,7 @@ restart_cluster() {
 }
 
 post_check() {
-  local rpc_url="${TESTBETA_RPC_URL:-http://127.0.0.1:48650}"
+  local rpc_url="${TESTBETA_RPC_URL:-http://127.0.0.1:5730}"
   echo "Post-reset check via $rpc_url ..."
   curl -sS -X POST "$rpc_url" \
     -H "Content-Type: application/json" \

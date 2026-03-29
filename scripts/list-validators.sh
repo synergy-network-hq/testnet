@@ -11,7 +11,7 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-RPC_ENDPOINT="${RPC_ENDPOINT:-https://testbeta-rpc.synergy-network.io/rpc}"
+RPC_ENDPOINT="${RPC_ENDPOINT:-https://testbeta-core-rpc.synergy-network.io/rpc}"
 
 echo -e "${BLUE}===================================${NC}"
 echo -e "${BLUE}Synergy Testnet Beta - Active Validators${NC}"

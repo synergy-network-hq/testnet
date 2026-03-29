@@ -41,8 +41,8 @@ pkill -f 'seed_service.py' || true
 python3 -m py_compile "$SEED_DIR/seed_service.py"
 "$SEED_DIR/install_and_start.sh"
 sleep 2
-curl -i http://127.0.0.1:18080/healthz
-curl -i -X DELETE http://127.0.0.1:18080/peers
+curl -i http://127.0.0.1:5621/healthz
+curl -i -X DELETE http://127.0.0.1:5621/peers
 "$SEED_DIR/nodectl.sh" status
 "$SEED_DIR/nodectl.sh" logs
 

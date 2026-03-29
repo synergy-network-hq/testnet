@@ -8,7 +8,7 @@ Purpose
 Endpoint
 - Hostname: seed1.synergynode.xyz
 - IP: 74.208.227.23
-- HTTP Port: 18080
+- HTTP Port: 5621
 
 Published endpoints
 - /healthz
@@ -23,9 +23,9 @@ Start
 - Windows: powershell -ExecutionPolicy Bypass -File .\install_and_start.ps1
 
 Clear registered peers
-- Local only without a token: curl -X DELETE http://127.0.0.1:18080/peers
-- Remote with token: curl -X DELETE -H "X-Seed-Admin-Token: <token>" http://seed1.synergynode.xyz:18080/peers
+- Local only without a token: curl -X DELETE http://127.0.0.1:5621/peers
+- Remote with token: curl -X DELETE -H "X-Seed-Admin-Token: <token>" http://seed1.synergynode.xyz:5621/peers
 
 DNS
 - Publish A record seed1.synergynode.xyz -> 74.208.227.23
-- Optional SRV record: _synergy-seed._tcp.synergynode.xyz -> seed1.synergynode.xyz:18080
+- Optional SRV record: _synergy-seed._tcp.synergynode.xyz -> seed1.synergynode.xyz:5621

@@ -8,10 +8,10 @@ OUT_DIR="$ROOT_DIR/testbeta/lean15/configs"
 NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/lean15/keys/node-addresses.csv"
 USE_HOST_OVERRIDES="false"
 TESTBETA_CHAIN_ID="${TESTBETA_CHAIN_ID:-338639}"
-TESTBETA_NETWORK_ID="${TESTBETA_NETWORK_ID:-338639}"
+TESTBETA_NETWORK_ID="${TESTBETA_NETWORK_ID:-synergy-testnet-beta}"
 TESTBETA_BLOCK_TIME_SECS="${TESTBETA_BLOCK_TIME_SECS:-2}"
 TESTBETA_EPOCH_LENGTH="${TESTBETA_EPOCH_LENGTH:-50}"
-TESTBETA_MIN_VALIDATORS="${TESTBETA_MIN_VALIDATORS:-5}"
+TESTBETA_MIN_VALIDATORS="${TESTBETA_MIN_VALIDATORS:-4}"
 ALLOW_WILDCARD_LISTEN="${ALLOW_WILDCARD_LISTEN:-false}"
 
 normalize_bool() {
@@ -252,7 +252,7 @@ while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_
 
 [network]
 id = ${TESTBETA_NETWORK_ID}
-name = "synergy-testbeta-closed"
+name = "synergy-testnet-beta"
 p2p_port = ${p2p_port}
 rpc_port = ${rpc_port}
 ws_port = ${ws_port}
@@ -269,8 +269,8 @@ algorithm = "Proof of Synergy"
 block_time_secs = ${TESTBETA_BLOCK_TIME_SECS}
 epoch_length = ${TESTBETA_EPOCH_LENGTH}
 min_validators = ${TESTBETA_MIN_VALIDATORS}
-validator_cluster_size = 7
-max_validators = 15
+validator_cluster_size = 4
+max_validators = 4
 synergy_score_decay_rate = 0.05
 vrf_enabled = ${vrf_enabled}
 vrf_seed_epoch_interval = 1000

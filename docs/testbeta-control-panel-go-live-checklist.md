@@ -72,9 +72,9 @@ Relevant files:
 
 The control panel provisioning flow now best-effort registers nodes against:
 
-- `http://seed1.synergynode.xyz:18080/peers/register`
-- `http://seed2.synergynode.xyz:18080/peers/register`
-- `http://seed3.synergynode.xyz:18080/peers/register`
+- `http://seed1.synergynode.xyz:5621/peers/register`
+- `http://seed2.synergynode.xyz:5621/peers/register`
+- `http://seed3.synergynode.xyz:5621/peers/register`
 
 So the seed services must be running the current bundle that exposes `/peers/register`.
 
@@ -91,7 +91,7 @@ You need 3 live validators before block production starts because the network mi
 Operationally that means:
 
 1. start the 3 bootstrap-capable validator nodes
-2. make sure they can reach each other on `38638`
+2. make sure they can reach each other on the frozen validator slot ports (`5630 + slot`)
 3. verify they auto-register or are manually registered
 4. confirm the public RPC reflects a live validator set and rising block height
 

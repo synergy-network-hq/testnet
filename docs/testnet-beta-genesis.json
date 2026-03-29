@@ -1,0 +1,590 @@
+{
+  "schema_version": "v1",
+  "env": "testnet",
+  "header": {
+    "block_height": 0,
+    "parent_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "timestamp": "2026-04-01T00:00:00Z",
+    "extra_data": "synergy-network/genesis/testnet-beta/v1",
+    "state_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "transactions_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "receipts_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "data_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "consensus_fields": {
+      "engine_id": "posy/v1",
+      "proposer": null,
+      "seal": null,
+      "round": 0,
+      "epoch": 0
+    }
+  },
+  "network": {
+    "chain_id": 20251,
+    "network_id": 20251,
+    "protocol_name": "Synergy Network",
+    "network_type": "testnet",
+    "genesis_schema_version": "v1",
+    "protocol_version": "1.0.0",
+    "consensus_version": "posy/1.0.0",
+    "address_config": {
+      "encoding": "bech32m",
+      "prefix_contract": "sYnQ",
+      "prefix_user": "sYnU",
+      "payload_length_bytes": 20,
+      "derivation_method": "SHA3-256(compressed_pubkey)[0..20]"
+    }
+  },
+  "consensus": {
+    "algorithm": "posy",
+    "model": "hybrid_deterministic_bft",
+    "min_validator_count": 3,
+    "min_quorum_threshold": 0.667,
+    "min_stake_nanosnrg": 100000000000,
+    "target_block_time_ms": 2000,
+    "proposal_mechanism": "weighted_round_robin",
+    "leader_selection": "vrf_deterministic",
+    "finality": {
+      "finality_type": "deterministic",
+      "confirmation_depth": 1,
+      "checkpoint_frequency_blocks": 1000
+    },
+    "epoch": {
+      "length_blocks": 3600,
+      "validator_rotation_enabled": true,
+      "reward_distribution_interval_epochs": 1
+    },
+    "timeouts": {
+      "proposal_ms": 3000,
+      "validation_ms": 2000,
+      "round_ms": 6000,
+      "view_change_ms": 8000
+    },
+    "slashing": {
+      "double_sign_slash_pct": 0.05,
+      "downtime_slash_pct": 0.001,
+      "invalid_block_slash_pct": 1.0,
+      "downtime_missed_blocks_threshold": 500,
+      "jail_duration_seconds": 600
+    },
+    "unbonding": {
+      "unbonding_period_seconds": 86400,
+      "withdrawal_delay_seconds": 3600
+    }
+  },
+  "validators": [
+    {
+      "operator_address": "sYnU1qvr4kx9tna2m8h3j5d6f7p0wecs",
+      "consensus_pubkey": "0493a1e2b3c4d5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9",
+      "consensus_key_type": "ml-dsa",
+      "peer_id": "12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
+      "stake_nanosnrg": 5000000000000,
+      "voting_power": 5000000000000,
+      "status": "active",
+      "reward_address": "sYnU1qvr4kx9tna2m8h3j5d6f7p0wecs",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Foundation Node 1",
+      "website": "https://synergy-network.io",
+      "identity": "synergy-foundation-v1",
+      "p2p_multiaddr": "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
+      "rpc_endpoint": "https://rpc1.testnet.synergy-network.io"
+    },
+    {
+      "operator_address": "sYnU2plm7qs6vkb3x9y4z8w1n0dcrtfe",
+      "consensus_pubkey": "04b2f3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
+      "consensus_key_type": "ml-dsa",
+      "peer_id": "12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
+      "stake_nanosnrg": 5000000000000,
+      "voting_power": 5000000000000,
+      "status": "active",
+      "reward_address": "sYnU2plm7qs6vkb3x9y4z8w1n0dcrtfe",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Foundation Node 2",
+      "website": "https://synergy-network.io",
+      "identity": "synergy-foundation-v2",
+      "p2p_multiaddr": "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
+      "rpc_endpoint": "https://rpc2.testnet.synergy-network.io"
+    },
+    {
+      "operator_address": "sYnU3nkj9wr2xyz7ab5c4d8e1f6ghpqm",
+      "consensus_pubkey": "04c3g4h5i6j7k8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7e8f9a0b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3",
+      "consensus_key_type": "ml-dsa",
+      "peer_id": "12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
+      "stake_nanosnrg": 5000000000000,
+      "voting_power": 5000000000000,
+      "status": "active",
+      "reward_address": "sYnU3nkj9wr2xyz7ab5c4d8e1f6ghpqm",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Foundation Node 3",
+      "website": "https://synergy-network.io",
+      "identity": "synergy-foundation-v3",
+      "p2p_multiaddr": "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
+      "rpc_endpoint": "https://rpc3.testnet.synergy-network.io"
+    }
+  ],
+  "token": {
+    "name": "Synergy Token",
+    "symbol": "SNRG",
+    "decimals": 9,
+    "smallest_unit": "nano-SNRG",
+    "total_supply_cap_nanosnrg": 1000000000000000000,
+    "initial_circulating_nanosnrg": 250000000000000000,
+    "minting_policy": "inflation_module_only"
+  },
+  "allocations": [
+    {
+      "address": "sYnU4treasury00synergy00foundation0",
+      "amount_nanosnrg": 250000000000000000,
+      "category": "foundation_treasury",
+      "locked": true,
+      "lock_type": "governance_locked",
+      "_pct_of_supply": "25%",
+      "_notes": "Foundation treasury \u2014 requires governance proposal to spend"
+    },
+    {
+      "address": "sYnU5ecosystem00fund00synergy00net",
+      "amount_nanosnrg": 150000000000000000,
+      "category": "ecosystem_fund",
+      "locked": false,
+      "lock_type": "none",
+      "_pct_of_supply": "15%",
+      "_notes": "Developer grants, integrations, and ecosystem growth"
+    },
+    {
+      "address": "sYnU6validator0incentives00testnet",
+      "amount_nanosnrg": 100000000000000000,
+      "category": "validator_incentives",
+      "locked": false,
+      "lock_type": "staking_only",
+      "_pct_of_supply": "10%",
+      "_notes": "Bootstrap validator reward pool \u2014 staking use only"
+    },
+    {
+      "address": "sYnUapresale00public00round0synrg",
+      "amount_nanosnrg": 50000000000000000,
+      "category": "presale",
+      "locked": false,
+      "lock_type": "none",
+      "_pct_of_supply": "5%",
+      "_notes": "Public presale \u2014 immediately transferable at genesis"
+    },
+    {
+      "address": "sYnUbliquidity0reserve00dex0market",
+      "amount_nanosnrg": 100000000000000000,
+      "category": "liquidity_reserve",
+      "locked": false,
+      "lock_type": "none",
+      "_pct_of_supply": "10%",
+      "_notes": "DEX/market liquidity provision"
+    },
+    {
+      "address": "sYnUcgrants0pool00protocol00synrg",
+      "amount_nanosnrg": 100000000000000000,
+      "category": "grants_pool",
+      "locked": false,
+      "lock_type": "governance_locked",
+      "_pct_of_supply": "10%",
+      "_notes": "Protocol grants \u2014 governance approval required"
+    }
+  ],
+  "_allocation_sum_check": {
+    "total_non_vested_nanosnrg": 750000000000000000,
+    "total_vested_nanosnrg": 250000000000000000,
+    "grand_total_nanosnrg": 1000000000000000000,
+    "matches_supply_cap": true
+  },
+  "vesting": [
+    {
+      "beneficiary_address": "sYnU7team000member001synergy0proto",
+      "total_allocation_nanosnrg": 50000000000000000,
+      "start_time_unix": 1743465600,
+      "cliff_duration_seconds": 31536000,
+      "vesting_duration_seconds": 126144000,
+      "unlock_schedule": "linear",
+      "steps": null,
+      "_notes": "Team 1: Start 2026-04-01, cliff 1yr, vest 4yr linear"
+    },
+    {
+      "beneficiary_address": "sYnU8team000member002synergy0proto",
+      "total_allocation_nanosnrg": 50000000000000000,
+      "start_time_unix": 1743465600,
+      "cliff_duration_seconds": 31536000,
+      "vesting_duration_seconds": 126144000,
+      "unlock_schedule": "linear",
+      "steps": null,
+      "_notes": "Team 2: Start 2026-04-01, cliff 1yr, vest 4yr linear"
+    },
+    {
+      "beneficiary_address": "sYnU9investor0seed0round0synrg001",
+      "total_allocation_nanosnrg": 100000000000000000,
+      "start_time_unix": 1743465600,
+      "cliff_duration_seconds": 15768000,
+      "vesting_duration_seconds": 63072000,
+      "unlock_schedule": "linear",
+      "steps": null,
+      "_notes": "Seed investors: Start 2026-04-01, cliff 6mo, vest 2yr linear"
+    },
+    {
+      "beneficiary_address": "sYnUdprivate0investor0round0synrg",
+      "total_allocation_nanosnrg": 50000000000000000,
+      "start_time_unix": 1743465600,
+      "cliff_duration_seconds": 7776000,
+      "vesting_duration_seconds": 31536000,
+      "unlock_schedule": "linear",
+      "steps": null,
+      "_notes": "Private round: Start 2026-04-01, cliff 3mo, vest 1yr linear"
+    }
+  ],
+  "economics": {
+    "fee": {
+      "base_fee_nanosnrg_per_gas": 1000,
+      "min_gas_price_nanosnrg": 1000,
+      "dynamic_fee_enabled": true,
+      "fee_burn_pct": 0.5,
+      "validator_fee_share_pct": 0.4,
+      "treasury_fee_share_pct": 0.1
+    },
+    "inflation": {
+      "annual_rate_pct": 0.05,
+      "adjustment_enabled": true,
+      "target_staking_participation": 0.67
+    },
+    "rewards": {
+      "block_reward_nanosnrg": 1000000000,
+      "epoch_reward_pool_nanosnrg": 3600000000000,
+      "distribution": "stake_weighted"
+    },
+    "treasury": {
+      "address": "sYnQtreasury00contract0synrg00net",
+      "control_mechanism": "governance_proposal",
+      "spending_rules": "proposal_and_vote_required"
+    }
+  },
+  "contracts": {
+    "staking": {
+      "address": "sYnQstaking00contract00synrg00net",
+      "bytecode_hash": "0xa1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+      "init_params": {
+        "min_stake_nanosnrg": 100000000000,
+        "max_stake_nanosnrg": null,
+        "unbonding_period_seconds": 86400
+      }
+    },
+    "governance": {
+      "address": "sYnQgovernance0contract0synrg0net",
+      "bytecode_hash": "0xb2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3",
+      "init_params": {
+        "quorum_pct": 0.334,
+        "approval_pct": 0.5,
+        "veto_pct": 0.334,
+        "min_deposit_nanosnrg": 10000000000,
+        "voting_duration_seconds": 604800
+      }
+    },
+    "treasury": {
+      "address": "sYnQtreasury00contract0synrg00net",
+      "bytecode_hash": "0xc3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
+      "init_params": {
+        "initial_balance_nanosnrg": 250000000000000000,
+        "required_signers": 3,
+        "signers": [
+          "sYnU1qvr4kx9tna2m8h3j5d6f7p0wecs",
+          "sYnU2plm7qs6vkb3x9y4z8w1n0dcrtfe",
+          "sYnU3nkj9wr2xyz7ab5c4d8e1f6ghpqm"
+        ]
+      }
+    },
+    "validator_registry": {
+      "address": "sYnQvalidator0registry0synrg00net",
+      "bytecode_hash": "0xd4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+      "init_params": {
+        "genesis_validator_count": 3
+      }
+    },
+    "reward_distributor": {
+      "address": "sYnQrewards00distributor0synrg0net",
+      "bytecode_hash": "0xe5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+      "init_params": {
+        "pool_address": "sYnU6validator0incentives00testnet",
+        "initial_pool_balance_nanosnrg": 100000000000000000
+      }
+    },
+    "slashing": {
+      "address": "sYnQslashing00contract00synrg0net",
+      "bytecode_hash": "0xf6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7",
+      "init_params": {
+        "double_sign_slash_pct": 0.05,
+        "jail_duration_seconds": 600
+      }
+    }
+  },
+  "precompiles": [
+    {
+      "address": "0x0000000000000000000000000000000000000001",
+      "name": "ml_dsa_verify",
+      "gas_cost": 3000
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000002",
+      "name": "slh_dsa_verify",
+      "gas_cost": 5000
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000003",
+      "name": "sha3_256",
+      "gas_cost": 60
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000004",
+      "name": "sha3_512",
+      "gas_cost": 100
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000005",
+      "name": "blake3",
+      "gas_cost": 45
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000006",
+      "name": "bech32m_codec",
+      "gas_cost": 150
+    },
+    {
+      "address": "0x0000000000000000000000000000000000000007",
+      "name": "vrf_verify",
+      "gas_cost": 2000
+    }
+  ],
+  "governance": {
+    "enabled_at_genesis": true,
+    "governance_type": "on_chain_token_weighted",
+    "quorum_pct": 0.334,
+    "approval_pct": 0.5,
+    "veto_pct": 0.334,
+    "proposal_types": [
+      "ParameterChange",
+      "SoftwareUpgrade",
+      "TreasurySpend",
+      "TextProposal"
+    ],
+    "min_deposit_nanosnrg": 10000000000,
+    "voting_duration_seconds": 604800,
+    "timelock_delay_seconds": 172800,
+    "execution_authority": "governance_contract",
+    "emergency": {
+      "guardian_addresses": [
+        "sYnU1qvr4kx9tna2m8h3j5d6f7p0wecs",
+        "sYnU2plm7qs6vkb3x9y4z8w1n0dcrtfe",
+        "sYnU3nkj9wr2xyz7ab5c4d8e1f6ghpqm"
+      ],
+      "guardian_threshold": 2,
+      "pause_scope": [
+        "staking",
+        "governance_execution",
+        "bridge"
+      ],
+      "auto_expire_blocks": 7200
+    }
+  },
+  "bootstrap": {
+    "bootnodes": [
+      {
+        "peer_id": "12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
+        "pubkey": "0493a1e2b3c4d5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0",
+        "address": "51.210.45.123",
+        "port": 30333,
+        "multiaddr": "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU"
+      },
+      {
+        "peer_id": "12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
+        "pubkey": "04b2f3a4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7b8c9d0e1f2",
+        "address": "51.210.45.124",
+        "port": 30333,
+        "multiaddr": "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN"
+      },
+      {
+        "peer_id": "12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
+        "pubkey": "04c3g4h5i6j7k8l9m0n1o2p3q4r5s6t7u8v9w0x1y2z3a4b5c6d7e8f9a0b1c2d3",
+        "address": "51.210.45.125",
+        "port": 30333,
+        "multiaddr": "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW"
+      }
+    ],
+    "dns_seeds": [
+      "bootstrap.testnet.synergy-network.io"
+    ],
+    "static_peers": [
+      "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
+      "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
+      "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW"
+    ],
+    "peer_exchange": true,
+    "ports": {
+      "p2p": 30333,
+      "rpc_http": 9933,
+      "rpc_https": 9934,
+      "websocket": 9944,
+      "metrics": 9615
+    },
+    "transport": {
+      "tcp": true,
+      "quic": true,
+      "websocket": true,
+      "encryption": "noise_protocol_required"
+    }
+  },
+  "crypto": {
+    "signature_algorithms": [
+      "ml-dsa",
+      "slh-dsa"
+    ],
+    "legacy_ecdsa_supported": false,
+    "key_types": {
+      "validator": "ml-dsa",
+      "transaction": "slh-dsa",
+      "governance": "slh-dsa"
+    },
+    "hash_functions": {
+      "block": "sha3-256",
+      "transaction": "sha3-256",
+      "state_trie": "blake3"
+    },
+    "domain_separation": {
+      "transaction": "synergy/tx/v1/",
+      "consensus": "synergy/consensus/v1/",
+      "governance": "synergy/gov/v1/"
+    }
+  },
+  "execution": {
+    "serialization": "canonical_cbor",
+    "tx_version": 1,
+    "max_block_size_bytes": 4194304,
+    "max_gas_per_block": 30000000,
+    "vm": {
+      "runtime": "synqvm",
+      "max_call_depth": 1024,
+      "max_memory_bytes": 67108864,
+      "max_contract_size_bytes": 524288
+    },
+    "gas_model": {
+      "base_tx_cost_nanosnrg": 21000,
+      "execution_cost_per_gas": 1000,
+      "storage_cost_per_byte_per_block": 10
+    }
+  },
+  "modules": {
+    "staking": {
+      "initialized": true,
+      "delegations_enabled": true,
+      "delegations": [],
+      "params": {
+        "min_stake_nanosnrg": 100000000000,
+        "max_stake_nanosnrg": null,
+        "min_delegation_nanosnrg": 1000000000,
+        "max_delegation_nanosnrg": null
+      },
+      "reward_distribution": {
+        "reward_pool_initial_nanosnrg": 100000000000000000,
+        "validator_share_pct": 0.9,
+        "delegator_share_pct": 0.1
+      }
+    },
+    "governance": {
+      "initialized": true,
+      "proposals": []
+    },
+    "treasury": {
+      "initialized": true,
+      "treasury_address": "sYnQtreasury00contract0synrg00net",
+      "initial_balance_nanosnrg": 250000000000000000
+    },
+    "rewards": {
+      "initialized": true,
+      "pool_balance_nanosnrg": 100000000000000000,
+      "block_reward_nanosnrg": 1000000000,
+      "epoch_reward_nanosnrg": 3600000000000
+    },
+    "slashing": {
+      "initialized": true,
+      "evidence_queue": []
+    },
+    "identity": {
+      "initialized": true,
+      "contract_address": "sYnQidentity0contract00synrg0net",
+      "reserved_names": [
+        "synergy",
+        "snrg",
+        "foundation",
+        "treasury"
+      ],
+      "registration_fee_nanosnrg": 1000000000
+    },
+    "uma": {
+      "initialized": true,
+      "session_key_ttl_seconds": 86400,
+      "account_abstraction_enabled": true
+    },
+    "sxcp": {
+      "initialized": true,
+      "enabled_at_genesis": false,
+      "bridge_contract_address": null,
+      "supported_chains": [],
+      "guardian_set": [],
+      "rate_limit_per_block_nanosnrg": 50000000000000,
+      "rate_limit_per_day_nanosnrg": 500000000000000
+    }
+  },
+  "upgrade": {
+    "authority": "governance_and_validator_signaling",
+    "signaling_threshold_pct": 0.8,
+    "mechanism": "on_chain_scheduled",
+    "fork_triggers": [
+      "block_height",
+      "timestamp"
+    ]
+  },
+  "security": {
+    "emergency_pause": {
+      "enabled": true,
+      "guardian_multisig": "sYnQguardian0multisig0synrg0net0",
+      "auto_expire_blocks": 7200
+    },
+    "rate_limits": {
+      "max_tx_per_block_per_account": 100,
+      "bridge_max_volume_per_block_nanosnrg": 50000000000000,
+      "bridge_max_volume_per_day_nanosnrg": 500000000000000
+    },
+    "mempool": {
+      "max_pending_per_account": 64,
+      "max_pending_global": 8192
+    },
+    "access_control": {
+      "admin_roles": "governance_contract_only",
+      "privileged_eoa": false
+    }
+  },
+  "integrity": {
+    "_note": "genesis_hash must be computed from canonical JSON serialization of all fields above \u2014 do not manually set",
+    "genesis_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "state_root": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "allocation_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "validator_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "contract_hash": "0x0000000000000000000000000000000000000000000000000000000000000000",
+    "signed_by": [
+      {
+        "signer_address": "sYnU1qvr4kx9tna2m8h3j5d6f7p0wecs",
+        "signature": "[ML-DSA SIGNATURE OVER GENESIS HASH \u2014 COMPUTED AT RELEASE]",
+        "key_type": "ml-dsa"
+      },
+      {
+        "signer_address": "sYnU2plm7qs6vkb3x9y4z8w1n0dcrtfe",
+        "signature": "[ML-DSA SIGNATURE OVER GENESIS HASH \u2014 COMPUTED AT RELEASE]",
+        "key_type": "ml-dsa"
+      },
+      {
+        "signer_address": "sYnU3nkj9wr2xyz7ab5c4d8e1f6ghpqm",
+        "signature": "[ML-DSA SIGNATURE OVER GENESIS HASH \u2014 COMPUTED AT RELEASE]",
+        "key_type": "ml-dsa"
+      }
+    ]
+  }
+}

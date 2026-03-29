@@ -30,14 +30,14 @@ function main() {
   const args = parseArgs(process.argv.slice(2));
   const source = args.source || "sepolia";
   const destination = args.destination || "amoy";
-  const output = args.output || "devnet-sxcp-relayer-config.json";
+  const output = args.output || "testbeta-sxcp-relayer-config.json";
 
   const sourceDeployment = ensureDeployment(source);
   const destinationDeployment = ensureDeployment(destination);
 
   const config = {
     generatedAt: new Date().toISOString(),
-    profile: "sxcp-devnet-phase1",
+    profile: "sxcp-testbeta-phase1",
     flow: {
       source,
       destination,
@@ -53,7 +53,7 @@ function main() {
       epochId: 1,
       quorumThreshold: sourceDeployment.config?.initialThreshold ?? 2,
       signerKeysEnv: "RELAYER_PRIVATE_KEYS",
-      devnetRpcGateway: "http://10.50.0.13:48650",
+      devnetRpcGateway: "https://testbeta-core-rpc.synergy-network.io",
       recommendedNodes: ["machine-06", "machine-07", "machine-08", "machine-09"],
     },
     rpcMethodsRequiredOnDevnet: [
