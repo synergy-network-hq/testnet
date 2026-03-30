@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Start Synergy Testnet Beta Node with SynQ and PQC Support
+# Start Synergy Testnet-Beta Node with SynQ and PQC Support
 
 echo "🚀 Starting Synergy Network Testnet Beta with SynQ and PQC..."
 echo "======================================================="

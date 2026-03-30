@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RPC_URL="${RPC_URL:-http://127.0.0.1:5730}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5640}"
 TX_PER_MINUTE="${TX_PER_MINUTE:-10000}"
 DURATION_MINUTES="${DURATION_MINUTES:-1}"
 WORKERS="${WORKERS:-20}"

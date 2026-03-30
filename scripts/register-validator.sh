@@ -1,5 +1,5 @@
 #!/bin/bash
-# Synergy Testnet Beta - Register New Validator
+# Synergy Testnet-Beta - Register New Validator
 # Usage: ./register-validator.sh <validator_address> <public_key_base64>
 
 set -e
@@ -34,7 +34,7 @@ if [[ ! "$VALIDATOR_ADDRESS" =~ ^synv1[0-9a-z]{38,42}$ ]]; then
 fi
 
 echo -e "${BLUE}===================================${NC}"
-echo -e "${BLUE}Synergy Testnet Beta - Validator Registration${NC}"
+echo -e "${BLUE}Synergy Testnet-Beta - Validator Registration${NC}"
 echo -e "${BLUE}===================================${NC}"
 echo ""
 echo "Validator Address: $VALIDATOR_ADDRESS"

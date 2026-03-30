@@ -167,9 +167,7 @@ CHAIN_DIR="$DATA_DIR/chain"
 LOG_DIR="$DATA_DIR/logs"
 PID_FILE="$DATA_DIR/node.pid"
 OUT_FILE="$LOG_DIR/node.out"
-NETWORK_TRANSPORT="${NETWORK_TRANSPORT:-wireguard}"
-WIREGUARD_INTERFACE="${WIREGUARD_INTERFACE:-wg0}"
-VPN_CIDR="${VPN_CIDR:-10.50.0.0/24}"
+NETWORK_TRANSPORT="${NETWORK_TRANSPORT:-public}"
 
 select_binary() {
   local os arch
@@ -201,27 +199,12 @@ run_privileged() {
 }
 
 open_ports_ufw() {
-  if [[ "$NETWORK_TRANSPORT" == "wireguard" ]]; then
-    for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
-      run_privileged ufw allow in on "$WIREGUARD_INTERFACE" from "$VPN_CIDR" to any port "$port" proto tcp >/dev/null || true
-    done
-    return
-  fi
-
   for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
     run_privileged ufw allow "${port}/tcp" >/dev/null || true
   done
 }
 
 open_ports_firewalld() {
-  if [[ "$NETWORK_TRANSPORT" == "wireguard" ]]; then
-    for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
-      run_privileged firewall-cmd --permanent --add-rich-rule="rule family='ipv4' source address='${VPN_CIDR}' port protocol='tcp' port='${port}' accept" >/dev/null || true
-    done
-    run_privileged firewall-cmd --reload >/dev/null || true
-    return
-  fi
-
   for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
     run_privileged firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null || true
   done
@@ -229,15 +212,6 @@ open_ports_firewalld() {
 }
 
 open_ports_iptables() {
-  if [[ "$NETWORK_TRANSPORT" == "wireguard" ]]; then
-    for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
-      if ! run_privileged iptables -C INPUT -i "$WIREGUARD_INTERFACE" -s "$VPN_CIDR" -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
-        run_privileged iptables -I INPUT -i "$WIREGUARD_INTERFACE" -s "$VPN_CIDR" -p tcp --dport "$port" -j ACCEPT >/dev/null || true
-      fi
-    done
-    return
-  fi
-
   for port in "$P2P_PORT" "$RPC_PORT" "$WS_PORT" "$GRPC_PORT" "$DISCOVERY_PORT"; do
     if ! run_privileged iptables -C INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null 2>&1; then
       run_privileged iptables -I INPUT -p tcp --dport "$port" -j ACCEPT >/dev/null || true
@@ -249,10 +223,6 @@ open_ports() {
   if [[ "$(uname -s)" != "Linux" ]]; then
     echo "Non-Linux host detected; skipping firewall automation."
     return
-  fi
-
-  if [[ "$NETWORK_TRANSPORT" == "wireguard" ]]; then
-    echo "WireGuard mode: allowing node ports only from $VPN_CIDR on interface $WIREGUARD_INTERFACE..."
   fi
 
   if command -v ufw >/dev/null 2>&1; then
@@ -424,7 +394,7 @@ show_info() {
   echo "Address Class: $ADDRESS_CLASS"
   echo "Address: $NODE_ADDRESS"
   echo "Monitor Host: ${MONITOR_HOST:-$HOST}"
-  echo "VPN IP: ${VPN_IP:-not-set}"
+  echo "Inventory Address: ${VPN_IP:-not-set}"
   echo "Transport: ${NETWORK_TRANSPORT:-standard}"
   echo "P2P: $P2P_PORT"
   echo "RPC: $RPC_PORT"
@@ -535,11 +505,6 @@ function Open-Ports {
     [int](Get-NodeEnvValue "GRPC_PORT"),
     [int](Get-NodeEnvValue "DISCOVERY_PORT")
   )
-  $networkTransport = (Get-NodeEnvValue "NETWORK_TRANSPORT").ToLower()
-  if ([string]::IsNullOrWhiteSpace($networkTransport)) { $networkTransport = "wireguard" }
-  $vpnCidr = Get-NodeEnvValue "VPN_CIDR"
-  if ([string]::IsNullOrWhiteSpace($vpnCidr)) { $vpnCidr = "10.50.0.0/24" }
-
   if (-not (Test-Admin)) {
     Write-Warning "Run PowerShell as Administrator to auto-open Windows Firewall ports."
     Write-Host "Open these TCP ports manually: $($ports -join ', ')"
@@ -551,11 +516,7 @@ function Open-Ports {
     $ruleName = "Synergy-$machineId-$port"
     $existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
     if (-not $existing) {
-      if ($networkTransport -eq "wireguard") {
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port -RemoteAddress $vpnCidr | Out-Null
-      } else {
-        New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port | Out-Null
-      }
+      New-NetFirewallRule -DisplayName $ruleName -Direction Inbound -Action Allow -Protocol TCP -LocalPort $port | Out-Null
     }
   }
 }
@@ -708,7 +669,7 @@ function Info-Node {
   Write-Host "Address Class: $(Get-NodeEnvValue 'ADDRESS_CLASS')"
   Write-Host "Address: $(Get-NodeEnvValue 'NODE_ADDRESS')"
   Write-Host "Monitor Host: $(Get-NodeEnvValue 'MONITOR_HOST')"
-  Write-Host "VPN IP: $(Get-NodeEnvValue 'VPN_IP')"
+  Write-Host "Inventory Address: $(Get-NodeEnvValue 'VPN_IP')"
   Write-Host "Transport: $(Get-NodeEnvValue 'NETWORK_TRANSPORT')"
   Write-Host "P2P: $(Get-NodeEnvValue 'P2P_PORT')"
   Write-Host "RPC: $(Get-NodeEnvValue 'RPC_PORT')"
@@ -741,7 +702,7 @@ write_commands_file() {
   local discovery_port="$8"
 
   cat > "$node_dir/COMMANDS.txt" <<TXT
-Synergy Testnet Beta Node Command Reference
+Synergy Testnet-Beta Node Command Reference
 ====================================
 
 Node: $machine_id
@@ -863,10 +824,9 @@ Notes
 -----
 - The installer includes Linux x86_64, macOS arm64, and Windows x86_64 binaries.
 - Linux firewall automation supports ufw, firewalld, and iptables.
-- In WireGuard mode, firewall rules are scoped to VPN CIDR traffic.
 - Windows firewall automation uses New-NetFirewallRule when run as Administrator.
 - This folder is self-contained for this node instance.
-- Public DNS should resolve to public hosts only; never point public DNS at private VPN IPs.
+- Public DNS should resolve only to approved public hosts.
 - Binary provenance:
   - Linux: $linux_source
   - macOS: $darwin_source
@@ -885,7 +845,7 @@ write_binary_status_file() {
   local windows_sha="$7"
 
   cat > "$node_dir/BINARY_STATUS.txt" <<TXT
-Synergy Testnet Beta Binary Status
+Synergy Testnet-Beta Binary Status
 ============================
 
 Generated At: $(date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -954,9 +914,7 @@ DISCOVERY_PORT=$discovery_port
 HOST=$host
 MONITOR_HOST=$host
 VPN_IP=$vpn_ip
-NETWORK_TRANSPORT=wireguard
-WIREGUARD_INTERFACE=wg0
-VPN_CIDR=10.50.0.0/24
+NETWORK_TRANSPORT=public
 AUTO_REGISTER_VALIDATOR=$auto_register
 ENABLE_PRUNING=$enable_pruning
 VRF_ENABLED=$vrf_enabled

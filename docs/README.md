@@ -90,7 +90,7 @@ bash scripts/start-testbeta.sh
 
 **Expected Output:**
 ```
-🔧 Synergy Testnet Beta Node Starting...
+🔧 Synergy Testnet-Beta Node Starting...
 🔧 Configuration loaded successfully
 🔧 Chain loaded. Latest height: 0
 🔧 Validator set loaded. Total validators: 3

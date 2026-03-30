@@ -53,33 +53,33 @@
 
 ## 2. Canonical Port Allocation
 
-### 2.1 L1 Node (Devnet)
+### 2.1 L1 Node (Testnet-Beta)
 
 | Purpose | Port |
 |-----|----:|
-| P2P | 38638 |
-| Core RPC | 48638 |
-| Core WS | 58638 |
+| P2P | 5622 + assignment |
+| Core RPC | 5640 + assignment |
+| Core WS | 5660 + assignment |
 | Metrics | 9090 (localhost only) |
 
 ---
 
-### 2.1.1 SXCP Relayer Node (Devnet)
+### 2.1.1 SXCP Relayer Node (Testnet-Beta)
 
 Relayer nodes must use **separate ports** from L1 nodes to avoid conflicts and to allow operators
 to apply firewall / ACL policies specifically for SXCP traffic.
 
 | Purpose | Port |
 |-----|----:|
-| Relayer P2P (SXCP) | 39638 |
-| Relayer RPC (SXCP) | 49638 |
-| Relayer WS (SXCP) | 59638 |
+| Relayer P2P (SXCP) | 5622 + assignment |
+| Relayer RPC (SXCP) | 5640 + assignment |
+| Relayer WS (SXCP) | 5660 + assignment |
 
 **Hard rule**: Relayer P2P is **DNS‑only, never proxied** (same as L1 P2P).
 
 ---
 
-### 2.2 EVM RPC (Devnet)
+### 2.2 EVM RPC (Testnet-Beta)
 
 | Purpose | Port |
 |-----|----:|
@@ -88,7 +88,7 @@ to apply firewall / ACL policies specifically for SXCP traffic.
 
 ---
 
-### 2.3 Microservices (Devnet)
+### 2.3 Microservices (Testnet-Beta)
 
 | Service | Port |
 |------|----:|
@@ -106,28 +106,28 @@ to apply firewall / ACL policies specifically for SXCP traffic.
 
 ---
 
-## 3. Nginx — Devnet Upstream Map
+## 3. Nginx — Testnet-Beta Upstream Map
 
 ```nginx
-upstream devnet_core_rpc       { server 127.0.0.1:48638; }
-upstream devnet_core_ws        { server 127.0.0.1:58638; }
+upstream testbeta_core_rpc     { server 127.0.0.1:5640; }
+upstream testbeta_core_ws      { server 127.0.0.1:5660; }
 
-upstream devnet_evm_rpc        { server 127.0.0.1:8545; }
-upstream devnet_evm_ws         { server 127.0.0.1:8546; }
+upstream testbeta_evm_rpc      { server 127.0.0.1:8545; }
+upstream testbeta_evm_ws       { server 127.0.0.1:8546; }
 
-upstream devnet_api            { server 127.0.0.1:3001; }
-upstream devnet_explorer_ui    { server 127.0.0.1:80; }
-upstream devnet_explorer_api   { server 127.0.0.1:3020; }
-upstream devnet_indexer_api    { server 127.0.0.1:3011; }
-upstream devnet_wallet_api     { server 127.0.0.1:3003; }
-upstream devnet_faucet         { server 127.0.0.1:3002; }
+upstream testbeta_api          { server 127.0.0.1:3001; }
+upstream testbeta_explorer_ui  { server 127.0.0.1:80; }
+upstream testbeta_explorer_api { server 127.0.0.1:3020; }
+upstream testbeta_indexer_api  { server 127.0.0.1:3011; }
+upstream testbeta_wallet_api   { server 127.0.0.1:3003; }
+upstream testbeta_faucet       { server 127.0.0.1:3002; }
 
-upstream devnet_sxcp_api       { server 127.0.0.1:3040; }
-upstream devnet_sxcp_ws        { server 127.0.0.1:3041; }
+upstream testbeta_sxcp_api     { server 127.0.0.1:3040; }
+upstream testbeta_sxcp_ws      { server 127.0.0.1:3041; }
 
-upstream devnet_aegis_verify   { server 127.0.0.1:3050; }
+upstream testbeta_aegis_verify { server 127.0.0.1:3050; }
 
-upstream devnet_synq_verify    { server 127.0.0.1:3030; }
+upstream testbeta_synq_verify  { server 127.0.0.1:3030; }
 ```
 
 ---

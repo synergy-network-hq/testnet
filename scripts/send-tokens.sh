@@ -1,5 +1,5 @@
 #!/bin/bash
-# Synergy Testnet Beta - Send SNRG Tokens to Validator
+# Synergy Testnet-Beta - Send SNRG Tokens to Validator
 # Usage: ./send-tokens.sh <recipient_address> <amount>
 
 set -e
@@ -20,8 +20,8 @@ if [ $# -lt 2 ]; then
     echo "Usage: $0 <recipient_address> <amount>"
     echo ""
     echo "Examples:"
-    echo "  $0 synv1abc123... 1000000      # Send 1M SNRG"
-    echo "  $0 synv1xyz789... 5000000      # Send 5M SNRG"
+    echo "  $0 synv1abc123... 50000        # Send 50k SNRG"
+    echo "  $0 synv1xyz789... 100000       # Send 100k SNRG"
     exit 1
 fi
 
@@ -36,7 +36,7 @@ if [[ ! "$RECIPIENT" =~ ^syn[vwaszbjkmnulfro][0-9a-z]{38,42}$ ]]; then
 fi
 
 echo -e "${GREEN}===================================${NC}"
-echo -e "${GREEN}Synergy Testnet Beta - Send Tokens${NC}"
+echo -e "${GREEN}Synergy Testnet-Beta - Send Tokens${NC}"
 echo -e "${GREEN}===================================${NC}"
 echo ""
 echo "From:      $FAUCET_ADDRESS"

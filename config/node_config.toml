@@ -28,8 +28,8 @@ log_file = "logs/bootnode1.log"
 enable_console = true
 
 [rpc]
-http_port = 5730
-ws_port = 5830
+http_port = 5640
+ws_port = 5660
 enable_cors = true
 external_http = "https://testbeta-core-rpc.synergy-network.io"
 external_ws = "wss://testbeta-core-ws.synergy-network.io"
@@ -39,3 +39,6 @@ role = "validator"
 enable_rpc = true
 enable_metrics = true
 metrics_port = 6030
+
+[p2p]
+discovery_port = 5680

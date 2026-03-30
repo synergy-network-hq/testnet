@@ -1,9 +1,9 @@
 [network]
 id = 338639
-name = "Synergy Testnet Beta"
+name = "Synergy Testnet-Beta"
 p2p_port = 5620
-rpc_port = 5730
-ws_port = 5830
+rpc_port = 5640
+ws_port = 5660
 max_peers = 128
 bootnodes = ["snr://bootstrap@bootnode1.synergynode.xyz:5620", "snr://bootstrap@bootnode2.synergynode.xyz:5620"]
 
@@ -38,11 +38,11 @@ max_file_size = 10485760
 max_files = 5
 
 [rpc]
-bind_address = "127.0.0.1:5730"
+bind_address = "127.0.0.1:5640"
 enable_http = false
-http_port = 5730
+http_port = 5640
 enable_ws = false
-ws_port = 5830
+ws_port = 5660
 enable_grpc = false
 grpc_port = 50051
 cors_enabled = false
@@ -53,7 +53,7 @@ listen_address = "0.0.0.0:5620"
 public_address = "bootnode3.synergynode.xyz:5620"
 node_name = "bootnode3"
 enable_discovery = true
-discovery_port = 5930
+discovery_port = 5680
 heartbeat_interval = 30
 
 [storage]

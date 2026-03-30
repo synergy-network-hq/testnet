@@ -66,7 +66,7 @@ pub struct ConsensusConfig {
 }
 
 fn default_min_validators() -> usize {
-    3
+    4
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -159,9 +159,9 @@ impl Default for NodeConfig {
             network: NetworkConfig {
                 id: 338639,
                 name: "Synergy Testnet-Beta".to_string(),
-                p2p_port: 5630,
-                rpc_port: 5730,
-                ws_port: 5830,
+                p2p_port: 5622,
+                rpc_port: 5640,
+                ws_port: 5660,
                 max_peers: 50,
                 bootnodes: vec![],
                 seed_servers: vec![],
@@ -178,8 +178,8 @@ impl Default for NodeConfig {
                 block_time_secs: 2,
                 epoch_length: 50,
                 min_validators: default_min_validators(),
-                validator_cluster_size: 5,
-                max_validators: 21,
+                validator_cluster_size: 4,
+                max_validators: 4,
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
                 vrf_seed_epoch_interval: 1000,
@@ -199,22 +199,22 @@ impl Default for NodeConfig {
                 max_files: 5,
             },
             rpc: RPCConfig {
-                bind_address: "127.0.0.1:5730".to_string(),
+                bind_address: "127.0.0.1:5640".to_string(),
                 enable_http: true,
-                http_port: 5730,
+                http_port: 5640,
                 enable_ws: true,
-                ws_port: 5830,
+                ws_port: 5660,
                 enable_grpc: true,
-                grpc_port: 5730,
+                grpc_port: 5640,
                 cors_enabled: false,
                 cors_origins: vec![],
             },
             p2p: P2PConfig {
-                listen_address: "127.0.0.1:5630".to_string(),
-                public_address: "127.0.0.1:5630".to_string(),
+                listen_address: "127.0.0.1:5622".to_string(),
+                public_address: "127.0.0.1:5622".to_string(),
                 node_name: "synergy-node-01".to_string(),
                 enable_discovery: false,
-                discovery_port: 5930,
+                discovery_port: 5680,
                 heartbeat_interval: 30,
             },
             storage: StorageConfig {
@@ -782,11 +782,11 @@ label = "Validator Node 01"
 [network]
 chain_name = "synergy-testnet-beta"
 chain_id = 338639
-p2p_listen = "0.0.0.0:5630"
+p2p_listen = "0.0.0.0:5622"
 bootnodes = ["bootnode1.synergynode.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
-additional_dial_targets = ["24.181.87.76:39638"]
+additional_dial_targets = ["24.181.87.76:5623"]
 max_peers = 128
 
 [role]
@@ -806,8 +806,8 @@ log_level = "debug"
         assert_eq!(config.network.name, "synergy-testnet-beta");
         assert_eq!(config.network.id, 338639);
         assert_eq!(config.blockchain.chain_id, 338639);
-        assert_eq!(config.network.p2p_port, 5630);
-        assert_eq!(config.p2p.listen_address, "0.0.0.0:5630");
+        assert_eq!(config.network.p2p_port, 5622);
+        assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
         assert_eq!(
             config.network.bootnodes,
             vec!["bootnode1.synergynode.xyz:5620".to_string()]
@@ -822,7 +822,7 @@ log_level = "debug"
         );
         assert_eq!(
             config.network.additional_dial_targets,
-            vec!["24.181.87.76:39638".to_string()]
+            vec!["24.181.87.76:5623".to_string()]
         );
         assert_eq!(config.logging.log_level, "debug");
     }
@@ -845,9 +845,9 @@ log_level = "debug"
 [network]
 id = 338639
 name = "synergy-testnet-beta"
-p2p_port = 5630
-rpc_port = 5730
-ws_port = 5830
+p2p_port = 5622
+rpc_port = 5640
+ws_port = 5660
 bootnodes = ["bootnode1.synergynode.xyz:5620"]
 
 [blockchain]
@@ -881,20 +881,20 @@ max_files = 5
 
 [rpc]
 enable_http = true
-http_port = 5730
+http_port = 5640
 enable_ws = true
-ws_port = 5830
+ws_port = 5660
 enable_grpc = true
-grpc_port = 5730
+grpc_port = 5640
 cors_enabled = false
 cors_origins = []
 
 [p2p]
-listen_address = "0.0.0.0:5630"
-public_address = "127.0.0.1:5630"
+listen_address = "0.0.0.0:5622"
+public_address = "127.0.0.1:5622"
 node_name = "node-01"
 enable_discovery = true
-discovery_port = 5930
+discovery_port = 5680
 heartbeat_interval = 30
 
 [storage]

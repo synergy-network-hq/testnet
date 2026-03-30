@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Stop the Synergy Testnet Beta Node
+# Stop the Synergy Testnet-Beta Node
 
-echo "🛑 Stopping Synergy Testnet Beta..."
+echo "🛑 Stopping Synergy Testnet-Beta..."
 
 cd "$(dirname "$0")/.."
 
@@ -22,4 +22,4 @@ else
     pkill -f synergy-testbeta || echo "No processes matched."
 fi
 
-echo "🧹 Synergy Testnet Beta shutdown complete."
+echo "🧹 Synergy Testnet-Beta shutdown complete."
