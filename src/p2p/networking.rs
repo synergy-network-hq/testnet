@@ -824,12 +824,22 @@ impl P2PNetwork {
                         let chain = network.blockchain.lock().unwrap();
                         let local = chain.last().map(|b| b.block_index).unwrap_or(0);
                         let peers = network.connected_peers.lock().unwrap();
-                        let best = peers.values().map(|p| p.last_known_height).max().unwrap_or(0);
+                        let best = peers
+                            .values()
+                            .map(|p| p.last_known_height)
+                            .max()
+                            .unwrap_or(0);
                         (local + 1, best)
                     };
                     let behind = best_peer_height.saturating_sub(from_height.saturating_sub(1));
                     // Request larger batches when far behind.
-                    let batch = if behind > 5000 { 2000 } else if behind > 1000 { 1000 } else { 500 };
+                    let batch = if behind > 5000 {
+                        2000
+                    } else if behind > 1000 {
+                        1000
+                    } else {
+                        500
+                    };
                     network.request_blocks(from_height, batch);
                 }
 
@@ -842,7 +852,11 @@ impl P2PNetwork {
                     let chain = network.blockchain.lock().unwrap();
                     let local = chain.last().map(|b| b.block_index).unwrap_or(0);
                     let peers = network.connected_peers.lock().unwrap();
-                    let best = peers.values().map(|p| p.last_known_height).max().unwrap_or(0);
+                    let best = peers
+                        .values()
+                        .map(|p| p.last_known_height)
+                        .max()
+                        .unwrap_or(0);
                     (local, best)
                 };
                 let behind = best_peer_height.saturating_sub(local_height);
@@ -1148,14 +1162,24 @@ fn handle_messages(
                             if let Some(existing_key) = existing_peer_key.clone() {
                                 if existing_key != peer_address {
                                     let existing_metadata = peers.get(&existing_key).map(|peer| {
-                                        (peer.direction, peer.connected_at, peer.public_address.clone())
+                                        (
+                                            peer.direction,
+                                            peer.connected_at,
+                                            peer.public_address.clone(),
+                                        )
                                     });
                                     let new_metadata = peers
                                         .get(&peer_address)
                                         .map(|peer| (peer.direction, peer.connected_at));
 
-                                    if let (Some((existing_direction, existing_connected_at, existing_public_address)), Some((new_direction, new_connected_at))) =
-                                        (existing_metadata, new_metadata)
+                                    if let (
+                                        Some((
+                                            existing_direction,
+                                            existing_connected_at,
+                                            existing_public_address,
+                                        )),
+                                        Some((new_direction, new_connected_at)),
+                                    ) = (existing_metadata, new_metadata)
                                     {
                                         match resolve_duplicate_connection(
                                             &config.p2p.node_name,
@@ -1494,30 +1518,19 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetStatus => {
-                        if config.node.bootstrap_only {
-                            let status = NetworkMessage::Status {
-                                block_height: 0,
-                                best_block_hash: String::new(),
-                                genesis_hash: String::new(),
-                            };
-
-                            let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                peer.last_known_height = 0;
-                                peer.best_block_hash.clear();
-                                peer.genesis_hash.clear();
-                                if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_message(stream, &status);
-                                }
-                            }
-                            continue;
-                        }
-
                         let (block_height, best_block_hash, genesis_hash) = {
                             let chain = blockchain.lock().unwrap();
                             (
-                                chain.last().map(|b| b.block_index).unwrap_or(0),
-                                chain.last().map(|b| b.hash.clone()).unwrap_or_default(),
+                                if config.node.bootstrap_only {
+                                    0
+                                } else {
+                                    chain.last().map(|b| b.block_index).unwrap_or(0)
+                                },
+                                if config.node.bootstrap_only {
+                                    String::new()
+                                } else {
+                                    chain.last().map(|b| b.hash.clone()).unwrap_or_default()
+                                },
                                 chain.get_genesis_hash().unwrap_or_default(),
                             )
                         };
@@ -1552,6 +1565,23 @@ fn handle_messages(
                                 "peer" => peer_address.clone(),
                                 "height" => block_height
                             );
+                            continue;
+                        }
+
+                        let local_genesis_hash = {
+                            let chain = blockchain.lock().unwrap();
+                            chain.get_genesis_hash().unwrap_or_default()
+                        };
+                        if genesis_hash.is_empty() || genesis_hash != local_genesis_hash {
+                            warn!(
+                                "p2p",
+                                "Disconnecting peer with mismatched genesis hash",
+                                "peer" => peer_address.clone(),
+                                "local_genesis_hash" => local_genesis_hash.clone(),
+                                "remote_genesis_hash" => genesis_hash.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&mut peers, &peer_address);
                             continue;
                         }
 
@@ -1894,9 +1924,11 @@ fn normalize_host_port(host: &str, port: &str) -> Option<String> {
     }
 
     match host.parse::<std::net::IpAddr>() {
-        Ok(std::net::IpAddr::V6(_)) => None, // Skip IPv6 — most peers are behind NAT
+        // Preserve IPv6 literals in normalized form even though the dialer later
+        // constrains outbound connections to IPv4 endpoints.
+        Ok(std::net::IpAddr::V6(_)) => Some(format!("[{host}]:{port}")),
         Ok(std::net::IpAddr::V4(_)) => Some(format!("{host}:{port}")),
-        Err(_) if host.contains(':') => None, // Likely IPv6 literal
+        Err(_) if host.contains(':') => None,
         Err(_) => Some(format!("{host}:{port}")), // DNS hostnames
     }
 }
@@ -1917,9 +1949,7 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
     let addrs = peer.to_socket_addrs()?;
     // Only dial IPv4 addresses — IPv6 peers behind NAT/firewalls cause
     // spurious timeouts that flood the logs and waste connection budget.
-    let ipv4_addrs: Vec<_> = addrs
-        .filter(|a| a.is_ipv4())
-        .collect();
+    let ipv4_addrs: Vec<_> = addrs.filter(|a| a.is_ipv4()).collect();
     if ipv4_addrs.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::AddrNotAvailable,
@@ -2180,13 +2210,13 @@ mod tests {
         config.network.additional_dial_targets = vec!["73.79.66.255:5620".to_string()];
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
         let discovered_targets: DialTargetsArc =
-            Arc::new(Mutex::new(vec!["64.227.107.57:5620".to_string()]));
+            Arc::new(Mutex::new(vec!["157.245.226.24:5620".to_string()]));
 
         let addresses =
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
         assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
         assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
-        assert!(addresses.contains(&"64.227.107.57:5620".to_string()));
+        assert!(addresses.contains(&"157.245.226.24:5620".to_string()));
     }
 }

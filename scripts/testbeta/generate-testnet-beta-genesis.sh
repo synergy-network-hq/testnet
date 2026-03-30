@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+echo "This script is disabled. Testnet-Beta genesis must be produced by the canonical Synergy genesis ceremony and compiled with synergy-genesis." >&2
+echo "Use the filled canonical genesis.json from the ceremony output. Do not generate a legacy local genesis template." >&2
+exit 1
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
 NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/lean15/keys/node-addresses.csv"
@@ -27,6 +31,7 @@ genesis_time = os.environ.get("TESTBETA_GENESIS_TIME", "2026-01-01T00:00:00Z")
 validator_stake = int(os.environ.get("TESTBETA_VALIDATOR_STAKE", "50000000000000"))
 validator_limit = int(os.environ.get("TESTBETA_GENESIS_VALIDATOR_LIMIT", "4"))
 minimum_stake_amount = int(os.environ.get("TESTBETA_MIN_STAKE_AMOUNT", "5000000000000"))
+burn_address = os.environ.get("TESTBETA_BURN_ADDRESS", "synergy000000000000000000000000000000burn")
 
 treasury_address = os.environ.get("TESTBETA_TREASURY_ADDRESS", "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh")
 team_address = os.environ.get("TESTBETA_TEAM_ADDRESS", "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv")
@@ -82,7 +87,16 @@ bootnodes = [
     "snr://bootstrap@bootnode3.synergynode.xyz:5620",
 ]
 
-validator_rows = [row for row in inventory_rows if parse_bool(row.get("auto_register_validator", ""))][:validator_limit]
+validator_rows = [
+    row
+    for row in inventory_rows
+    if parse_bool(row.get("auto_register_validator", ""))
+    and (row.get("role_group") or "").strip().lower() == "consensus"
+    and (
+        (row.get("node_type") or "").strip().lower() == "validator"
+        or (row.get("role") or "").strip().lower() == "validator"
+    )
+][:validator_limit]
 validators = []
 validator_allocations = []
 for index, row in enumerate(validator_rows, start=1):
@@ -161,12 +175,14 @@ for allocation in genesis_allocations:
 
 genesis = {
     "metadata": {
-        "network_name": "Synergy Testnet Beta",
+        "network_name": "Synergy Testnet-Beta",
         "network_id": "synergy-testnet-beta",
         "genesis_time": genesis_time,
         "chain_id": str(chain_id),
         "version": "2.1.0-testbeta",
-        "description": "Synergy Testnet-Beta genesis configuration",
+        "description": "Non-authoritative checked-in Synergy Testnet-Beta genesis template. Replace with the signed ceremony output before launch.",
+        "authority": "non-authoritative-template",
+        "authoritative_launch_source": "genesis ceremony signed release output",
     },
     "consensus": {
         "algorithm": "PoSy",
@@ -194,9 +210,9 @@ genesis = {
         "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
         "api_endpoint": "https://testbeta-api.synergy-network.io",
         "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
-        "rpc_port": 5730,
-        "p2p_port": 5630,
-        "websocket_port": 5830,
+        "rpc_port": 5640,
+        "p2p_port": 5622,
+        "websocket_port": 5660,
         "metrics_port": 6030,
         "bootnodes": bootnodes,
     },
@@ -205,7 +221,7 @@ genesis = {
         "token_symbol": "SNRG",
         "token_name": "Synergy Token",
         "decimals": 9,
-        "burn_address": "synergy00000000000000000000000burn",
+        "burn_address": burn_address,
     },
     "genesis_allocations": genesis_allocations,
     "validators": validators,

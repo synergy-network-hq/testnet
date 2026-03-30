@@ -28,41 +28,102 @@ with open(manifest_path, encoding="utf-8") as handle:
 expected_ports = {
     "bootnode": 5620,
     "seed": 5621,
-    "reserved": 5622,
-    "p2p_base": 5630,
-    "rpc_base": 5730,
-    "ws_base": 5830,
-    "discovery_base": 5930,
+    "node_listener_base": 5622,
+    "rpc_base": 5640,
+    "ws_base": 5660,
+    "discovery_base": 5680,
     "metrics_base": 6030,
 }
 
-if genesis["metadata"].get("network_id") != "synergy-testnet-beta":
-    errors.append("genesis metadata.network_id must be synergy-testnet-beta")
-if str(genesis["metadata"].get("chain_id")) != "338639":
-    errors.append("genesis metadata.chain_id must be 338639")
-if genesis["network"].get("chain_id") != 338639:
+required_contracts = {
+    "validator_registry",
+    "synergy_oracle",
+    "staking",
+    "governance",
+    "treasury",
+    "reward_distributor",
+    "slashing",
+    "identity",
+}
+
+zero_hash = "0" * 64
+
+def has_placeholder(value):
+    if isinstance(value, str):
+        return "<" in value and ">" in value
+    if isinstance(value, list):
+        return any(has_placeholder(item) for item in value)
+    if isinstance(value, dict):
+        return any(has_placeholder(item) for item in value.values())
+    return False
+
+def is_hex_hash(value):
+    return isinstance(value, str) and len(value) == 64 and all(ch in "0123456789abcdef" for ch in value.lower())
+
+if genesis.get("schema_version") != "v1":
+    errors.append("genesis schema_version must be v1")
+if genesis.get("env") != "testbeta":
+    errors.append("genesis env must be testbeta")
+if genesis.get("network", {}).get("chain_id") != 338639:
     errors.append("genesis network.chain_id must be 338639")
-if genesis["supply"].get("token_symbol") != "SNRG":
-    errors.append("genesis supply.token_symbol must be SNRG")
-if genesis["consensus"]["parameters"].get("min_validators") != 4:
-    errors.append("genesis consensus min_validators must be 4")
-if genesis["consensus"]["parameters"].get("max_validators") != 4:
-    errors.append("genesis consensus max_validators must be 4")
-if genesis["consensus"]["parameters"].get("dynamic_validator_registration") is not False:
-    errors.append("genesis dynamic_validator_registration must be false")
+if genesis.get("network", {}).get("network_id") != 338639:
+    errors.append("genesis network.network_id must be 338639")
+if genesis.get("header", {}).get("block_height") != 0:
+    errors.append("genesis header.block_height must be 0")
+if genesis.get("header", {}).get("parent_hash") != zero_hash:
+    errors.append("genesis header.parent_hash must be the zero hash")
+if not isinstance(genesis.get("header", {}).get("timestamp"), int):
+    errors.append("genesis header.timestamp must be an integer unix timestamp")
+if genesis.get("token", {}).get("symbol") != "SNRG":
+    errors.append("genesis token.symbol must be SNRG")
+if genesis.get("token", {}).get("minting_policy") != "fixed_cap":
+    errors.append("genesis token.minting_policy must be fixed_cap")
+if genesis.get("consensus", {}).get("min_validator_count") != 4:
+    errors.append("genesis consensus.min_validator_count must be 4")
+if genesis.get("consensus", {}).get("min_quorum_threshold") != 3:
+    errors.append("genesis consensus.min_quorum_threshold must be 3")
 if len(genesis.get("validators", [])) != 4:
     errors.append("genesis must contain exactly 4 validators")
-if len(genesis["network"].get("bootnodes", [])) != 3:
-    errors.append("genesis network.bootnodes must contain exactly 3 entries")
+if not isinstance(genesis.get("contracts"), dict):
+    errors.append("genesis contracts must be an object")
+else:
+    contract_keys = set(genesis["contracts"].keys())
+    missing_contracts = sorted(required_contracts - contract_keys)
+    if missing_contracts:
+        errors.append(f"genesis contracts missing required entries: {', '.join(missing_contracts)}")
 
-treasury_allocations = [
-    entry["address"]
-    for entry in genesis.get("genesis_allocations", [])
-    if entry.get("type") == "treasury"
-]
-treasury_address = treasury_allocations[0] if treasury_allocations else None
-if genesis["governance"].get("treasury_address") != treasury_address:
-    errors.append("genesis governance.treasury_address must match the treasury allocation address")
+if has_placeholder(genesis):
+    errors.append("genesis must not contain any <PLACEHOLDER> values")
+
+balances_total = 0
+for entry in genesis.get("balances", []):
+    try:
+        balances_total += int(entry.get("balance_nwei", "0"))
+    except (TypeError, ValueError):
+        errors.append(f"invalid balance_nwei for {entry.get('address')}")
+
+allocations_total = 0
+for entry in genesis.get("allocations", []):
+    try:
+        allocations_total += int(entry.get("amount_nwei", "0"))
+    except (TypeError, ValueError):
+        errors.append(f"invalid amount_nwei for allocation {entry.get('name')}")
+
+try:
+    total_supply_cap = int(genesis.get("token", {}).get("total_supply_cap_nwei", "0"))
+except (TypeError, ValueError):
+    total_supply_cap = -1
+    errors.append("genesis token.total_supply_cap_nwei must be a decimal string")
+
+if balances_total != total_supply_cap:
+    errors.append("genesis balances must sum to token.total_supply_cap_nwei")
+if allocations_total != total_supply_cap:
+    errors.append("genesis allocations must sum to token.total_supply_cap_nwei")
+
+integrity = genesis.get("integrity", {})
+for field in ("genesis_hash", "state_root", "allocation_hash", "validator_hash", "contract_hash"):
+    if not is_hex_hash(integrity.get(field)):
+        errors.append(f"genesis integrity.{field} must be a 64-character lowercase hex hash")
 
 if manifest.get("network_id") != "synergy-testnet-beta":
     errors.append("operational manifest network_id must be synergy-testnet-beta")
@@ -89,10 +150,6 @@ for key, expected in expected_urls.items():
     actual = public_endpoints.get(key, {}).get("url")
     if actual != expected:
         errors.append(f"operational manifest {key}.url must be {expected}")
-
-compat_alias = public_endpoints.get("compatibility", {}).get("rpc_alias")
-if compat_alias and compat_alias != "https://testbeta-rpc.synergy-network.io":
-    errors.append("operational manifest compatibility.rpc_alias must be https://testbeta-rpc.synergy-network.io when present")
 
 if errors:
     for error in errors:
@@ -122,7 +179,7 @@ for bundle in bootnode1 bootnode2 bootnode3; do
     echo "[$bundle] max_validators must be 4" >&2
     failures=$((failures + 1))
   fi
-  if rg -q '38638|48638|58638|18080' "$node_config"; then
+  if rg -q '38638|48638|58638|18080|5730|5830|5930' "$node_config"; then
     echo "[$bundle] contains stale closed-testnet ports" >&2
     failures=$((failures + 1))
   fi
@@ -140,7 +197,7 @@ for bundle in seed1 seed2 seed3; do
     echo "[$bundle] listen_port must be 5621" >&2
     failures=$((failures + 1))
   fi
-  if rg -q '38638|48638|58638|18080' "$seed_config"; then
+  if rg -q '38638|48638|58638|18080|5730|5830|5930' "$seed_config"; then
     echo "[$bundle] contains stale closed-testnet ports" >&2
     failures=$((failures + 1))
   fi
@@ -157,7 +214,7 @@ for doc in "$BUNDLE_DIR/DEPLOYMENT_GUIDE.md" "$BUNDLE_DIR/DNS_RECORDS.txt" "$BUN
     failures=$((failures + 1))
     continue
   fi
-  if rg -q '38638|48638|58638|18080|synergy-testbeta-closed' "$doc"; then
+  if rg -q '38638|48638|58638|18080|5730|5830|5930|synergy-testbeta-closed' "$doc"; then
     echo "Support document contains stale beta data: $doc" >&2
     failures=$((failures + 1))
   fi

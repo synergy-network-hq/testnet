@@ -17,6 +17,7 @@ use crate::consensus::dao_governance::{DAOGovernance, SynergyOracle};
 use crate::consensus::dual_quorum::{EntropyBeacon, ValidatorRotation};
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
+use crate::genesis::canonical_genesis;
 use crate::info;
 use crate::logging::{init_logger, LogLevel};
 use crate::p2p;
@@ -855,6 +856,17 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             std::fs::create_dir_all(&data_dir).expect("Failed to create data directory");
             std::fs::create_dir_all(&logs_dir).expect("Failed to create logs directory");
             std::fs::create_dir_all(&chain_dir).expect("Failed to create chain directory");
+
+            let genesis = canonical_genesis().unwrap_or_else(|error| {
+                eprintln!("Failed to load canonical genesis: {}", error);
+                process::exit(1);
+            });
+            info!(
+                "main",
+                "Canonical genesis loaded",
+                "path" => genesis.path().display().to_string(),
+                "hash" => genesis.hash().to_string()
+            );
 
             wallet::init_testbeta_wallets();
             {
