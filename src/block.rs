@@ -1,10 +1,10 @@
 use crate::transaction::Transaction;
-use chrono::DateTime;
 use serde::{Deserialize, Serialize};
-use std::fs;
 use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
+
+use crate::genesis::canonical_genesis;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Block {
@@ -148,23 +148,46 @@ impl BlockChain {
         self.chain.last()
     }
 
-    pub fn genesis(&mut self) {
-        // NOTE: Token genesis allocations are handled by `TokenManager::initialize_snrg_token()`,
-        // which reads `config/genesis.json` and mints initial balances.
-        let genesis_timestamp = resolve_genesis_timestamp();
-        let genesis_block = Block::new_with_timestamp(
-            0,
-            vec![],
-            "0".to_string(),
-            "genesis".to_string(),
-            0,
-            genesis_timestamp,
-        );
+    pub fn genesis(&mut self) -> Result<(), String> {
+        let genesis = canonical_genesis()?;
+        let genesis_block = Block {
+            block_index: 0,
+            timestamp: genesis.timestamp(),
+            transactions: Vec::new(),
+            previous_hash: genesis
+                .value()
+                .get("header")
+                .and_then(|header| header.get("parent_hash"))
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            validator_id: "genesis".to_string(),
+            nonce: 0,
+            hash: genesis.hash().to_string(),
+            transactions_root: compute_merkle_root(&[]),
+            proposer_public_key: Vec::new(),
+            block_signature: Vec::new(),
+            block_signature_algorithm: String::new(),
+        };
+        self.chain.clear();
         self.chain.push(genesis_block);
+        Ok(())
     }
 
     pub fn get_genesis_hash(&self) -> Option<String> {
         self.chain.first().map(|b| b.hash.clone())
+    }
+
+    pub fn ensure_expected_genesis_hash(&self, expected: &str) -> Result<(), String> {
+        let actual = self
+            .get_genesis_hash()
+            .ok_or_else(|| "blockchain has no genesis block".to_string())?;
+        if actual != expected {
+            return Err(format!(
+                "genesis hash mismatch: expected {expected}, found {actual}"
+            ));
+        }
+        Ok(())
     }
 
     pub fn save_to_file(&self, path: &str) {
@@ -188,29 +211,4 @@ impl BlockChain {
         }
         None
     }
-}
-
-fn resolve_genesis_timestamp() -> u64 {
-    if let Ok(raw) = std::env::var("SYNERGY_GENESIS_TIMESTAMP") {
-        if let Ok(value) = raw.parse::<u64>() {
-            return value;
-        }
-    }
-
-    if let Ok(content) = fs::read_to_string("config/genesis.json") {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(timestamp_raw) = value
-                .get("metadata")
-                .and_then(|m| m.get("genesis_time"))
-                .and_then(|v| v.as_str())
-            {
-                if let Ok(parsed) = DateTime::parse_from_rfc3339(timestamp_raw) {
-                    return parsed.timestamp().max(0) as u64;
-                }
-            }
-        }
-    }
-
-    // 2026-01-01T00:00:00Z
-    1767225600
 }

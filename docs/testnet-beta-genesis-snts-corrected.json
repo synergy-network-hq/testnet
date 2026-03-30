@@ -25,503 +25,715 @@
     "network_type": "testbeta",
     "genesis_schema_version": "v1",
     "protocol_version": "1.0.0",
-    "consensus_version": "posy/1.0.0",
+    "consensus_version": "posy/1.0.0"
+  },
+  "synergy_state": {
     "address_config": {
       "encoding": "bech32m",
       "address_length_chars": 41,
       "payload_length_bytes": 20,
       "prefix_separator": "1",
-      "derivation_method": "FN-DSA-1024 public key SHA3-256 hash \u2192 Bech32m (see SNTS-01 \u00a71.4)",
       "burn_address": "synergy000000000000000000000000000000burn",
-      "_prefix_note": "All 37 address types registered at genesis per Synergy Address Engine v1. Reserved prefixes are allocated but require a formal SNTS amendment and DAO approval before activation.",
       "prefixes": {
-        "wallets": {
-          "synw":  { "type": "WalletPrimary",   "description": "Standard user wallet; default for end users; integrates with UMA mapping" },
-          "syns":  { "type": "WalletSecondary",  "description": "Utility or exchange wallet; custodial accounts and service wallets" },
-          "syna":  { "type": "AccountStandard",  "description": "General-purpose account identifier for applications requiring a generic wallet type" },
-          "synz":  { "type": "UMASmartWallet",   "description": "Alternate wallet for UMA-linked smart wallets; multi-chain or imported identities" }
+        "synw": {
+          "type": "WalletPrimary",
+          "active": true
         },
-        "transaction_identifiers": {
-          "syntxn": { "type": "TransactionStandard",    "description": "Standard on-chain transaction on the PoSy core layer" },
-          "synxxn": { "type": "TransactionCrossChain",  "description": "SXCP cross-chain transaction identifier for interoperability operations" },
-          "synixn": { "type": "TransactionInternal",    "description": "Internal infrastructure event; validator-relayer sync and system state updates" }
+        "syns": {
+          "type": "WalletSecondary",
+          "active": true
         },
-        "fungible_tokens": {
-          "synb1": { "type": "FungibleTokenTier1", "standard": "STS-9", "description": "Primary tier standard fungible token" },
-          "synb2": { "type": "FungibleTokenTier2", "standard": "STS-9", "description": "Secondary tier fungible token with different compliance or feature requirements" },
-          "synb3": { "type": "FungibleTokenTier3", "standard": "STS-9", "description": "Tertiary tier for specialized or restricted token issuances" }
+        "syna": {
+          "type": "ApplicationWallet",
+          "active": true
         },
-        "non_fungible_tokens": {
-          "synn1": { "type": "NFTType1", "standard": "STS-NF", "description": "Standard NFTs for digital assets, collectibles, and unique on-chain items" },
-          "synn2": { "type": "NFTType2", "standard": "STS-NF", "description": "Extended NFTs requiring additional metadata, provenance, or composability features" }
+        "synz": {
+          "type": "SmartWallet",
+          "active": true
         },
-        "multi_asset_and_identity": {
-          "synj": { "type": "MultiAssetToken", "standard": "STS-MA", "description": "Bundled or composite assets combining multiple token types under a single identifier" },
-          "synk": { "type": "IdentityToken",   "standard": "STS-ID", "description": "On-chain identity credentials, verifiable claims, and decentralized identity attestations" }
+        "syntxn": {
+          "type": "TransactionStandard",
+          "active": true
         },
-        "smart_contracts": {
-          "synq": { "type": "SystemContract", "description": "System-level contract deployed by the DAO or core developers; governance-controlled" },
-          "sync": { "type": "CustomContract", "description": "Custom contract deployed by developers or organizations; application-layer AIVM logic" }
+        "synxxn": {
+          "type": "TransactionCrossChain",
+          "active": true
         },
-        "nodes": {
-          "synv1": { "type": "NodeClassI",   "class": "Consensus",        "description": "Consensus nodes securing the chain via Proof of Synergy (PoSy)" },
-          "synv2": { "type": "NodeClassII",  "class": "Interoperability",  "description": "Interoperability nodes executing SXCP and UMA cross-chain operations" },
-          "synv3": { "type": "NodeClassIII", "class": "Execution, Data, and Cryptography Nodes",      "description": "Intelligence and computation nodes providing decentralized compute and AIVM services" },
-          "synv4": { "type": "NodeClassIV",  "class": "Governance",        "description": "Governance and treasury nodes managing DAO proposals and treasury execution" },
-          "synv5": { "type": "NodeClassV",   "class": "Service",           "description": "Service and support nodes: RPC gateways, indexers, and monitoring endpoints" }
+        "synixn": {
+          "type": "TransactionInternal",
+          "active": true
         },
-        "node_clusters": {
-          "syngrp1": { "type": "ClusterGroup1", "description": "Coordinated node cluster group 1 within the consensus topology" },
-          "syngrp2": { "type": "ClusterGroup2", "description": "Node cluster group 2" },
-          "syngrp3": { "type": "ClusterGroup3", "description": "Node cluster group 3" },
-          "syngrp4": { "type": "ClusterGroup4", "description": "Node cluster group 4" },
-          "syngrp5": { "type": "ClusterGroup5", "description": "Node cluster group 5" }
+        "synb1": {
+          "type": "FungibleTokenTier1",
+          "active": true
         },
-        "dao_and_governance": {
-          "syndao": { "type": "DAOProposal",       "description": "DAO governance proposal identifier; auto-created per submitted proposal" },
-          "syno":   { "type": "OversightAuditor",  "description": "Governance Oversight Auditor; Security Council and auditing committee addresses" },
-          "syny":   { "type": "DAOCommittee",      "description": "Standing DAO committee address (Treasury, Security, Ecosystem committees)" }
+        "synb2": {
+          "type": "FungibleTokenTier2",
+          "active": true
         },
-        "multisig": {
-          "synm": { "type": "MultisigGeneral",   "description": "General-purpose multisig wallet; threshold signatures for collaborative asset management" },
-          "synu": { "type": "MultisigTreasury",  "description": "DAO treasury multisig; community grants and protocol fund disbursements" },
-          "synl": { "type": "MultisigValidator", "description": "Validator or council multisig; emergency rollback and governance fund management" }
+        "synb3": {
+          "type": "FungibleTokenTier3",
+          "active": true
         },
-        "fee_collector": {
-          "synf": { "type": "FeeCollector", "description": "Central address for collecting network and uDEX fees; auto-distributes to DAO treasury and staking reward pools" }
+        "synn1": {
+          "type": "NFTType1",
+          "active": true
         },
-        "burn": {
-          "syne": { "type": "BurnAddress", "static": true, "keypair": false, "description": "Canonical unspendable burn address; permanent token destruction under the deflationary model" }
+        "synn2": {
+          "type": "NFTType2",
+          "active": true
         },
-        "reserved": {
-          "synr": { "type": "ReservedR", "active": false, "description": "Reserved; possible application: encrypted message routing or ephemeral key exchange" },
-          "syni": { "type": "ReservedI", "active": false, "description": "Reserved; possible application: internal identity registry or validator synchronization IDs" },
-          "synp": { "type": "ReservedP", "active": false, "description": "Reserved; possible application: privacy-enhanced transactions or permissioned subnets" }
+        "synj": {
+          "type": "MultiAssetToken",
+          "active": true
+        },
+        "synk": {
+          "type": "IdentityToken",
+          "active": true
+        },
+        "synq": {
+          "type": "SystemContract",
+          "active": true
+        },
+        "sync": {
+          "type": "CustomContract",
+          "active": true
+        },
+        "synv1": {
+          "type": "NodeClassI",
+          "active": true
+        },
+        "synv2": {
+          "type": "NodeClassII",
+          "active": true
+        },
+        "synv3": {
+          "type": "NodeClassIII",
+          "active": true
+        },
+        "synv4": {
+          "type": "NodeClassIV",
+          "active": true
+        },
+        "synv5": {
+          "type": "NodeClassV",
+          "active": true
+        },
+        "syngrp1": {
+          "type": "ClusterGroup1",
+          "active": true
+        },
+        "syngrp2": {
+          "type": "ClusterGroup2",
+          "active": true
+        },
+        "syngrp3": {
+          "type": "ClusterGroup3",
+          "active": true
+        },
+        "syngrp4": {
+          "type": "ClusterGroup4",
+          "active": true
+        },
+        "syngrp5": {
+          "type": "ClusterGroup5",
+          "active": true
+        },
+        "syndao": {
+          "type": "DAOProposal",
+          "active": true
+        },
+        "syno": {
+          "type": "OversightAuditor",
+          "active": true
+        },
+        "syny": {
+          "type": "DAOCommittee",
+          "active": true
+        },
+        "synm": {
+          "type": "MultisigGeneral",
+          "active": true
+        },
+        "synu": {
+          "type": "MultisigTreasury",
+          "active": true
+        },
+        "synl": {
+          "type": "MultisigValidator",
+          "active": true
+        },
+        "synf": {
+          "type": "FeeCollector",
+          "active": true
+        },
+        "syne": {
+          "type": "BurnAddress",
+          "active": true
+        },
+        "synr": {
+          "type": "ReservedR",
+          "active": false
+        },
+        "syni": {
+          "type": "ReservedI",
+          "active": false
+        },
+        "synp": {
+          "type": "ReservedP",
+          "active": false
         }
       }
     }
   },
-  "_founders_comment": "Founding members of the Synergy Network. Addresses are synw (standard wallet) per SNTS-01. Each founder address must be replaced with their actual FN-DSA-1024-derived Bech32m address before genesis deployment.",
-  "founders": [
-    {
-      "name": "Rob Marek",
-      "address": "synw1robmarek000synergy0founder001",
-      "role": "Co-Founder"
-    },
-    {
-      "name": "Justin Hutzler",
-      "address": "synw1justinhutzler0synergy0founder",
-      "role": "Co-Founder"
-    },
-    {
-      "name": "Peter Fayette",
-      "address": "synw1peterfayette0synergy0founder0",
-      "role": "Co-Founder"
-    },
-    {
-      "name": "Zair Khan",
-      "address": "synw1zairkhan000synergy0founder004",
-      "role": "Co-Founder"
-    },
-    {
-      "name": "Mark Sigur",
-      "address": "synw1marksigur000synergy0founder05",
-      "role": "Co-Founder"
-    }
-  ],
-  "consensus": {
-    "algorithm": "posy",
-    "model": "hybrid_deterministic_bft",
-    "min_validator_count": 3,
-    "min_quorum_threshold": 0.667,
-    "min_stake_nwei": 100000000000,
-    "target_block_time_ms": 2000,
-    "proposal_mechanism": "weighted_round_robin",
-    "leader_selection": "vrf_deterministic",
-    "finality": {
-      "finality_type": "deterministic",
-      "confirmation_depth": 1,
-      "checkpoint_frequency_blocks": 1000
-    },
-    "epoch": {
-      "length_blocks": 3600,
-      "validator_rotation_enabled": true,
-      "reward_distribution_interval_epochs": 1
-    },
-    "timeouts": {
-      "proposal_ms": 3000,
-      "validation_ms": 2000,
-      "round_ms": 6000,
-      "view_change_ms": 8000
-    },
-    "slashing": {
-      "double_sign_slash_pct": 0.05,
-      "downtime_slash_pct": 0.001,
-      "invalid_block_slash_pct": 1.0,
-      "downtime_missed_blocks_threshold": 500,
-      "jail_duration_seconds": 600
-    },
-    "unbonding": {
-      "unbonding_period_seconds": 86400,
-      "withdrawal_delay_seconds": 3600
-    }
-  },
-  "validators": [
-    {
-      "operator_address": "synv11qvr4kx9tna2m8h3j5d6f7p0wnecs4p",
-      "consensus_pubkey": "[ML-DSA-65 VERIFICATION KEY \u2014 3904 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-      "consensus_key_type": "ML-DSA-65",
-      "peer_id": "12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
-      "stake_nwei": 5000000000000,
-      "voting_power": 5000000000000,
-      "status": "active",
-      "reward_address": "synv11qvr4kx9tna2m8h3j5d6f7p0wnecs4p",
-      "commission_rate": 0.05,
-      "moniker": "Synergy Foundation Node 1",
-      "website": "https://synergy-network.io",
-      "identity": "synergy-foundation-v1",
-      "p2p_multiaddr": "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
-      "rpc_endpoint": "https://rpc1.testbeta.synergy-network.io"
-    },
-    {
-      "operator_address": "synv12plm7qs6vkb3x9y4z8w1n0dcjrtfe8r",
-      "consensus_pubkey": "[ML-DSA-65 VERIFICATION KEY \u2014 3904 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-      "consensus_key_type": "ML-DSA-65",
-      "peer_id": "12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
-      "stake_nwei": 5000000000000,
-      "voting_power": 5000000000000,
-      "status": "active",
-      "reward_address": "synv12plm7qs6vkb3x9y4z8w1n0dcjrtfe8r",
-      "commission_rate": 0.05,
-      "moniker": "Synergy Foundation Node 2",
-      "website": "https://synergy-network.io",
-      "identity": "synergy-foundation-v2",
-      "p2p_multiaddr": "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
-      "rpc_endpoint": "https://rpc2.testbeta.synergy-network.io"
-    },
-    {
-      "operator_address": "synv13nkj9wr2xyz7ab5c4d8e1f6ghspqmt5",
-      "consensus_pubkey": "[ML-DSA-65 VERIFICATION KEY \u2014 3904 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-      "consensus_key_type": "ML-DSA-65",
-      "peer_id": "12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
-      "stake_nwei": 5000000000000,
-      "voting_power": 5000000000000,
-      "status": "active",
-      "reward_address": "synv13nkj9wr2xyz7ab5c4d8e1f6ghspqmt5",
-      "commission_rate": 0.05,
-      "moniker": "Synergy Foundation Node 3",
-      "website": "https://synergy-network.io",
-      "identity": "synergy-foundation-v3",
-      "p2p_multiaddr": "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
-      "rpc_endpoint": "https://rpc3.testbeta.synergy-network.io"
-    }
-  ],
   "token": {
     "name": "Synergy Token",
     "symbol": "SNRG",
     "decimals": 9,
-    "smallest_unit": "nWei",
-    "total_supply_cap_nwei": 1000000000000000000,
-    "_supply_cap_note": "Fixed Testnet-Beta launch supply: 1,150,000 SNRG (1,150,000,000,000,000 nWei).",
-    "initial_circulating_nwei": 250000000000000000,
-    "minting_policy": "inflation_module_only"
+    "smallest_unit": "nwei",
+    "total_supply_cap_nwei": "50000000000000000000",
+    "initial_circulating_nwei": "12500000000000000000",
+    "minting_policy": "fixed_cap"
   },
-  "allocations": [
+  "accounts": [
     {
-      "address": "synw1treasury0synergy0foundation00q",
-      "amount_nwei": 250000000000000000,
-      "category": "foundation_treasury",
-      "locked": true,
-      "lock_type": "governance_locked",
-      "_pct_of_supply": "25%"
+      "address": "synu1qcjqtzua82l046x0auxrm2spenf2jwlh0mru",
+      "account_type": "MultisigTreasury"
     },
     {
-      "address": "synw1ecosystem0fund0synergy0net00k5",
-      "amount_nwei": 150000000000000000,
-      "category": "ecosystem_fund",
-      "locked": false,
-      "lock_type": "none",
-      "_pct_of_supply": "15%"
+      "address": "synf1mjqep4lrcneswecn76xx4xc885gyfndpxsm7",
+      "account_type": "FeeCollector"
     },
     {
-      "address": "synw1validator0incentives0testbeta3",
-      "amount_nwei": 100000000000000000,
-      "category": "validator_incentives",
-      "locked": false,
-      "lock_type": "staking_only",
-      "_pct_of_supply": "10%"
+      "address": "synw1zqzyref9vlm6vqdvduwdagxv2q0pz49u3ytv",
+      "account_type": "WalletPrimary"
     },
     {
-      "address": "synw1presale00public00round0synrg2h",
-      "amount_nwei": 50000000000000000,
-      "category": "presale",
-      "locked": false,
-      "lock_type": "none",
-      "_pct_of_supply": "5%"
+      "address": "synw1t52nvaleafteq0s80s98ltx6avgrhfuu6wcl",
+      "account_type": "WalletPrimary"
     },
     {
-      "address": "synw1liquidity0reserve00dex0market6",
-      "amount_nwei": 100000000000000000,
-      "category": "liquidity_reserve",
-      "locked": false,
-      "lock_type": "none",
-      "_pct_of_supply": "10%"
+      "address": "synw1f09aka922rjdm6nav7pd0glm6rgxyfq0n8gd",
+      "account_type": "WalletPrimary"
     },
     {
-      "address": "synw1grants0pool00protocol00synrgm",
-      "amount_nwei": 100000000000000000,
-      "category": "grants_pool",
-      "locked": false,
-      "lock_type": "governance_locked",
-      "_pct_of_supply": "10%"
+      "address": "synw1x43wy6d080j8a0evqv4q2nghhyaquwk0gf3j",
+      "account_type": "WalletPrimary"
+    },
+    {
+      "address": "synw1hzx4gc63y0mjdz7mtz0zaha2uyk7c8fnstg3",
+      "account_type": "WalletPrimary"
+    },
+    {
+      "address": "synq1958ly2zlaugxr4s7rhfsmew9uxx5zmdl3977",
+      "account_type": "SystemContract"
+    },
+    {
+      "address": "synq1anvcsp67gwu0p2cmumthl9unh2ew83dl3zhh",
+      "account_type": "SystemContract"
     }
   ],
-  "_allocation_sum_check": {
-    "total_non_vested_nwei": 750000000000000000,
-    "total_vested_nwei": 250000000000000000,
-    "grand_total_nwei": 1000000000000000000,
+  "balances": [
+    {
+      "address": "synu1qcjqtzua82l046x0auxrm2spenf2jwlh0mru",
+      "balance_nwei": "17500000000000000000"
+    },
+    {
+      "address": "synf1mjqep4lrcneswecn76xx4xc885gyfndpxsm7",
+      "balance_nwei": "0"
+    },
+    {
+      "address": "synw1zqzyref9vlm6vqdvduwdagxv2q0pz49u3ytv",
+      "balance_nwei": "7500000000000000000"
+    },
+    {
+      "address": "synw1t52nvaleafteq0s80s98ltx6avgrhfuu6wcl",
+      "balance_nwei": "10000000000000000000"
+    },
+    {
+      "address": "synw1f09aka922rjdm6nav7pd0glm6rgxyfq0n8gd",
+      "balance_nwei": "12500000000000000000"
+    },
+    {
+      "address": "synw1x43wy6d080j8a0evqv4q2nghhyaquwk0gf3j",
+      "balance_nwei": "2500000000000000000"
+    },
+    {
+      "address": "synw1hzx4gc63y0mjdz7mtz0zaha2uyk7c8fnstg3",
+      "balance_nwei": "0"
+    },
+    {
+      "address": "synq1958ly2zlaugxr4s7rhfsmew9uxx5zmdl3977",
+      "balance_nwei": "0"
+    },
+    {
+      "address": "synq1anvcsp67gwu0p2cmumthl9unh2ew83dl3zhh",
+      "balance_nwei": "0"
+    }
+  ],
+  "allocations": [
+    {
+      "name": "Validator Pool",
+      "address": "synu1qcjqtzua82l046x0auxrm2spenf2jwlh0mru",
+      "amount_nwei": "10000000000000000000",
+      "locked": true
+    },
+    {
+      "name": "Team",
+      "address": "synw1zqzyref9vlm6vqdvduwdagxv2q0pz49u3ytv",
+      "amount_nwei": "7500000000000000000",
+      "locked": true
+    },
+    {
+      "name": "Ecosystem",
+      "address": "synw1t52nvaleafteq0s80s98ltx6avgrhfuu6wcl",
+      "amount_nwei": "10000000000000000000",
+      "locked": true
+    },
+    {
+      "name": "Public Sale",
+      "address": "synw1f09aka922rjdm6nav7pd0glm6rgxyfq0n8gd",
+      "amount_nwei": "12500000000000000000",
+      "locked": false
+    },
+    {
+      "name": "Treasury",
+      "address": "synu1qcjqtzua82l046x0auxrm2spenf2jwlh0mru",
+      "amount_nwei": "7500000000000000000",
+      "locked": true
+    },
+    {
+      "name": "Faucet",
+      "address": "synw1x43wy6d080j8a0evqv4q2nghhyaquwk0gf3j",
+      "amount_nwei": "2500000000000000000",
+      "locked": false
+    }
+  ],
+  "allocation_sum_check": {
+    "grand_total_nwei": "50000000000000000000",
     "matches_supply_cap": true
   },
   "vesting": [
     {
-      "beneficiary_address": "synw1team0member001synergy0proto0s",
-      "total_allocation_nwei": 50000000000000000,
+      "beneficiary_address": "synw1zqzyref9vlm6vqdvduwdagxv2q0pz49u3ytv",
+      "total_allocation_nwei": "7500000000000000000",
       "start_time": 1743465600,
       "cliff_duration_seconds": 31536000,
       "vesting_duration_seconds": 126144000,
-      "unlock_schedule": "linear",
-      "steps": null
+      "unlock_schedule": "linear"
+    }
+  ],
+  "consensus": {
+    "algorithm": "ProofOfSynergy",
+    "model": "cluster_dag_hybrid",
+    "min_validator_count": 4,
+    "min_quorum_threshold": 3,
+    "min_stake_nwei": "50000000000000",
+    "target_block_time_ms": 2000,
+    "proposal_mechanism": "weighted_round_robin",
+    "leader_selection": "deterministic_rotation",
+    "finality": {
+      "finality_type": "dual_quorum",
+      "confirmation_depth": 2,
+      "checkpoint_frequency_blocks": 50
+    },
+    "epoch": {
+      "length_blocks": 1000,
+      "validator_rotation_enabled": true,
+      "reward_distribution_interval_epochs": 1
+    },
+    "timeouts": {
+      "proposal_ms": 1000,
+      "validation_ms": 1000,
+      "round_ms": 2000,
+      "view_change_ms": 3000
+    },
+    "slashing": {
+      "double_sign_slash_pct": 5,
+      "downtime_slash_pct": 1,
+      "invalid_block_slash_pct": 5,
+      "downtime_missed_blocks_threshold": 50,
+      "jail_duration_seconds": 86400
+    },
+    "unbonding": {
+      "unbonding_period_seconds": 604800,
+      "withdrawal_delay_seconds": 86400
+    }
+  },
+  "validators": [
+    {
+      "validator_id": "validator-1",
+      "operator_address": "synv11cvyxe9gjy47nvmh926tq7kmuj34zc42n9ap",
+      "address_type": "synv1",
+      "identity_public_key": "<FROM_VALIDATOR_1_PUBLIC_EXPORT>",
+      "identity_key_type": "FN-DSA-1024",
+      "consensus_public_key": "<FROM_VALIDATOR_1_CONSENSUS_KEY>",
+      "consensus_key_type": "ML-DSA-65",
+      "account_public_key": "<FROM_VALIDATOR_1_ACCOUNT_KEY>",
+      "account_key_type": "ML-DSA-87",
+      "node_identity_key": "<FROM_VALIDATOR_1_NODE_IDENTITY_KEY>",
+      "node_identity_key_type": "Ed25519",
+      "entropy_contribution_key": "<FROM_VALIDATOR_1_ENTROPY_KEY>",
+      "entropy_key_type": "ML-KEM-768",
+      "peer_id": "<FROM_VALIDATOR_1_PEER_ID>",
+      "stake_nwei": "50000000000000",
+      "voting_power": 100,
+      "status": "active",
+      "reward_address": "<REWARD_ADDRESS>",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Genesis Validator 1",
+      "identity": "validator-1",
+      "activation_height": 0,
+      "deactivation_height": null,
+      "slashing_status": "none"
     },
     {
-      "beneficiary_address": "synw1team0member002synergy0proto0j",
-      "total_allocation_nwei": 50000000000000000,
-      "start_time": 1743465600,
-      "cliff_duration_seconds": 31536000,
-      "vesting_duration_seconds": 126144000,
-      "unlock_schedule": "linear",
-      "steps": null
+      "validator_id": "validator-2",
+      "operator_address": "synv11j5vgkt3vmls39sxue4pzl37xqgzdhqccw6j",
+      "address_type": "synv1",
+      "identity_public_key": "<FROM_VALIDATOR_2_PUBLIC_EXPORT>",
+      "identity_key_type": "FN-DSA-1024",
+      "consensus_public_key": "<FROM_VALIDATOR_2_CONSENSUS_KEY>",
+      "consensus_key_type": "ML-DSA-65",
+      "account_public_key": "<FROM_VALIDATOR_2_ACCOUNT_KEY>",
+      "account_key_type": "ML-DSA-87",
+      "node_identity_key": "<FROM_VALIDATOR_2_NODE_IDENTITY_KEY>",
+      "node_identity_key_type": "Ed25519",
+      "entropy_contribution_key": "<FROM_VALIDATOR_2_ENTROPY_KEY>",
+      "entropy_key_type": "ML-KEM-768",
+      "peer_id": "<FROM_VALIDATOR_2_PEER_ID>",
+      "stake_nwei": "50000000000000",
+      "voting_power": 100,
+      "status": "active",
+      "reward_address": "<REWARD_ADDRESS>",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Genesis Validator 2",
+      "identity": "validator-2",
+      "activation_height": 0,
+      "deactivation_height": null,
+      "slashing_status": "none"
     },
     {
-      "beneficiary_address": "synw1investor0seed0round0synrg001p",
-      "total_allocation_nwei": 100000000000000000,
-      "start_time": 1743465600,
-      "cliff_duration_seconds": 15768000,
-      "vesting_duration_seconds": 63072000,
-      "unlock_schedule": "linear",
-      "steps": null
+      "validator_id": "validator-3",
+      "operator_address": "synv11r384g0hpmtttg8rqq4txcm62h0tk6754cqh",
+      "address_type": "synv1",
+      "identity_public_key": "<FROM_VALIDATOR_3_PUBLIC_EXPORT>",
+      "identity_key_type": "FN-DSA-1024",
+      "consensus_public_key": "<FROM_VALIDATOR_3_CONSENSUS_KEY>",
+      "consensus_key_type": "ML-DSA-65",
+      "account_public_key": "<FROM_VALIDATOR_3_ACCOUNT_KEY>",
+      "account_key_type": "ML-DSA-87",
+      "node_identity_key": "dFM9NG7mwCKGA4qUU1Ty+E33LLn5qLGCyWORhyMdTeA=",
+      "node_identity_key_type": "Ed25519",
+      "entropy_contribution_key": "<FROM_VALIDATOR_3_ENTROPY_KEY>",
+      "entropy_key_type": "ML-KEM-768",
+      "peer_id": "524f72334442075eabb54492b48e136411f6c3ecffd942e46bcca63d930df1c5",
+      "stake_nwei": "50000000000000",
+      "voting_power": 100,
+      "status": "active",
+      "reward_address": "<REWARD_ADDRESS>",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Genesis Validator 3",
+      "identity": "validator-3",
+      "activation_height": 0,
+      "deactivation_height": null,
+      "slashing_status": "none"
     },
     {
-      "beneficiary_address": "synw1private0investor0round0synrgd",
-      "total_allocation_nwei": 50000000000000000,
-      "start_time": 1743465600,
-      "cliff_duration_seconds": 7776000,
-      "vesting_duration_seconds": 31536000,
-      "unlock_schedule": "linear",
-      "steps": null
+      "validator_id": "validator-4",
+      "operator_address": "synv118fmn2ysa6sdqsc6ancttd52nlj4nh8yp83v",
+      "address_type": "synv1",
+      "identity_public_key": "<FROM_VALIDATOR_4_PUBLIC_EXPORT>",
+      "identity_key_type": "FN-DSA-1024",
+      "consensus_public_key": "<FROM_VALIDATOR_4_CONSENSUS_KEY>",
+      "consensus_key_type": "ML-DSA-65",
+      "account_public_key": "<FROM_VALIDATOR_4_ACCOUNT_KEY>",
+      "account_key_type": "ML-DSA-87",
+      "node_identity_key": "<FROM_VALIDATOR_4_NODE_IDENTITY_KEY>",
+      "node_identity_key_type": "Ed25519",
+      "entropy_contribution_key": "<FROM_VALIDATOR_4_ENTROPY_KEY>",
+      "entropy_key_type": "ML-KEM-768",
+      "peer_id": "<FROM_VALIDATOR_4_PEER_ID>",
+      "stake_nwei": "50000000000000",
+      "voting_power": 100,
+      "status": "active",
+      "reward_address": "<REWARD_ADDRESS>",
+      "commission_rate": 0.05,
+      "moniker": "Synergy Genesis Validator 4",
+      "identity": "validator-4",
+      "activation_height": 0,
+      "deactivation_height": null,
+      "slashing_status": "none"
     }
   ],
   "economics": {
     "fee": {
-      "base_fee_nwei_per_gas": 1000,
-      "min_gas_price_nwei": 1000,
-      "dynamic_fee_enabled": true,
-      "fee_burn_pct": 0.5,
-      "validator_fee_share_pct": 0.4,
-      "treasury_fee_share_pct": 0.1
+      "base_fee_nwei_per_gas": "1000",
+      "min_gas_price_nwei": "1000",
+      "dynamic_fee_enabled": false,
+      "fee_burn_pct": 50,
+      "validator_fee_share_pct": 40,
+      "treasury_fee_share_pct": 10
     },
     "inflation": {
-      "annual_rate_pct": 0.05,
-      "adjustment_enabled": true,
-      "target_staking_participation": 0.67
+      "annual_rate_pct": 0,
+      "adjustment_enabled": false,
+      "target_staking_participation": 0
     },
     "rewards": {
-      "block_reward_nwei": 1000000000,
-      "epoch_reward_pool_nwei": 3600000000000,
+      "block_reward_nwei": "0",
+      "epoch_reward_pool_nwei": "0",
       "distribution": "stake_weighted"
-    },
-    "treasury": {
-      "address": "synq1treasury00contract0synrg00net",
-      "control_mechanism": "governance_proposal",
-      "spending_rules": "proposal_and_vote_required"
     }
   },
   "contracts": {
-    "staking": {
-      "address": "synq1staking00contract00synrg00net",
-      "bytecode_hash": "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2",
+    "validator_registry": {
+      "address": "<VALIDATOR_REGISTRY_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
       "init_params": {
-        "min_stake_nwei": 100000000000,
-        "max_stake_nwei": null,
-        "unbonding_period_seconds": 86400
-      }
-    },
-    "governance": {
-      "address": "synq1governance0contract0synrg0net",
-      "bytecode_hash": "b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3",
-      "init_params": {
-        "quorum_pct": 0.334,
-        "approval_pct": 0.5,
-        "veto_pct": 0.334,
-        "min_deposit_nwei": 10000000000,
-        "voting_duration_seconds": 604800
-      }
-    },
-    "treasury": {
-      "address": "synq1treasury00contract0synrg00net",
-      "bytecode_hash": "c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4",
-      "init_params": {
-        "initial_balance_nwei": 250000000000000000,
-        "required_signers": 3,
-        "signers": [
-          "synv11qvr4kx9tna2m8h3j5d6f7p0wnecs4p",
-          "synv12plm7qs6vkb3x9y4z8w1n0dcjrtfe8r",
-          "synv13nkj9wr2xyz7ab5c4d8e1f6ghspqmt5"
+        "genesis_validator_count": 4,
+        "validator_set_hash": "<TO_BE_COMPUTED>",
+        "max_validator_count": 100,
+        "min_validator_count": 4,
+        "min_self_stake_nwei": "50000000000000",
+        "validator_set_mutable": true,
+        "authority_address": "<AUTHROITY_ADDRESS>",
+        "jail_enabled": true,
+        "unjail_enabled": true,
+        "tombstone_enabled": true,
+        "power_updates_enabled": true,
+        "stake_updates_enabled": true,
+        "validators": [
+          {
+            "validator_id": "validator-1",
+            "validator_label": "Synergy Genesis Validator 1",
+            "validator_address": "<VALIDATOR1_ADDRESS>",
+            "address_type": "synv1",
+            "identity_public_key": "<FROM_VALIDATOR_1_PUBLIC_EXPORT>",
+            "identity_algorithm": "FN-DSA-1024",
+            "consensus_public_key": "<FROM_VALIDATOR_1_CONSENSUS_KEY>",
+            "consensus_algorithm": "ML-DSA-65",
+            "account_public_key": "<FROM_VALIDATOR_1_ACCOUNT_KEY>",
+            "account_algorithm": "ML-DSA-87",
+            "node_identity_key": "<FROM_VALIDATOR_1_NODE_IDENTITY_KEY>",
+            "node_identity_algorithm": "Ed25519",
+            "entropy_contribution_key": "<FROM_VALIDATOR_1_ENTROPY_KEY>",
+            "entropy_algorithm": "ML-KEM-768",
+            "voting_power": 100,
+            "self_stake_amount": "50000000000000",
+            "reward_payout_address": "<REWARD_ADDRESS>",
+            "status": "active",
+            "activation_height": 0,
+            "deactivation_height": null,
+            "slashing_status": "none",
+            "metadata_hash": "<TO_BE_COMPUTED>"
+          },
+          {
+            "validator_id": "validator-2",
+            "validator_label": "Synergy Genesis Validator 2",
+            "validator_address": "<VALIDATOR2_ADDRESS>",
+            "address_type": "synv1",
+            "identity_public_key": "<FROM_VALIDATOR_2_PUBLIC_EXPORT>",
+            "identity_algorithm": "FN-DSA-1024",
+            "consensus_public_key": "<FROM_VALIDATOR_2_CONSENSUS_KEY>",
+            "consensus_algorithm": "ML-DSA-65",
+            "account_public_key": "<FROM_VALIDATOR_2_ACCOUNT_KEY>",
+            "account_algorithm": "ML-DSA-87",
+            "node_identity_key": "<FROM_VALIDATOR_2_NODE_IDENTITY_KEY>",
+            "node_identity_algorithm": "Ed25519",
+            "entropy_contribution_key": "<FROM_VALIDATOR_2_ENTROPY_KEY>",
+            "entropy_algorithm": "ML-KEM-768",
+            "voting_power": 100,
+            "self_stake_amount": "50000000000000",
+            "reward_payout_address": "<REWARD_ADDRESS>",
+            "status": "active",
+            "activation_height": 0,
+            "deactivation_height": null,
+            "slashing_status": "none",
+            "metadata_hash": "<TO_BE_COMPUTED>"
+          },
+          {
+            "validator_id": "validator-3",
+            "validator_label": "Synergy Genesis Validator 3",
+            "validator_address": "<VALIDATOR3_ADDRESS>",
+            "address_type": "synv1",
+            "identity_public_key": "<FROM_VALIDATOR_3_PUBLIC_EXPORT>",
+            "identity_algorithm": "FN-DSA-1024",
+            "consensus_public_key": "<FROM_VALIDATOR_3_CONSENSUS_KEY>",
+            "consensus_algorithm": "ML-DSA-65",
+            "account_public_key": "<FROM_VALIDATOR_3_ACCOUNT_KEY>",
+            "account_algorithm": "ML-DSA-87",
+            "node_identity_key": "<FROM_VALIDATOR_3_NODE_IDENTITY_KEY>",
+            "node_identity_algorithm": "Ed25519",
+            "entropy_contribution_key": "<FROM_VALIDATOR_3_ENTROPY_KEY>",
+            "entropy_algorithm": "ML-KEM-768",
+            "voting_power": 100,
+            "self_stake_amount": "50000000000000",
+            "reward_payout_address": "<REWARD_ADDRESS>",
+            "status": "active",
+            "activation_height": 0,
+            "deactivation_height": null,
+            "slashing_status": "none",
+            "metadata_hash": "<TO_BE_COMPUTED>"
+          },
+          {
+            "validator_id": "validator-4",
+            "validator_label": "Synergy Genesis Validator 4",
+            "validator_address": "<VALIDATOR4_ADDRESS>",
+            "address_type": "synv1",
+            "identity_public_key": "<FROM_VALIDATOR_4_PUBLIC_EXPORT>",
+            "identity_algorithm": "FN-DSA-1024",
+            "consensus_public_key": "<FROM_VALIDATOR_4_CONSENSUS_KEY>",
+            "consensus_algorithm": "ML-DSA-65",
+            "account_public_key": "<FROM_VALIDATOR_4_ACCOUNT_KEY>",
+            "account_algorithm": "ML-DSA-87",
+            "node_identity_key": "<FROM_VALIDATOR_4_NODE_IDENTITY_KEY>",
+            "node_identity_algorithm": "Ed25519",
+            "entropy_contribution_key": "<FROM_VALIDATOR_4_ENTROPY_KEY>",
+            "entropy_algorithm": "ML-KEM-768",
+            "voting_power": 100,
+            "self_stake_amount": "50000000000000",
+            "reward_payout_address": "<REWARD_ADDRESS>",
+            "status": "active",
+            "activation_height": 0,
+            "deactivation_height": null,
+            "slashing_status": "none",
+            "metadata_hash": "<TO_BE_COMPUTED>"
+          }
         ]
       }
     },
-    "validator_registry": {
-      "address": "synq1validator0registry0synrg00net",
-      "bytecode_hash": "d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5",
+    "synergy_oracle": {
+      "address": "<ORACLE_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
       "init_params": {
-        "genesis_validator_count": 3
+        "authority_address": "<AUTHORITY_ADDRESS>",
+        "oracle_set": [
+          "<ORACLE_ADDRESS>"
+        ],
+        "oracle_set_hash": "<TO_BE_COMPUTED>",
+        "quorum_threshold": 1,
+        "replay_protection_enabled": true,
+        "accepted_source_domains": [
+          "ethereum-sepolia",
+          "solana-devnet",
+          "synergy-testbeta"
+        ],
+        "proof_type": "merkle",
+        "receipt_root": "",
+        "checkpoint_height": 0
+      }
+    },
+    "staking": {
+      "address": "<STAKING_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
+      "init_params": {
+        "min_stake_nwei": "50000000000000",
+        "max_stake_nwei": "5000000000000000000",
+        "unbonding_period_seconds": 604800
+      }
+    },
+    "governance": {
+      "address": "<GOVERNANCE_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
+      "init_params": {
+        "quorum_pct": 0.60,
+        "approval_pct": 0.50,
+        "veto_pct": 0.33,
+        "min_deposit_nwei": "1000000000000",
+        "voting_duration_seconds": 604800,
+        "timelock_delay_seconds": 86400
+      }
+    },
+    "treasury": {
+      "address": "<TREASURY_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
+      "init_params": {
+        "initial_balance_nwei": "17500000000000000000",
+        "required_signers": 4,
+        "signers": [
+          "<SIGNER1_ADDRESS>",
+          "<SIGNER2_ADDRESS>",
+          "<SIGNER3_ADDRESS>",
+          "<SIGNER4_ADDRESS>"
+        ]
       }
     },
     "reward_distributor": {
-      "address": "synq1rewards00distributor0synrg0net",
-      "bytecode_hash": "e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6",
+      "address": "<REWARD_DISTRIBUTOR_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
       "init_params": {
-        "pool_address": "synw1validator0incentives0testbeta3",
-        "initial_pool_balance_nwei": 100000000000000000
+        "pool_address": "<POOL_ADDRESS>",
+        "initial_pool_balance_nwei": "10000000000000000000"
       }
     },
     "slashing": {
-      "address": "synq1slashing00contract00synrg0net",
-      "bytecode_hash": "f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2c3d4e5f6a7",
+      "address": "<SLASHING_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
       "init_params": {
-        "double_sign_slash_pct": 0.05,
-        "jail_duration_seconds": 600
+        "double_sign_slash_pct": 5,
+        "downtime_slash_pct": 1,
+        "invalid_block_slash_pct": 5,
+        "downtime_missed_blocks_threshold": 50,
+        "jail_duration_seconds": 86400
+      }
+    },
+    "identity": {
+      "address": "<IDENTITY_CONTRACT_ADDRESS>",
+      "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
+      "init_params": {
+        "reserved_names": [
+          "synergy",
+          "snrg",
+          "treasury",
+          "foundation",
+          "validator",
+          "oracle"
+        ],
+        "registration_fee_nwei": "1000000"
       }
     }
   },
   "precompiles": [
     {
-      "address": "0000000000000000000000000000000000000001",
-      "name": "ml_dsa_65_verify",
-      "gas_cost": 3000
-    },
-    {
-      "address": "0000000000000000000000000000000000000002",
-      "name": "slh_dsa_shake128s_verify",
-      "_note": "Reserve algorithm per SNTS-06 \u2014 not used in active protocol",
-      "gas_cost": 5000
-    },
-    {
-      "address": "0000000000000000000000000000000000000003",
-      "name": "sha3_256",
+      "address": "0x0000000000000000000000000000000000000001",
+      "name": "sha256",
       "gas_cost": 60
     },
     {
-      "address": "0000000000000000000000000000000000000004",
-      "name": "sha3_512",
-      "gas_cost": 100
-    },
-    {
-      "address": "0000000000000000000000000000000000000005",
+      "address": "0x0000000000000000000000000000000000000002",
       "name": "blake3",
       "gas_cost": 45
-    },
-    {
-      "address": "0000000000000000000000000000000000000006",
-      "name": "bech32m_codec",
-      "gas_cost": 150
-    },
-    {
-      "address": "0000000000000000000000000000000000000007",
-      "name": "vrf_verify",
-      "gas_cost": 2000
-    },
-    {
-      "address": "0000000000000000000000000000000000000008",
-      "name": "fn_dsa_1024_verify",
-      "gas_cost": 2500
     }
   ],
   "governance": {
     "enabled_at_genesis": true,
     "governance_type": "on_chain_token_weighted",
-    "quorum_pct": 0.334,
-    "approval_pct": 0.5,
-    "veto_pct": 0.334,
+    "quorum_pct": 0.60,
+    "approval_pct": 0.50,
+    "veto_pct": 0.33,
     "proposal_types": [
-      "ParameterChange",
-      "SoftwareUpgrade",
-      "TreasurySpend",
-      "TextProposal"
+      "parameter_change",
+      "software_upgrade",
+      "treasury_spend",
+      "text_proposal"
     ],
-    "min_deposit_nwei": 10000000000,
+    "min_deposit_nwei": "1000000000000",
     "voting_duration_seconds": 604800,
-    "timelock_delay_seconds": 172800,
+    "timelock_delay_seconds": 86400,
     "execution_authority": "governance_contract",
     "emergency": {
       "guardian_addresses": [
-        "synv11qvr4kx9tna2m8h3j5d6f7p0wnecs4p",
-        "synv12plm7qs6vkb3x9y4z8w1n0dcjrtfe8r",
-        "synv13nkj9wr2xyz7ab5c4d8e1f6ghspqmt5"
+        "<GUARDIAN_ADDRESS>",
+        "<GUARDIAN_ADDRESS>"
       ],
-      "guardian_threshold": 2,
+      "guardian_threshold": 1,
       "pause_scope": [
         "staking",
         "governance_execution",
-        "bridge"
+        "sxcp"
       ],
       "auto_expire_blocks": 7200
-    }
-  },
-  "bootstrap": {
-    "bootnodes": [
-      {
-        "peer_id": "12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
-        "pubkey": "[FN-DSA-1024 PUBLIC KEY \u2014 ~3586 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-        "address": "51.210.45.123",
-        "port": 30333,
-        "multiaddr": "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU"
-      },
-      {
-        "peer_id": "12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
-        "pubkey": "[FN-DSA-1024 PUBLIC KEY \u2014 ~3586 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-        "address": "51.210.45.124",
-        "port": 30333,
-        "multiaddr": "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN"
-      },
-      {
-        "peer_id": "12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW",
-        "pubkey": "[FN-DSA-1024 PUBLIC KEY \u2014 ~3586 LOWERCASE HEX CHARS \u2014 NO 0x PREFIX]",
-        "address": "51.210.45.125",
-        "port": 30333,
-        "multiaddr": "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW"
-      }
-    ],
-    "dns_seeds": [
-      "bootstrap.testbeta.synergy-network.io"
-    ],
-    "static_peers": [
-      "/ip4/51.210.45.123/tcp/30333/p2p/12D3KooWAJHv1jCzFHmkc7d8rJp5nYqsTvXwbR3mKNeLQz9fPdU",
-      "/ip4/51.210.45.124/tcp/30333/p2p/12D3KooWBmPq2xHkGnNrJsYtZ3fWcVe8DjR4pUiKsL7qAvMhXwN",
-      "/ip4/51.210.45.125/tcp/30333/p2p/12D3KooWCnRs3yJeKfMqGvTuB2wDaXp9EkH5oLiNrPzV8cFjYgW"
-    ],
-    "peer_exchange": true,
-    "ports": {
-      "p2p": 30333,
-      "l1_node_rpc": 38648,
-      "core_rpc": 48648,
-      "core_ws": 58648,
-      "metrics": 9615
-    },
-    "transport": {
-      "tcp": true,
-      "quic": true,
-      "websocket": true,
-      "encryption": "noise_protocol_required"
     }
   },
   "crypto": {
@@ -530,7 +742,9 @@
       "FN-DSA-1024"
     ],
     "reserve_algorithms": [
-      "SLH-DSA-SHAKE-128s"
+      "ML-DSA-87",
+      "ML-KEM-768",
+      "Ed25519"
     ],
     "legacy_ecdsa_supported": false,
     "key_types": {
@@ -540,31 +754,31 @@
       "address": "FN-DSA-1024"
     },
     "hash_functions": {
-      "block": "sha3-256",
-      "transaction": "sha3-256",
+      "block": "blake3",
+      "transaction": "blake3",
       "state_trie": "blake3"
     },
     "domain_separation": {
-      "transaction": "synergy/tx/v1/",
-      "consensus": "synergy/consensus/v1/",
-      "governance": "synergy/gov/v1/"
+      "transaction": "SNRG_TX",
+      "consensus": "SNRG_CONS",
+      "governance": "SNRG_GOV"
     }
   },
   "execution": {
     "serialization": "canonical_cbor",
     "tx_version": 1,
-    "max_block_size_bytes": 4194304,
+    "max_block_size_bytes": 2000000,
     "max_gas_per_block": 30000000,
     "vm": {
-      "runtime": "synqvm",
-      "max_call_depth": 1024,
+      "runtime": "synq-vm",
+      "max_call_depth": 64,
       "max_memory_bytes": 67108864,
-      "max_contract_size_bytes": 524288
+      "max_contract_size_bytes": 24576
     },
     "gas_model": {
-      "base_tx_cost_nwei": 21000,
-      "execution_cost_per_gas": 1000,
-      "storage_cost_per_byte_per_block": 10
+      "base_tx_cost_nwei": "1000",
+      "execution_cost_per_gas": "1",
+      "storage_cost_per_byte_per_block": "1"
     }
   },
   "modules": {
@@ -573,15 +787,15 @@
       "delegations_enabled": true,
       "delegations": [],
       "params": {
-        "min_stake_nwei": 100000000000,
-        "max_stake_nwei": null,
-        "min_delegation_nwei": 1000000000,
-        "max_delegation_nwei": null
+        "min_stake_nwei": "50000000000000",
+        "max_stake_nwei": "5000000000000000000",
+        "min_delegation_nwei": "1000000000",
+        "max_delegation_nwei": "5000000000000000000"
       },
       "reward_distribution": {
-        "reward_pool_initial_nwei": 100000000000000000,
-        "validator_share_pct": 0.9,
-        "delegator_share_pct": 0.1
+        "reward_pool_initial_nwei": "10000000000000000000",
+        "validator_share_pct": 0.90,
+        "delegator_share_pct": 0.10
       }
     },
     "governance": {
@@ -590,14 +804,14 @@
     },
     "treasury": {
       "initialized": true,
-      "treasury_address": "synq1treasury00contract0synrg00net",
-      "initial_balance_nwei": 250000000000000000
+      "treasury_address": "<TREASURY_ADDRESS>",
+      "initial_balance_nwei": "17500000000000000000"
     },
     "rewards": {
       "initialized": true,
-      "pool_balance_nwei": 100000000000000000,
-      "block_reward_nwei": 1000000000,
-      "epoch_reward_nwei": 3600000000000
+      "pool_balance_nwei": "10000000000000000000",
+      "block_reward_nwei": "0",
+      "epoch_reward_nwei": "0"
     },
     "slashing": {
       "initialized": true,
@@ -605,14 +819,16 @@
     },
     "identity": {
       "initialized": true,
-      "contract_address": "synq1identity0contract00synrg0net0",
+      "contract_address": "<IDENTITY_CONTRACT_ADDRESS>",
       "reserved_names": [
         "synergy",
         "snrg",
+        "treasury",
         "foundation",
-        "treasury"
+        "validator",
+        "oracle"
       ],
-      "registration_fee_nwei": 1000000000
+      "registration_fee_nwei": "1000000"
     },
     "uma": {
       "initialized": true,
@@ -622,17 +838,22 @@
     "sxcp": {
       "initialized": true,
       "enabled_at_genesis": false,
-      "bridge_contract_address": null,
-      "supported_chains": [],
-      "guardian_set": [],
-      "rate_limit_per_block_nwei": 50000000000000,
-      "rate_limit_per_day_nwei": 500000000000000
+      "bridge_contract_address": "",
+      "supported_chains": [
+        "ethereum-sepolia",
+        "solana-devnet"
+      ],
+      "guardian_set": [
+        "<GUARDIAN_ADDRESS>"
+      ],
+      "rate_limit_per_block_nwei": "50000000000000",
+      "rate_limit_per_day_nwei": "500000000000000"
     }
   },
   "upgrade": {
     "authority": "governance_and_validator_signaling",
-    "signaling_threshold_pct": 0.8,
-    "mechanism": "on_chain_scheduled",
+    "signaling_threshold_pct": 0.67,
+    "mechanism": "on_chain_governance",
     "fork_triggers": [
       "block_height",
       "timestamp"
@@ -641,13 +862,13 @@
   "security": {
     "emergency_pause": {
       "enabled": true,
-      "guardian_multisig": "synm1guardian0multisig0synrg0net00",
+      "guardian_multisig": "<GUARDIAN_ADDRESS>",
       "auto_expire_blocks": 7200
     },
     "rate_limits": {
       "max_tx_per_block_per_account": 100,
-      "bridge_max_volume_per_block_nwei": 50000000000000,
-      "bridge_max_volume_per_day_nwei": 500000000000000
+      "bridge_max_volume_per_block_nwei": "50000000000000",
+      "bridge_max_volume_per_day_nwei": "500000000000000"
     },
     "mempool": {
       "max_pending_per_account": 64,
@@ -659,28 +880,11 @@
     }
   },
   "integrity": {
-    "_note": "genesis_hash computed from canonical CBOR serialization of all fields above. All hash values are 64 lowercase hex characters (SHA3-256, 32 bytes). No 0x prefix (SNTS-07).",
-    "genesis_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "state_root": "0000000000000000000000000000000000000000000000000000000000000000",
-    "allocation_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "validator_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "contract_hash": "0000000000000000000000000000000000000000000000000000000000000000",
-    "signed_by": [
-      {
-        "signer_address": "synv11qvr4kx9tna2m8h3j5d6f7p0wnecs4p",
-        "key_type": "ML-DSA-65",
-        "signature": "[ML-DSA-65 SIGNATURE \u2014 ~6618 LOWERCASE HEX CHARS \u2014 COMPUTED AT RELEASE]"
-      },
-      {
-        "signer_address": "synv12plm7qs6vkb3x9y4z8w1n0dcjrtfe8r",
-        "key_type": "ML-DSA-65",
-        "signature": "[ML-DSA-65 SIGNATURE \u2014 ~6618 LOWERCASE HEX CHARS \u2014 COMPUTED AT RELEASE]"
-      },
-      {
-        "signer_address": "synv13nkj9wr2xyz7ab5c4d8e1f6ghspqmt5",
-        "key_type": "ML-DSA-65",
-        "signature": "[ML-DSA-65 SIGNATURE \u2014 ~6618 LOWERCASE HEX CHARS \u2014 COMPUTED AT RELEASE]"
-      }
-    ]
+    "genesis_hash": "",
+    "state_root": "",
+    "allocation_hash": "",
+    "validator_hash": "",
+    "contract_hash": "",
+    "signed_by": []
   }
 }

@@ -44,7 +44,7 @@ config/
 [network]
 # Network identification
 id = 338639
-name = "Synergy Testnet Beta"
+name = "Synergy Testnet-Beta"
 description = "Synergy Network Testnet Beta"
 
 # Port configuration
@@ -106,7 +106,7 @@ rate_limit_per_minute = 1000
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `id` | integer | 338639 | Network identifier |
-| `name` | string | "Synergy Testnet Beta" | Human-readable network name |
+| `name` | string | "Synergy Testnet-Beta" | Human-readable network name |
 | `p2p_port` | integer | 30303 | P2P communication port |
 | `rpc_port` | integer | 8545 | RPC API port |
 | `ws_port` | integer | 8546 | WebSocket port |
@@ -117,7 +117,7 @@ rate_limit_per_minute = 1000
 
 ```bash
 # Network overrides
-export SYNERGY_NETWORK_ID=338639
+export SYNERGY_NETWORK_ID=synergy-testnet-beta
 export SYNERGY_P2P_PORT=30303
 export SYNERGY_RPC_PORT=8545
 export SYNERGY_WS_PORT=8546
@@ -300,7 +300,7 @@ The genesis file defines the initial state of the blockchain:
 ```json
 {
   "meta": {
-    "network": "Synergy Testnet Beta",
+    "network": "Synergy Testnet-Beta",
     "version": "1.0.0",
     "description": "Synergy Network Testnet Beta Genesis Block",
     "dateGenerated": "2024-01-01T00:00:00Z"
@@ -374,7 +374,7 @@ The node supports extensive runtime configuration through environment variables:
 
 #### Network Configuration
 ```bash
-export SYNERGY_NETWORK_ID=338639
+export SYNERGY_NETWORK_ID=synergy-testnet-beta
 export SYNERGY_CHAIN_ID=338639
 export SYNERGY_P2P_PORT=30303
 export SYNERGY_RPC_PORT=8545

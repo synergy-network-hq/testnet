@@ -5,7 +5,7 @@
 
 set -e
 
-echo "🔨 Building Synergy Testnet Beta binary for macOS ARM64..."
+echo "🔨 Building Synergy Testnet-Beta binary for macOS ARM64..."
 echo "===================================================="
 
 # Check if we're on macOS

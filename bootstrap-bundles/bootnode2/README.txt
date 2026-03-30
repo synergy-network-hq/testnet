@@ -2,7 +2,7 @@ bootnode2 bootstrap-only deployment bundle
 ======================================
 
 Purpose
-- Runs a Synergy Testnet Beta node in bootstrap-only mode.
+- Runs a Synergy Testnet-Beta node in bootstrap-only mode.
 - Discovery only: no validator self-registration, no consensus engine, no public RPC services.
 
 Endpoint

@@ -26,11 +26,10 @@
 | --- | --- |
 | Bootnode listener | 5620/tcp |
 | Seed-service listener | 5621/tcp |
-| Reserved conflict port | 5622 |
-| Slotted node P2P base | 5630 + port_slot |
-| Slotted node RPC base | 5730 + port_slot |
-| Slotted node WS base | 5830 + port_slot |
-| Slotted node discovery base | 5930 + port_slot |
+| Sequential node listener base | 5622 + node assignment |
+| Slotted node RPC base | 5640 + node assignment |
+| Slotted node WS base | 5660 + node assignment |
+| Slotted node discovery base | 5680 + node assignment |
 | Slotted node metrics base | 6030 + port_slot |
 
 ## Bootnode Deployment

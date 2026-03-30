@@ -216,7 +216,7 @@ impl SyncManager {
                 if local_genesis.is_empty() {
                     true
                 } else {
-                    peer.genesis_hash.is_empty() || peer.genesis_hash == local_genesis
+                    peer.genesis_hash == local_genesis
                 }
             })
             .collect();
@@ -243,7 +243,7 @@ impl SyncManager {
             if local_genesis.is_empty() {
                 true
             } else {
-                peer.genesis_hash.is_empty() || peer.genesis_hash == local_genesis
+                peer.genesis_hash == local_genesis
             }
         });
 
@@ -255,7 +255,7 @@ impl SyncManager {
     pub fn start_sync(&mut self) -> Result<(), SyncError> {
         self.refresh_local_height();
         self.state = SyncState::Discovering;
-        let mut network_height = self.discover_network_height()?;
+        let network_height = self.discover_network_height()?;
         self.network_height = network_height;
 
         if self.local_height >= network_height {

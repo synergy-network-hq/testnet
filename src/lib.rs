@@ -6,6 +6,7 @@ pub mod consensus;
 pub mod contracts;
 pub mod crypto;
 pub mod gas;
+pub mod genesis;
 pub mod logging;
 pub mod node;
 pub mod p2p;

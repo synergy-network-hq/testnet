@@ -8,6 +8,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::block::BlockChain;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
+use crate::genesis::canonical_genesis;
 use crate::sxcp;
 use crate::sync::{SyncManager, SyncState};
 use crate::token::TOKEN_MANAGER;
@@ -32,14 +33,33 @@ lazy_static! {
 // Global shared blockchain instance - will be used by both RPC and consensus
 lazy_static! {
     pub static ref SHARED_CHAIN: Arc<Mutex<BlockChain>> = {
-        // Use absolute path based on project root
         let chain_path = crate::utils::resolve_data_path("data/chain.json");
+        let canonical_genesis = canonical_genesis()
+            .unwrap_or_else(|error| panic!("failed to load canonical genesis: {error}"));
         Arc::new(Mutex::new(
-            BlockChain::load_from_file(chain_path.to_str().unwrap_or("data/chain.json")).unwrap_or_else(|| {
-                let mut chain = BlockChain::new();
-                chain.genesis();
-                chain
-            })
+            match BlockChain::load_from_file(chain_path.to_str().unwrap_or("data/chain.json")) {
+                Some(chain) => {
+                    chain
+                        .ensure_expected_genesis_hash(canonical_genesis.hash())
+                        .unwrap_or_else(|error| {
+                            panic!(
+                                "existing chain state at {} does not match canonical genesis {}: {}",
+                                chain_path.display(),
+                                canonical_genesis.hash(),
+                                error
+                            )
+                        });
+                    chain
+                }
+                None => {
+                    let mut chain = BlockChain::new();
+                    chain.genesis().unwrap_or_else(|error| {
+                        panic!("failed to bootstrap genesis block: {error}")
+                    });
+                    chain.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
+                    chain
+                }
+            },
         ))
     };
 }
@@ -1081,14 +1101,14 @@ fn handle_json_rpc(
             let total_supply = token_manager
                 .get_all_tokens()
                 .iter()
-                .map(|token| token.total_supply)
-                .sum::<u64>();
+                .filter_map(|token| token.total_supply.parse::<u128>().ok())
+                .sum::<u128>();
 
             json!({
                 "block_height": chain.last().map_or(0, |b| b.block_index),
                 "total_transactions": chain.chain.iter().map(|b| b.transactions.len()).sum::<usize>(),
                 "active_validators": validator_manager.get_active_validators().len(),
-                "total_supply": total_supply,
+                "total_supply": total_supply.to_string(),
                 "tokens": token_manager.get_all_tokens().len(),
                 "network_uptime": "99.9%",
                 "current_epoch": validator_manager.calculate_epoch_rewards(0).len(),
@@ -1374,9 +1394,11 @@ fn handle_json_rpc(
                         || tx_hash_raw == normalized
                         || tx_hash_raw == raw_hash_search
                         || (tx_hash_formatted.starts_with("syntxn-")
-                            && tx_hash_formatted.strip_prefix("syntxn-").unwrap_or("") == raw_hash_search)
+                            && tx_hash_formatted.strip_prefix("syntxn-").unwrap_or("")
+                                == raw_hash_search)
                         || (tx_hash_formatted.starts_with("synxxn-")
-                            && tx_hash_formatted.strip_prefix("synxxn-").unwrap_or("") == raw_hash_search)
+                            && tx_hash_formatted.strip_prefix("synxxn-").unwrap_or("")
+                                == raw_hash_search)
                 };
 
                 // Search in confirmed transactions
@@ -1392,13 +1414,13 @@ fn handle_json_rpc(
                         cumulative_gas = cumulative_gas.saturating_add(gas_used);
 
                         if matches_tx(tx) {
-                            let is_contract_creation = tx.receiver.is_empty()
-                                || tx.receiver == "0x0"
-                                || tx.receiver == "";
+                            let is_contract_creation =
+                                tx.receiver.is_empty() || tx.receiver == "0x0" || tx.receiver == "";
                             let contract_address = if is_contract_creation {
                                 // Derive a deterministic contract address
                                 let hash_input = format!("{}{}", tx.sender, tx.nonce);
-                                let addr_hash = hex::encode(blake3::hash(hash_input.as_bytes()).as_bytes());
+                                let addr_hash =
+                                    hex::encode(blake3::hash(hash_input.as_bytes()).as_bytes());
                                 Some(format!("sync1{}", &addr_hash[..38]))
                             } else {
                                 None
@@ -1478,7 +1500,7 @@ fn handle_json_rpc(
         // 4. synergy_gasPrice
         // Get the current gas price.
         "synergy_gasPrice" => {
-            use crate::gas::constants::{DEFAULT_GAS_PRICE, MIN_GAS_PRICE, MAX_GAS_PRICE};
+            use crate::gas::constants::{DEFAULT_GAS_PRICE, MAX_GAS_PRICE, MIN_GAS_PRICE};
 
             // Calculate dynamic gas price based on recent block utilization
             let chain = chain.lock().unwrap();
@@ -1518,7 +1540,10 @@ fn handle_json_rpc(
             if let Some(call_obj) = params.get(0) {
                 let _from = call_obj.get("from").and_then(|v| v.as_str()).unwrap_or("");
                 let to = call_obj.get("to").and_then(|v| v.as_str());
-                let _data = call_obj.get("data").and_then(|v| v.as_str()).unwrap_or("0x");
+                let _data = call_obj
+                    .get("data")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("0x");
                 let _value = call_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
 
                 if let Some(to_addr) = to {
@@ -1558,17 +1583,21 @@ fn handle_json_rpc(
 
                 let estimated = if to.is_none() || to == Some("") || to == Some("0x0") {
                     // Contract deployment
-                    let bytecode_size = data.map(|d| {
-                        let d = d.strip_prefix("0x").unwrap_or(d);
-                        d.len() / 2 // hex bytes
-                    }).unwrap_or(0);
+                    let bytecode_size = data
+                        .map(|d| {
+                            let d = d.strip_prefix("0x").unwrap_or(d);
+                            d.len() / 2 // hex bytes
+                        })
+                        .unwrap_or(0);
                     GasEstimator::estimate_contract_deploy(bytecode_size).as_u64()
                 } else if data.is_some() && data != Some("") && data != Some("0x") {
                     // Contract call
-                    let calldata_size = data.map(|d| {
-                        let d = d.strip_prefix("0x").unwrap_or(d);
-                        d.len() / 2
-                    }).unwrap_or(0);
+                    let calldata_size = data
+                        .map(|d| {
+                            let d = d.strip_prefix("0x").unwrap_or(d);
+                            d.len() / 2
+                        })
+                        .unwrap_or(0);
                     GasEstimator::estimate_contract_call(calldata_size).as_u64()
                 } else {
                     // Simple transfer
@@ -1585,16 +1614,18 @@ fn handle_json_rpc(
         // Get event logs matching filters.
         "synergy_getLogs" => {
             if let Some(filter) = params.get(0) {
-                let from_block = filter.get("fromBlock").and_then(|v| v.as_u64()).unwrap_or(0);
+                let from_block = filter
+                    .get("fromBlock")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0);
                 let to_block = filter.get("toBlock").and_then(|v| v.as_u64());
                 let filter_address = filter.get("address").and_then(|v| v.as_str());
                 let _topics = filter.get("topics").and_then(|v| v.as_array());
                 let block_hash = filter.get("blockHash").and_then(|v| v.as_str());
 
                 let chain = chain.lock().unwrap();
-                let to_block = to_block.unwrap_or_else(|| {
-                    chain.last().map_or(0, |b| b.block_index)
-                });
+                let to_block =
+                    to_block.unwrap_or_else(|| chain.last().map_or(0, |b| b.block_index));
 
                 let mut logs: Vec<Value> = Vec::new();
                 let mut log_index: u64 = 0;
@@ -1675,7 +1706,7 @@ fn handle_json_rpc(
                 if address.starts_with("sync1") || address.starts_with("sync0") {
                     // Contract address - AIVM currently disabled
                     // When re-enabled, this will read from contract storage
-                    json!("0x" .to_string() + &"0".repeat(64))
+                    json!("0x".to_string() + &"0".repeat(64))
                 } else {
                     // Non-contract address - return zero
                     json!("0x".to_string() + &"0".repeat(64))
@@ -1699,7 +1730,11 @@ fn handle_json_rpc(
                     json!(null)
                 }
             } else if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
-                if let Some(block) = chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash)) {
+                if let Some(block) = chain
+                    .chain
+                    .iter()
+                    .find(|b| b.hash.eq_ignore_ascii_case(block_hash))
+                {
                     json!(block.transactions.len())
                 } else {
                     json!(null)
@@ -1715,7 +1750,10 @@ fn handle_json_rpc(
             let block = if let Some(block_num) = params.get(0).and_then(|v| v.as_u64()) {
                 chain.chain.iter().find(|b| b.block_index == block_num)
             } else if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
-                chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash))
+                chain
+                    .chain
+                    .iter()
+                    .find(|b| b.hash.eq_ignore_ascii_case(block_hash))
             } else {
                 return json!({"error": "Missing block number or block hash parameter"});
             };
@@ -1764,7 +1802,10 @@ fn handle_json_rpc(
         // synergy_getPendingTransactions
         "synergy_getPendingTransactions" => {
             let limit = params.get(0).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
-            let sort_by = params.get(1).and_then(|v| v.as_str()).unwrap_or("timestamp");
+            let sort_by = params
+                .get(1)
+                .and_then(|v| v.as_str())
+                .unwrap_or("timestamp");
 
             let pool = tx_pool.lock().unwrap();
             let mut txs: Vec<&Transaction> = pool.iter().collect();
@@ -1775,7 +1816,8 @@ fn handle_json_rpc(
                 _ => txs.sort_by(|a, b| b.timestamp.cmp(&a.timestamp)),
             }
 
-            let result: Vec<Value> = txs.iter()
+            let result: Vec<Value> = txs
+                .iter()
                 .take(limit)
                 .map(|tx| tx_to_explorer_json(tx, "pending", None, None))
                 .collect();
@@ -1791,7 +1833,12 @@ fn handle_json_rpc(
                 let chain = chain.lock().unwrap();
                 if let Some(block) = chain.chain.iter().find(|b| b.block_index == block_num) {
                     if let Some(tx) = block.transactions.get(index as usize) {
-                        tx_to_explorer_json(tx, "confirmed", Some(block.block_index), Some(index as usize))
+                        tx_to_explorer_json(
+                            tx,
+                            "confirmed",
+                            Some(block.block_index),
+                            Some(index as usize),
+                        )
                     } else {
                         json!(null)
                     }
@@ -1810,9 +1857,18 @@ fn handle_json_rpc(
                 params.get(1).and_then(|v| v.as_u64()),
             ) {
                 let chain = chain.lock().unwrap();
-                if let Some(block) = chain.chain.iter().find(|b| b.hash.eq_ignore_ascii_case(block_hash)) {
+                if let Some(block) = chain
+                    .chain
+                    .iter()
+                    .find(|b| b.hash.eq_ignore_ascii_case(block_hash))
+                {
                     if let Some(tx) = block.transactions.get(index as usize) {
-                        tx_to_explorer_json(tx, "confirmed", Some(block.block_index), Some(index as usize))
+                        tx_to_explorer_json(
+                            tx,
+                            "confirmed",
+                            Some(block.block_index),
+                            Some(index as usize),
+                        )
                     } else {
                         json!(null)
                     }
@@ -1861,17 +1917,22 @@ fn handle_json_rpc(
                 gas_used_ratios.push(ratio);
 
                 if let Some(percentiles) = reward_percentiles {
-                    let mut gas_prices: Vec<u64> = block.transactions.iter().map(|tx| tx.gas_price).collect();
+                    let mut gas_prices: Vec<u64> =
+                        block.transactions.iter().map(|tx| tx.gas_price).collect();
                     gas_prices.sort();
-                    let block_rewards: Vec<u64> = percentiles.iter().map(|p| {
-                        let pct = p.as_f64().unwrap_or(50.0) / 100.0;
-                        if gas_prices.is_empty() {
-                            0
-                        } else {
-                            let idx = ((gas_prices.len() as f64 * pct) as usize).min(gas_prices.len() - 1);
-                            gas_prices[idx]
-                        }
-                    }).collect();
+                    let block_rewards: Vec<u64> = percentiles
+                        .iter()
+                        .map(|p| {
+                            let pct = p.as_f64().unwrap_or(50.0) / 100.0;
+                            if gas_prices.is_empty() {
+                                0
+                            } else {
+                                let idx = ((gas_prices.len() as f64 * pct) as usize)
+                                    .min(gas_prices.len() - 1);
+                                gas_prices[idx]
+                            }
+                        })
+                        .collect();
                     rewards.push(block_rewards);
                 }
             }
@@ -1891,7 +1952,10 @@ fn handle_json_rpc(
         // synergy_getChainId
         "synergy_getChainId" => {
             let config = crate::config::load_node_config(None).ok();
-            let chain_id = config.as_ref().map(|cfg| cfg.blockchain.chain_id).unwrap_or(338639);
+            let chain_id = config
+                .as_ref()
+                .map(|cfg| cfg.blockchain.chain_id)
+                .unwrap_or(338639);
             json!(chain_id)
         }
 
@@ -1921,13 +1985,16 @@ fn handle_json_rpc(
                         // Calculate rewards from blocks produced
                         let chain = chain.lock().unwrap();
                         let mut rewards: Vec<Value> = Vec::new();
-                        let blocks_by_validator: Vec<_> = chain.chain.iter()
+                        let blocks_by_validator: Vec<_> = chain
+                            .chain
+                            .iter()
                             .filter(|b| b.validator_id.eq_ignore_ascii_case(address))
                             .collect();
 
                         for block in &blocks_by_validator {
                             let block_reward = 10_000_000_000u64; // 10 SNRG per block in nWei
-                            let tx_fees: u64 = block.transactions.iter().map(|tx| tx.get_fee()).sum();
+                            let tx_fees: u64 =
+                                block.transactions.iter().map(|tx| tx.get_fee()).sum();
                             rewards.push(json!({
                                 "blockNumber": block.block_index,
                                 "amount": block_reward + tx_fees,
@@ -1945,7 +2012,7 @@ fn handle_json_rpc(
                                 .sum::<u64>()
                         })
                     }
-                    None => json!({"error": "Validator not found"})
+                    None => json!({"error": "Validator not found"}),
                 }
             } else {
                 json!({"error": "Missing address parameter"})
@@ -1959,11 +2026,14 @@ fn handle_json_rpc(
                     Some(validator) => {
                         let chain = chain.lock().unwrap();
                         let total_blocks = chain.chain.len() as u64;
-                        let blocks_produced: u64 = chain.chain.iter()
+                        let blocks_produced: u64 = chain
+                            .chain
+                            .iter()
                             .filter(|b| b.validator_id.eq_ignore_ascii_case(address))
                             .count() as u64;
 
-                        let total_validators = validator_manager.get_validator_count().max(1) as f64;
+                        let total_validators =
+                            validator_manager.get_validator_count().max(1) as f64;
                         let expected_blocks = total_blocks as f64 / total_validators;
                         let proposal_rate = if expected_blocks > 0.0 {
                             (blocks_produced as f64 / expected_blocks).min(1.0)
@@ -1986,7 +2056,7 @@ fn handle_json_rpc(
                             "uptime": validator.uptime_percentage
                         })
                     }
-                    None => json!({"error": "Validator not found"})
+                    None => json!({"error": "Validator not found"}),
                 }
             } else {
                 json!({"error": "Missing address parameter"})
@@ -1996,18 +2066,24 @@ fn handle_json_rpc(
         // synergy_getValidatorQueue
         "synergy_getValidatorQueue" => {
             if let Ok(registry) = validator_manager.registry.lock() {
-                let activation_queue: Vec<Value> = registry.pending_registrations.values().map(|r| {
-                    json!({
-                        "address": r.address,
-                        "name": r.name,
-                        "stakeAmount": r.stake_amount,
-                        "submittedAt": r.submitted_at
+                let activation_queue: Vec<Value> = registry
+                    .pending_registrations
+                    .values()
+                    .map(|r| {
+                        json!({
+                            "address": r.address,
+                            "name": r.name,
+                            "stakeAmount": r.stake_amount,
+                            "submittedAt": r.submitted_at
+                        })
                     })
-                }).collect();
+                    .collect();
 
-                let exit_queue: Vec<Value> = registry.jailed_validators.iter().map(|addr| {
-                    json!({"address": addr})
-                }).collect();
+                let exit_queue: Vec<Value> = registry
+                    .jailed_validators
+                    .iter()
+                    .map(|addr| json!({"address": addr}))
+                    .collect();
 
                 json!({
                     "activationQueue": activation_queue,
@@ -2048,7 +2124,7 @@ fn handle_json_rpc(
                             json!({"success": false, "error": "Failed to access registry"})
                         }
                     }
-                    None => json!({"success": false, "error": "Validator not found"})
+                    None => json!({"success": false, "error": "Validator not found"}),
                 }
             } else {
                 json!({"success": false, "error": "Missing required parameters: address, signature"})
@@ -2078,7 +2154,7 @@ fn handle_json_rpc(
                             "doubleSignCount": validator.double_signs
                         })
                     }
-                    None => json!({"error": "Validator not found"})
+                    None => json!({"error": "Validator not found"}),
                 }
             } else {
                 json!({"error": "Missing address parameter"})
@@ -2090,19 +2166,23 @@ fn handle_json_rpc(
             if let Some(cluster_id) = params.get(0).and_then(|v| v.as_u64()) {
                 if let Ok(registry) = validator_manager.registry.lock() {
                     if let Some(cluster) = registry.clusters.get(&cluster_id) {
-                        let validator_details: Vec<Value> = cluster.validators.iter().map(|addr| {
-                            if let Some(v) = registry.validators.get(addr) {
-                                json!({
-                                    "address": v.address,
-                                    "name": v.name,
-                                    "stakeAmount": v.stake_amount,
-                                    "synergyScore": v.synergy_score,
-                                    "status": format!("{:?}", v.status)
-                                })
-                            } else {
-                                json!({"address": addr})
-                            }
-                        }).collect();
+                        let validator_details: Vec<Value> = cluster
+                            .validators
+                            .iter()
+                            .map(|addr| {
+                                if let Some(v) = registry.validators.get(addr) {
+                                    json!({
+                                        "address": v.address,
+                                        "name": v.name,
+                                        "stakeAmount": v.stake_amount,
+                                        "synergyScore": v.synergy_score,
+                                        "status": format!("{:?}", v.status)
+                                    })
+                                } else {
+                                    json!({"address": addr})
+                                }
+                            })
+                            .collect();
 
                         json!({
                             "clusterId": cluster.id,
@@ -2133,15 +2213,20 @@ fn handle_json_rpc(
                 if let Ok(registry) = validator_manager.registry.lock() {
                     if let Some(cluster) = registry.clusters.get(&cluster_id) {
                         let epoch_rewards = registry.calculate_epoch_rewards(epoch);
-                        let cluster_rewards: Vec<Value> = cluster.validators.iter().map(|addr| {
-                            let reward = epoch_rewards.get(addr).copied().unwrap_or(0);
-                            json!({
-                                "validatorAddress": addr,
-                                "rewardAmount": reward
+                        let cluster_rewards: Vec<Value> = cluster
+                            .validators
+                            .iter()
+                            .map(|addr| {
+                                let reward = epoch_rewards.get(addr).copied().unwrap_or(0);
+                                json!({
+                                    "validatorAddress": addr,
+                                    "rewardAmount": reward
+                                })
                             })
-                        }).collect();
+                            .collect();
 
-                        let total: u64 = cluster_rewards.iter()
+                        let total: u64 = cluster_rewards
+                            .iter()
                             .filter_map(|r| r.get("rewardAmount").and_then(|a| a.as_u64()))
                             .sum();
 
@@ -2181,7 +2266,9 @@ fn handle_json_rpc(
                             "votingEndsAt": current_timestamp() + 86400 // 24 hours
                         })
                     }
-                    None => json!({"success": false, "error": "Proposer must be a registered validator"})
+                    None => {
+                        json!({"success": false, "error": "Proposer must be a registered validator"})
+                    }
                 }
             } else {
                 json!({"success": false, "error": "Missing required parameters: clusterId, proposal, proposer"})
@@ -2195,9 +2282,11 @@ fn handle_json_rpc(
                 let token_manager = TOKEN_MANAGER.clone();
                 let staking_info = token_manager.get_staking_info(address);
 
-                let rewards: Vec<Value> = staking_info.iter()
+                let rewards: Vec<Value> = staking_info
+                    .iter()
                     .filter(|info| {
-                        specific_validator.map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v))
+                        specific_validator
+                            .map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v))
                     })
                     .map(|info| {
                         json!({
@@ -2210,7 +2299,8 @@ fn handle_json_rpc(
                     })
                     .collect();
 
-                let total_rewards: u64 = rewards.iter()
+                let total_rewards: u64 = rewards
+                    .iter()
                     .filter_map(|r| r.get("rewardsEarned").and_then(|a| a.as_u64()))
                     .sum();
 
@@ -2229,9 +2319,11 @@ fn handle_json_rpc(
             let specific_validator = params.get(0).and_then(|v| v.as_str());
             let token_manager = TOKEN_MANAGER.clone();
             let total_staked = token_manager.get_staked_balance("*", "SNRG");
-            let total_supply = token_manager.get_all_tokens().iter()
+            let total_supply = token_manager
+                .get_all_tokens()
+                .iter()
                 .find(|t| t.symbol == "SNRG")
-                .map(|t| t.total_supply)
+                .and_then(|t| t.total_supply.parse::<u128>().ok())
                 .unwrap_or(0);
 
             let staking_rate = if total_supply > 0 {
@@ -2263,13 +2355,13 @@ fn handle_json_rpc(
                 if let Some(validator) = validator_manager.get_validator(validator_addr) {
                     // Higher synergy score = slightly better APY
                     let validator_apy = capped_apy * (1.0 + validator.synergy_score * 0.1);
-                    result.as_object_mut().unwrap().insert(
-                        "validatorAPY".to_string(),
-                        json!(validator_apy.min(0.25))
-                    );
+                    result
+                        .as_object_mut()
+                        .unwrap()
+                        .insert("validatorAPY".to_string(), json!(validator_apy.min(0.25)));
                     result.as_object_mut().unwrap().insert(
                         "validatorSynergyScore".to_string(),
-                        json!(validator.synergy_score)
+                        json!(validator.synergy_score),
                     );
                 }
             }
@@ -2283,7 +2375,8 @@ fn handle_json_rpc(
                 let token_manager = TOKEN_MANAGER.clone();
                 let staking_info = token_manager.get_staking_info(address);
 
-                let delegations: Vec<Value> = staking_info.iter()
+                let delegations: Vec<Value> = staking_info
+                    .iter()
                     .filter(|info| info.is_active)
                     .map(|info| {
                         json!({
@@ -2321,7 +2414,9 @@ fn handle_json_rpc(
                 for address in all_balances.keys() {
                     let staking_info = token_manager.get_staking_info(address);
                     for info in &staking_info {
-                        if info.validator_address.eq_ignore_ascii_case(validator_addr) && info.is_active {
+                        if info.validator_address.eq_ignore_ascii_case(validator_addr)
+                            && info.is_active
+                        {
                             delegators.push(json!({
                                 "address": address,
                                 "amount": info.amount,
@@ -2358,7 +2453,9 @@ fn handle_json_rpc(
 
                 let mut total_claimed: u64 = 0;
                 for info in &staking_info {
-                    if specific_validator.map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v)) {
+                    if specific_validator
+                        .map_or(true, |v| info.validator_address.eq_ignore_ascii_case(v))
+                    {
                         total_claimed += info.rewards_earned;
                     }
                 }
@@ -2374,7 +2471,7 @@ fn handle_json_rpc(
                                 "message": "Rewards claimed successfully"
                             })
                         }
-                        Err(e) => json!({"success": false, "error": e})
+                        Err(e) => json!({"success": false, "error": e}),
                     }
                 } else {
                     json!({
@@ -2400,9 +2497,11 @@ fn handle_json_rpc(
                 // Calculate APY for projection
                 let token_manager = TOKEN_MANAGER.clone();
                 let total_staked = token_manager.get_staked_balance("*", "SNRG");
-                let total_supply = token_manager.get_all_tokens().iter()
+                let total_supply = token_manager
+                    .get_all_tokens()
+                    .iter()
                     .find(|t| t.symbol == "SNRG")
-                    .map(|t| t.total_supply)
+                    .and_then(|t| t.total_supply.parse::<u128>().ok())
                     .unwrap_or(1);
 
                 let staking_rate = (total_staked as f64 / total_supply as f64).max(0.01);

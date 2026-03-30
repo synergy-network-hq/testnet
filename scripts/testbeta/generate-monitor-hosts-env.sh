@@ -32,10 +32,6 @@ SYNERGY_TESTBETA_SSH_USER=ops
 SYNERGY_TESTBETA_SSH_PORT=22
 # Optional global SSH private key path:
 # SYNERGY_TESTBETA_SSH_KEY=/Users/you/.ssh/id_ed25519
-# Optional global WireGuard defaults:
-# SYNERGY_TESTBETA_WG_INTERFACE=wg0
-# SYNERGY_TESTBETA_WG_REMOTE_CONF=/etc/wireguard/wg0.conf
-
 # Explorer bridge used by node monitor Atlas links:
 ATLAS_BASE_URL=https://testbeta-explorer.synergy-network.io
 
@@ -60,9 +56,6 @@ ${machine_key}_SSH_USER=ops
 ${machine_key}_SSH_PORT=22
 # ${machine_key}_SSH_KEY=
 # ${machine_key}_REMOTE_DIR=/opt/synergy/$machine_id
-# ${machine_key}_WG_INTERFACE=wg0
-# ${machine_key}_WG_REMOTE_CONF=/etc/wireguard/wg0.conf
-
 ${machine_key}_START_CMD="$ORCHESTRATOR_SCRIPT $machine_id start"
 ${machine_key}_STOP_CMD="$ORCHESTRATOR_SCRIPT $machine_id stop"
 ${machine_key}_RESTART_CMD="$ORCHESTRATOR_SCRIPT $machine_id restart"
@@ -74,10 +67,6 @@ ${machine_key}_EXPORT_CHAIN_DATA_CMD="$ORCHESTRATOR_SCRIPT $machine_id export_ch
 
 ${machine_key}_ACTION_INSTALL_NODE_CMD="$ORCHESTRATOR_SCRIPT $machine_id install_node"
 ${machine_key}_ACTION_BOOTSTRAP_NODE_CMD="$ORCHESTRATOR_SCRIPT $machine_id bootstrap_node"
-${machine_key}_ACTION_WIREGUARD_INSTALL_CMD="$ORCHESTRATOR_SCRIPT $machine_id wireguard_install"
-${machine_key}_ACTION_WIREGUARD_CONNECT_CMD="$ORCHESTRATOR_SCRIPT $machine_id wireguard_connect"
-${machine_key}_ACTION_WIREGUARD_DISCONNECT_CMD="$ORCHESTRATOR_SCRIPT $machine_id wireguard_disconnect"
-${machine_key}_ACTION_WIREGUARD_STATUS_CMD="$ORCHESTRATOR_SCRIPT $machine_id wireguard_status"
 ${machine_key}_ACTION_NODE_LOGS_CMD="$ORCHESTRATOR_SCRIPT $machine_id logs"
 ${machine_key}_ACTION_RESET_CHAIN_CMD="$ORCHESTRATOR_SCRIPT $machine_id reset_chain"
 

@@ -2,8 +2,8 @@
 id = 338639
 name = "Synergy Testnet Beta"
 p2p_port = 5620
-rpc_port = 5730
-ws_port = 5830
+rpc_port = 5640
+ws_port = 5660
 max_peers = 50
 bootnodes = [
   "snr://bootstrap@bootnode1.synergynode.xyz:5620",
@@ -12,14 +12,14 @@ bootnodes = [
 ]
 
 [rpc]
-bind_address = "0.0.0.0:5730"
+bind_address = "0.0.0.0:5640"
 external_http = "https://testbeta-core-rpc.synergy-network.io"
 external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [network.listen]
 p2p = "0.0.0.0:5620"
-rpc = "0.0.0.0:5730"
-ws  = "0.0.0.0:5830"
+rpc = "0.0.0.0:5640"
+ws  = "0.0.0.0:5660"
 
 [blockchain]
 block_time = 5
@@ -34,8 +34,11 @@ pruning_interval = 86400
 
 [api]
 enable_http = true
-http_port = 5730
+http_port = 5640
 enable_ws = true
-ws_port = 5830
+ws_port = 5660
 enable_grpc = true
 grpc_port = 50051
+
+[p2p]
+discovery_port = 5680

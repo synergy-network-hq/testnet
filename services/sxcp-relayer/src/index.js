@@ -98,7 +98,7 @@ class SXCPRelayer {
     // Initialize coordinator (quorum manager)
     this.coordinator = new QuorumCoordinator(
       this.config.relayerAddress,
-      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5730',
+      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5640',
       this.store,
       {
         pqcAlgorithm: this.config.pqcAlgorithm,
@@ -117,7 +117,7 @@ class SXCPRelayer {
 
     // Initialize reporter (Synergy Testnet-Beta)
     this.reporter = new SynergyReporter(
-      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5730',
+      process.env.SYNERGY_RPC_URL || 'http://127.0.0.1:5640',
       this.config.relayerAddress,
       {
         heartbeatInterval: 60,

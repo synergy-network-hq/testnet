@@ -1,10 +1,10 @@
-# Synergy Devnet RPC Methods
+# Synergy Testnet-Beta RPC Methods
 
-This document lists all available JSON-RPC methods for the Synergy Devnet.
+This document lists all available JSON-RPC methods for Synergy Testnet-Beta.
 
 ## Endpoint
 
-- **URL**: `http://localhost:48638/rpc`
+- **URL**: `http://localhost:5640/rpc`
 - **Protocol**: JSON-RPC 2.0
 - **Content-Type**: `application/json`
 

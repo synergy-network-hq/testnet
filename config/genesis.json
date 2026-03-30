@@ -5,7 +5,9 @@
     "genesis_time": "2026-01-01T00:00:00Z",
     "chain_id": "338639",
     "version": "2.1.0-testbeta",
-    "description": "Synergy Testnet-Beta genesis configuration"
+    "description": "Non-authoritative checked-in Synergy Testnet-Beta genesis template. Replace with the signed ceremony output before launch.",
+    "authority": "non-authoritative-template",
+    "authoritative_launch_source": "genesis ceremony signed release output"
   },
   "consensus": {
     "algorithm": "PoSy",
@@ -33,9 +35,9 @@
     "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
     "api_endpoint": "https://testbeta-api.synergy-network.io",
     "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
-    "rpc_port": 5730,
-    "p2p_port": 5630,
-    "websocket_port": 5830,
+    "rpc_port": 5640,
+    "p2p_port": 5622,
+    "websocket_port": 5660,
     "metrics_port": 6030,
     "bootnodes": [
       "snr://bootstrap@bootnode1.synergynode.xyz:5620",
@@ -48,7 +50,7 @@
     "token_symbol": "SNRG",
     "token_name": "Synergy Token",
     "decimals": 9,
-    "burn_address": "synergy00000000000000000000000burn"
+    "burn_address": "synergy000000000000000000000000000000burn"
   },
   "genesis_allocations": [
     {

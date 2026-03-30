@@ -340,7 +340,8 @@ impl ValidatorRegistry {
         let target_sizes: Vec<usize> = (0..cluster_count)
             .map(|index| base_cluster_size + usize::from(index < extra_members))
             .collect();
-        let mut cluster_members: Vec<Vec<Validator>> = (0..cluster_count).map(|_| Vec::new()).collect();
+        let mut cluster_members: Vec<Vec<Validator>> =
+            (0..cluster_count).map(|_| Vec::new()).collect();
         let mut next_cluster_index = 0usize;
 
         for validator in active_validators {
@@ -355,8 +356,10 @@ impl ValidatorRegistry {
         for (cluster_index, members) in cluster_members.into_iter().enumerate() {
             let cluster_id = cluster_index as u64;
             let cluster_group = ((cluster_id % 5) + 1) as u8;
-            let validator_addresses: Vec<String> =
-                members.iter().map(|validator| validator.address.clone()).collect();
+            let validator_addresses: Vec<String> = members
+                .iter()
+                .map(|validator| validator.address.clone())
+                .collect();
             let cluster_seed = format!("cluster-{}-{}", cluster_id, validator_addresses.join("-"));
             let total_stake = members.iter().map(|validator| validator.stake_amount).sum();
             let average_synergy_score = members
@@ -740,7 +743,9 @@ mod tests {
             );
             validator.status = ValidatorStatus::Active;
             validator.synergy_score = INITIAL_VALIDATOR_SYNERGY_SCORE - index as f64;
-            registry.validators.insert(validator.address.clone(), validator);
+            registry
+                .validators
+                .insert(validator.address.clone(), validator);
         }
         registry.reorganize_clusters();
         registry
@@ -793,6 +798,8 @@ mod tests {
 
         assert_eq!(registry.clusters.len(), 4);
         assert_eq!(cluster_sizes, vec![4, 4, 4, 4]);
-        assert!(cluster_sizes.iter().all(|size| *size <= TESTNET_BETA_VALIDATOR_CLUSTER_SIZE));
+        assert!(cluster_sizes
+            .iter()
+            .all(|size| *size <= TESTNET_BETA_VALIDATOR_CLUSTER_SIZE));
     }
 }
