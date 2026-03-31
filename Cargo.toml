@@ -32,7 +32,7 @@ rand = "0.8"
 # aegis-pqvm-pallet = { path = "./node_modules/aegis-pqvm/substrate/pallet" }
 
 # WebAssembly VM
-wasmtime = "18.0.0"
+wasmtime = "24.0.6"
 
 [patch.crates-io]
 pqcrypto-internals = { path = "vendor/aegis-pqvm/vendor/pqcrypto-internals" }
