@@ -143,29 +143,31 @@ const INDEXER_EXPLORER_SERVICES: &[&str] = &[
 const OBSERVER_LIGHT_SERVICES: &[&str] = &["header-sync", "light-proof-check", "wallet-feed"];
 
 const VALIDATOR_PORTS: &[&str] = &[
-    "5630 plus slot p2p",
-    "5730 plus slot localhost rpc",
-    "5830 plus slot localhost ws",
+    "5622 plus slot p2p",
+    "5640 plus slot localhost rpc",
+    "5660 plus slot localhost ws",
     "6030 plus slot localhost metrics",
 ];
-const COMMITTEE_PORTS: &[&str] = &["5630 plus slot p2p", "6030 plus slot localhost metrics"];
+const COMMITTEE_PORTS: &[&str] = &["5622 plus slot p2p", "6030 plus slot localhost metrics"];
 const ARCHIVE_VALIDATOR_PORTS: &[&str] = &[
-    "5630 plus slot p2p",
-    "5730 plus slot localhost read rpc",
+    "5622 plus slot p2p",
+    "5640 plus slot localhost read rpc",
     "6030 plus slot localhost metrics",
 ];
-const AUDIT_VALIDATOR_PORTS: &[&str] = &["5630 plus slot p2p", "6030 plus slot localhost metrics"];
+const AUDIT_VALIDATOR_PORTS: &[&str] = &["5622 plus slot p2p", "6030 plus slot localhost metrics"];
 const RELAYER_PORTS: &[&str] = &[
     "3040 https sxcp api",
     "3041 wss sxcp stream",
     "6030 plus slot localhost metrics",
 ];
 const BASIC_METRICS_PORTS: &[&str] = &["6030 plus slot localhost metrics"];
-const CROSS_CHAIN_VERIFIER_PORTS: &[&str] = &["3030 https verify api", "6030 plus slot localhost metrics"];
+const CROSS_CHAIN_VERIFIER_PORTS: &[&str] =
+    &["3030 https verify api", "6030 plus slot localhost metrics"];
 const RPC_GATEWAY_PORTS: &[&str] = &[
-    "5630 plus slot p2p",
-    "5730 plus slot core rpc upstream",
-    "5830 plus slot core ws upstream",
+    "5622 plus slot p2p",
+    "5640 plus slot core rpc upstream",
+    "5660 plus slot core ws upstream",
+    "5680 plus slot discovery",
     "8545 evm http",
     "8546 evm ws",
 ];

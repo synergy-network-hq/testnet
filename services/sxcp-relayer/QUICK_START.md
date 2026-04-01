@@ -92,7 +92,7 @@ Look for log lines like:
 | SEPOLIA_WS_URL | Sepolia WebSocket RPC | wss://eth-sepolia.g.alchemy.com/v2/KEY |
 | AMOY_RPC_URL | Amoy HTTP RPC | https://polygon-amoy.g.alchemy.com/v2/KEY |
 | AMOY_WS_URL | Amoy WebSocket RPC | wss://polygon-amoy.g.alchemy.com/v2/KEY |
-| SYNERGY_RPC_URL | Synergy Testnet-Beta RPC | http://127.0.0.1:5730 |
+| SYNERGY_RPC_URL | Synergy Testnet-Beta RPC | http://127.0.0.1:5640 |
 | RELAYER_ADDRESS | Your relayer address | 0x... |
 | PQC_ALGORITHM | PQC algorithm | fndsa / mldsa / slhdsa |
 | PQC_PUBLIC_KEY_B64 | Base64 public key | ... |

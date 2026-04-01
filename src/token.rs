@@ -1,3 +1,4 @@
+use crate::genesis::canonical_genesis;
 use crate::transaction::Transaction;
 use crate::warn;
 use hex;
@@ -11,8 +12,8 @@ pub struct Token {
     pub symbol: String,
     pub name: String,
     pub decimals: u8,
-    pub total_supply: u64,
-    pub max_supply: Option<u64>,
+    pub total_supply: String,
+    pub max_supply: Option<String>,
     pub mintable: bool,
     pub burnable: bool,
     pub created_at: u64,
@@ -60,7 +61,7 @@ pub struct TokenManager {
     staked_balances: Arc<Mutex<HashMap<String, HashMap<String, u64>>>>, // address -> token_symbol -> staked
     transfers: Arc<Mutex<Vec<TokenTransfer>>>,
     stakes: Arc<Mutex<HashMap<String, Vec<StakingInfo>>>>, // validator -> stakes
-    total_supply: Arc<Mutex<HashMap<String, u64>>>,        // token_symbol -> total_supply
+    total_supply: Arc<Mutex<HashMap<String, u128>>>,       // token_symbol -> total_supply
 }
 
 impl Token {
@@ -68,8 +69,8 @@ impl Token {
         symbol: String,
         name: String,
         decimals: u8,
-        total_supply: u64,
-        max_supply: Option<u64>,
+        total_supply: u128,
+        max_supply: Option<u128>,
         mintable: bool,
         burnable: bool,
         creator: String,
@@ -78,8 +79,8 @@ impl Token {
             symbol,
             name,
             decimals,
-            total_supply,
-            max_supply,
+            total_supply: total_supply.to_string(),
+            max_supply: max_supply.map(|value| value.to_string()),
             mintable,
             burnable,
             created_at: Self::current_timestamp(),
@@ -125,12 +126,24 @@ impl TokenManager {
     }
 
     fn initialize_snrg_token(&mut self) {
+        let genesis_token = canonical_genesis()
+            .ok()
+            .map(|genesis| genesis.token().clone());
         let snrg_token = Token::new(
             "SNRG".to_string(),
-            "SynergyCoin".to_string(),
-            9, // 9 decimals for better usability
-            0, // Start with 0, genesis allocations will mint the initial supply
-            Some(1_150_000 * 10u64.pow(9)), // Fixed beta launch cap
+            genesis_token
+                .as_ref()
+                .map(|token| token.name.clone())
+                .unwrap_or_else(|| "Synergy Token".to_string()),
+            genesis_token
+                .as_ref()
+                .map(|token| token.decimals)
+                .unwrap_or(9),
+            0,
+            genesis_token
+                .as_ref()
+                .map(|token| token.total_supply_cap_nwei)
+                .or(Some(1_150_000u128 * 10u128.pow(9))),
             true, // mintable during bootstrap
             true, // burnable
             "genesis".to_string(),
@@ -156,99 +169,68 @@ impl TokenManager {
     }
 
     fn distribute_genesis_supply(&self) {
-        // Read genesis allocations from genesis.json for consistency
-        if let Ok(genesis_content) = std::fs::read_to_string("config/genesis.json") {
-            if let Ok(genesis) = serde_json::from_str::<serde_json::Value>(&genesis_content) {
-                // Try to read from genesis_allocations array
-                if let Some(allocations) = genesis["genesis_allocations"].as_array() {
-                    for allocation in allocations {
-                        if let (Some(address), Some(balance_str), Some(allocation_type)) = (
-                            allocation["address"].as_str(),
-                            allocation["balance"].as_str(),
-                            allocation["type"].as_str(),
-                        ) {
-                            if let Ok(balance) = balance_str.parse::<u64>() {
-                                if let Ok(_) = self.mint_tokens(address, "SNRG", balance) {
-                                    println!(
-                                        "✅ Genesis allocation: {} SNRG to {} ({})",
-                                        balance, address, allocation_type
-                                    );
-                                }
-                            }
-                        }
-                    }
-                } else if let Some(allocations) = genesis["alloc"].as_object() {
-                    // Fallback to old format
-                    for (address, balance_data) in allocations {
-                        if let Some(balance_str) = balance_data
-                            .as_object()
-                            .and_then(|b| b.get("balance"))
-                            .and_then(|b| b.as_str())
-                        {
-                            if let Ok(balance) = balance_str.parse::<u64>() {
-                                if let Ok(_) = self.mint_tokens(address, "SNRG", balance) {
-                                    println!(
-                                        "✅ Genesis allocation: {} SNRG to {}",
-                                        balance, address
-                                    );
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        } else {
-            println!(
-                "⚠️ Could not read genesis.json for token allocations, using default allocations"
-            );
-            // Fallback to hardcoded allocations if genesis.json is not available.
-            // These MUST match the genesis.json allocations exactly.
-            let genesis_allocations = [
-                (
-                    "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh",
-                    400_000_000_000_000u64,
-                ),
-                (
-                    "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv",
-                    150_000_000_000_000u64,
-                ),
-                (
-                    "synw1vkn2dq8mftcn7nkdhyv5t0jrv83thf0cakkj",
-                    200_000_000_000_000u64,
-                ),
-                (
-                    "synw1prdr55ggjhupx0d7jycftrl2hzs3k8zuw5ad",
-                    100_000_000_000_000u64,
-                ),
-                (
-                    "synw1f2kpjt9flxl6y4e3uez0zp3hjanamrlew5ja",
-                    100_000_000_000_000u64,
-                ),
-                (
-                    "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
-                    50_000_000_000_000u64,
-                ),
-                (
-                    "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
-                    50_000_000_000_000u64,
-                ),
-                (
-                    "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
-                    50_000_000_000_000u64,
-                ),
-                (
-                    "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
-                    50_000_000_000_000u64,
-                ),
-            ];
-
-            for (address, amount) in genesis_allocations {
-                if let Ok(_) = self.mint_tokens(address, "SNRG", amount) {
+        if let Ok(genesis) = canonical_genesis() {
+            for balance in genesis.balances() {
+                if let Ok(_) = self.mint_tokens(&balance.address, "SNRG", balance.balance_nwei) {
                     println!(
-                        "✅ Fallback genesis allocation: {} SNRG to {}",
-                        amount, address
+                        "✅ Genesis allocation: {} SNRG to {}",
+                        balance.balance_nwei, balance.address
                     );
                 }
+            }
+            return;
+        }
+
+        println!(
+            "⚠️ Could not load canonical genesis for token allocations, using default allocations"
+        );
+        // Fallback to hardcoded allocations if genesis.json is not available.
+        // These MUST match the genesis.json allocations exactly.
+        let genesis_allocations = [
+            (
+                "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh",
+                400_000_000_000_000u64,
+            ),
+            (
+                "synw1pckkuqdeep4qz47ww9hnnm6uru2f9r6qtumv",
+                150_000_000_000_000u64,
+            ),
+            (
+                "synw1vkn2dq8mftcn7nkdhyv5t0jrv83thf0cakkj",
+                200_000_000_000_000u64,
+            ),
+            (
+                "synw1prdr55ggjhupx0d7jycftrl2hzs3k8zuw5ad",
+                100_000_000_000_000u64,
+            ),
+            (
+                "synw1f2kpjt9flxl6y4e3uez0zp3hjanamrlew5ja",
+                100_000_000_000_000u64,
+            ),
+            (
+                "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
+                50_000_000_000_000u64,
+            ),
+            (
+                "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
+                50_000_000_000_000u64,
+            ),
+            (
+                "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
+                50_000_000_000_000u64,
+            ),
+            (
+                "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
+                50_000_000_000_000u64,
+            ),
+        ];
+
+        for (address, amount) in genesis_allocations {
+            if let Ok(_) = self.mint_tokens(address, "SNRG", amount) {
+                println!(
+                    "✅ Fallback genesis allocation: {} SNRG to {}",
+                    amount, address
+                );
             }
         }
     }
@@ -273,8 +255,8 @@ impl TokenManager {
                 symbol.clone(),
                 name,
                 decimals,
-                total_supply,
-                max_supply,
+                total_supply as u128,
+                max_supply.map(u128::from),
                 mintable,
                 burnable,
                 creator.clone(),
@@ -283,8 +265,9 @@ impl TokenManager {
             tokens.insert(symbol.clone(), token);
 
             if let Ok(mut supply) = self.total_supply.lock() {
-                supply.insert(symbol.clone(), total_supply);
+                supply.insert(symbol.clone(), 0);
             }
+            self.update_token_supply_snapshot(&symbol, 0);
 
             // Mint initial supply to creator
             let _ = self.mint_tokens(&creator, &symbol, total_supply);
@@ -295,6 +278,14 @@ impl TokenManager {
         }
     }
 
+    fn update_token_supply_snapshot(&self, token_symbol: &str, total_supply: u128) {
+        if let Ok(mut tokens) = self.tokens.lock() {
+            if let Some(token) = tokens.get_mut(token_symbol) {
+                token.total_supply = total_supply.to_string();
+            }
+        }
+    }
+
     pub fn mint_tokens(&self, to: &str, token_symbol: &str, amount: u64) -> Result<String, String> {
         if let Ok(tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get(token_symbol) {
@@ -302,10 +293,14 @@ impl TokenManager {
                     return Err("Token is not mintable".to_string());
                 }
 
-                if let Some(max_supply) = token.max_supply {
+                if let Some(max_supply) = token
+                    .max_supply
+                    .as_deref()
+                    .and_then(|value| value.parse::<u128>().ok())
+                {
                     if let Ok(supply) = self.total_supply.lock() {
                         let current_supply = supply.get(token_symbol).unwrap_or(&0);
-                        if *current_supply + amount > max_supply {
+                        if *current_supply + amount as u128 > max_supply {
                             return Err("Maximum supply exceeded".to_string());
                         }
                     }
@@ -314,7 +309,10 @@ impl TokenManager {
                 // Update total supply
                 if let Ok(mut supply) = self.total_supply.lock() {
                     let current = *supply.get(token_symbol).unwrap_or(&0);
-                    supply.insert(token_symbol.to_string(), current + amount);
+                    let new_total = current + amount as u128;
+                    supply.insert(token_symbol.to_string(), new_total);
+                    drop(supply);
+                    self.update_token_supply_snapshot(token_symbol, new_total);
                 }
 
                 // Update balance
@@ -363,7 +361,10 @@ impl TokenManager {
                 // Update total supply
                 if let Ok(mut supply) = self.total_supply.lock() {
                     let current = *supply.get(token_symbol).unwrap_or(&0);
-                    supply.insert(token_symbol.to_string(), current - amount);
+                    let new_total = current.saturating_sub(amount as u128);
+                    supply.insert(token_symbol.to_string(), new_total);
+                    drop(supply);
+                    self.update_token_supply_snapshot(token_symbol, new_total);
                 }
 
                 Ok(format!("Burned {} {} from {}", amount, token_symbol, from))

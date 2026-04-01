@@ -5,8 +5,8 @@
 id = 338639
 name = "Synergy Testnet Beta"
 p2p_port = 5620
-rpc_port = 5730
-ws_port = 5830
+rpc_port = 5640
+ws_port = 5660
 max_peers = 50
 bootnodes = []
 
@@ -41,9 +41,9 @@ max_files = 5
 
 [rpc]
 enable_http = true
-http_port = 5730
+http_port = 5640
 enable_ws = true
-ws_port = 5830
+ws_port = 5660
 enable_grpc = true
 grpc_port = 50051
 cors_enabled = true
@@ -56,7 +56,7 @@ listen_address = "0.0.0.0:5620"
 public_address = "bootnode1.synergynode.xyz:5620"
 node_name = "bootnode1-validator"
 enable_discovery = true
-discovery_port = 5930
+discovery_port = 5680
 heartbeat_interval = 30
 
 [storage]

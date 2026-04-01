@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Synergy Testnet Beta Reset Script
+# Synergy Testnet-Beta Reset Script
 # This script stops all node processes, resets the blockchain to block 0, and restarts testbeta
 
 set -e
@@ -63,7 +63,7 @@ kill_synergy_processes() {
 }
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}  Synergy Testnet Beta Reset Script${NC}"
+echo -e "${BLUE}  Synergy Testnet-Beta Reset Script${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
@@ -206,7 +206,7 @@ fi
 echo ""
 echo -e "${BLUE}Verifying blockchain state...${NC}"
 sleep 3
-BLOCK_HEIGHT=$(timeout 3 curl -s http://127.0.0.1:5730 -X POST -H "Content-Type: application/json" \
+BLOCK_HEIGHT=$(timeout 3 curl -s http://127.0.0.1:5640 -X POST -H "Content-Type: application/json" \
     -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' 2>/dev/null | \
     grep -o '"result":[0-9]*' | cut -d':' -f2 || true)
 

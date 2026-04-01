@@ -34,7 +34,6 @@ SUBDOMAINS=(
     "testbeta-evm-ws.synergy-network.io"
     "testbeta-api.synergy-network.io"
     "testbeta-explorer.synergy-network.io"
-    "testbeta-explorer-api.synergy-network.io"
     "testbeta-indexer.synergy-network.io"
     "testbeta-wallet-api.synergy-network.io"
     "testbeta-faucet.synergy-network.io"

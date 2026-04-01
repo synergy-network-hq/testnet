@@ -131,9 +131,9 @@ curl -X POST http://localhost:8545 \
 [network]
 name = "synergy-testnet-beta"
 chain_id = 338639
-p2p_port = 5630
-rpc_port = 5730
-ws_port = 5830
+p2p_port = 5622
+rpc_port = 5640
+ws_port = 5660
 
 [consensus]
 algorithm = "proof_of_synergy"
@@ -150,8 +150,8 @@ enable_console = true
 log_file = "data/logs/synergy-node.log"
 
 [rpc]
-http_port = 5730
-ws_port = 5830
+http_port = 5640
+ws_port = 5660
 max_connections = 100
 ```
 

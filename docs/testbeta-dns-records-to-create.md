@@ -1,16 +1,20 @@
-# Testbeta DNS Records To Create
+# Testbeta DNS Baseline and Remaining Actions
 
-This file lists the DNS records that still need to be created based on:
+This file is the frozen DNS baseline for `synergy-testnet-beta`.
 
-- the current `testbeta` hostnames referenced in this repository
-- the DNS inventory you provided on March 17, 2026
-- the decision to use exactly 3 bootnodes and 3 seed servers
+It reflects:
+
+- the canonical beta hostnames referenced by the live repo
+- the current DNS inventory for `synergy-network.io` and `synergynode.xyz`
+- the frozen bootstrap topology of exactly 3 bootnodes and 3 seed services
 
 ## Summary
 
-No additional `synergynode.xyz` records are required for bootstrap discovery.
+No additional launch-critical DNS records remain to be created.
 
-You already have the needed 3-host bootstrap set:
+The required beta records should now be treated as the frozen keep set. Remaining launch work is service deployment and endpoint verification, not creation of new names.
+
+The required 3-host bootstrap set is:
 
 - `bootnode1.synergynode.xyz`
 - `bootnode2.synergynode.xyz`
@@ -21,64 +25,58 @@ You already have the needed 3-host bootstrap set:
 - `_dnsaddr.bootstrap.synergynode.xyz` TXT records for bootnodes 1-3
 - `_synergy-seed._tcp.synergynode.xyz` SRV records for seeds 1-3
 
-The missing work is on `synergy-network.io`.
+The required beta surface on `synergy-network.io` is also part of the frozen keep set.
 
-## Records To Create Now
+## Canonical Beta Keep Set
 
-These are the records the canonical Testnet-Beta launch surfaces expect.
+These are the records the canonical Testnet-Beta launch surfaces expect to exist and remain stable.
 
-| Host | Type | Target | Why |
+| Host | Type | Target | Status |
 | --- | --- | --- | --- |
-| `testbeta-core-rpc.synergy-network.io` | `A` | `74.208.227.23` | Canonical public Testbeta RPC endpoint used by the control panel, Atlas backend, Atlas indexer, and node configs |
-| `testbeta-core-ws.synergy-network.io` | `A` | `74.208.227.23` | Canonical public Testbeta WebSocket endpoint used by node configs and generated peer metadata |
-| `testbeta-api.synergy-network.io` | `A` | `65.21.202.144` | Testbeta REST/API endpoint used by the control panel `.env.example` and cert scripts |
-| `testbeta-wallet-api.synergy-network.io` | `A` | `65.21.202.144` | Wallet API endpoint used by generated Testbeta peer metadata and control panel defaults |
-| `testbeta-faucet.synergy-network.io` | `A` | `65.21.202.144` | Faucet endpoint used in Testbeta environment defaults and SSL scripts |
-| `testbeta-sxcp-api.synergy-network.io` | `A` | `65.21.202.144` | SXCP API endpoint used by control panel defaults and generated Testbeta peer metadata |
-| `testbeta-sxcp-ws.synergy-network.io` | `A` | `65.21.202.144` | SXCP WebSocket endpoint used by control panel defaults |
-| `testbeta-synq-verify.synergy-network.io` | `A` | `65.21.202.144` | Verification endpoint used by control panel defaults and SSL scripts |
-| `testbeta-aegis-verify.synergy-network.io` | `A` | `65.21.202.144` | Default Aegis verify fallback used by the control panel runtime |
-| `testbeta-evm-rpc.synergy-network.io` | `A` | `65.21.202.144` | Included in Testbeta certificate-generation scripts |
-| `testbeta-evm-ws.synergy-network.io` | `A` | `65.21.202.144` | Included in Testbeta certificate-generation scripts |
-| `testbeta.synergy-network.io` | `A` | `65.21.202.144` | Binary/update manifest host used by `https://testbeta.synergy-network.io/binaries/latest.json` |
+| `testbeta-core-rpc.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public beta RPC endpoint |
+| `testbeta-core-ws.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public beta WebSocket endpoint |
+| `testbeta-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the canonical beta API endpoint |
+| `testbeta-wallet-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the wallet helper API endpoint |
+| `testbeta-faucet.synergy-network.io` | `A` | `65.21.202.144` | Keep as the faucet endpoint |
+| `testbeta-sxcp-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the SXCP API endpoint |
+| `testbeta-sxcp-ws.synergy-network.io` | `A` | `65.21.202.144` | Keep as the SXCP WebSocket endpoint |
+| `testbeta-synq-verify.synergy-network.io` | `A` | `65.21.202.144` | Keep as the SynQ verification endpoint |
+| `testbeta-aegis-verify.synergy-network.io` | `A` | `65.21.202.144` | Keep as the Aegis verification endpoint |
+| `testbeta-evm-rpc.synergy-network.io` | `A` | `65.21.202.144` | Keep as the compatibility EVM HTTP endpoint |
+| `testbeta-evm-ws.synergy-network.io` | `A` | `65.21.202.144` | Keep as the compatibility EVM WebSocket endpoint |
+| `testbeta.synergy-network.io` | `A` | `65.21.202.144` | Keep as the binary and update manifest host |
+| `testbeta-explorer.synergy-network.io` | `A` | `74.208.227.23` | Keep as the explorer UI hostname |
+| `testbeta-indexer.synergy-network.io` | `A` | `74.208.227.23` | Keep as the indexer host |
+| `testbeta-atlas-api.synergy-network.io` | `A` | `74.208.227.23` | Keep as the Atlas backend API hostname |
+| `testbeta-atlas.synergy-network.io` | `A` | `74.208.227.23` | Keep as the Atlas host alias |
 
-## Compatibility Aliases To Create
+## Compatibility Aliases
 
-These are not the canonical names anymore, but parts of the repo and operator scripts still reference them.
+No compatibility aliases are part of the frozen Testnet-Beta keep set.
 
-| Host | Type | Target | Why |
-| --- | --- | --- | --- |
-| `testbeta-rpc.synergy-network.io` | `CNAME` | `testbeta-core-rpc.synergy-network.io` | Compatibility alias only; canonical launch traffic stays on `testbeta-core-rpc` |
-| `testbeta-explorer-api.synergy-network.io` | `CNAME` | `testbeta-atlas-api.synergy-network.io` | SSL/cert scripts still reference this older explorer API alias |
+## Bootstrap Discovery Keep Set
 
-If your DNS provider does not support `CNAME` the way you want for these aliases, use `A` records pointing at the same IP as the canonical target instead:
+These records remain the approved bootstrap discovery surface:
 
-- `testbeta-rpc.synergy-network.io` -> `74.208.227.23`
-- `testbeta-explorer-api.synergy-network.io` -> `74.208.227.23`
+- `bootnode1.synergynode.xyz` -> `74.208.227.23`
+- `bootnode2.synergynode.xyz` -> `73.79.66.255`
+- `bootnode3.synergynode.xyz` -> `157.245.226.24`
+- `seed1.synergynode.xyz` -> `74.208.227.23`
+- `seed2.synergynode.xyz` -> `73.79.66.255`
+- `seed3.synergynode.xyz` -> `157.245.226.24`
+- `_dnsaddr.bootstrap.synergynode.xyz` TXT records pointing at `tcp/5620`
+- `_synergy-seed._tcp.synergynode.xyz` SRV records pointing at `5621`
 
-## Records Already Present
+## Remaining DNS Work
 
-Based on the DNS inventory you provided, these Testbeta records already exist and do not need to be created again:
+DNS work is now limited to:
 
-- `testbeta-explorer.synergy-network.io` -> `74.208.227.23`
-- `testbeta-indexer.synergy-network.io` -> `74.208.227.23`
-- `testbeta-atlas-api.synergy-network.io` -> `74.208.227.23`
-- `testbeta-atlas.synergy-network.io` -> `74.208.227.23`
-
-## Optional Cleanup
-
-These are not required for the current 3-node bootstrap plan:
-
-- `bootnode4.synergynode.xyz`
-- `seed4.synergynode.xyz`
-
-They can stay in DNS unused, but they should not be advertised in:
-
-- `_dnsaddr.bootstrap.synergynode.xyz`
-- `_synergy-seed._tcp.synergynode.xyz`
+- verifying every keep-set record resolves exactly as frozen
+- keeping retired and removed names out of certificates, docs, configs, and launch procedures
+- verifying the services behind these names are actually deployed and healthy
 
 ## Assumptions
 
-- `65.21.202.144` remains the host for the shared Testbeta RPC/API-style services because your existing `rpc`, `ws`, `api`, `devnet-core-rpc`, `devnet-core-ws`, `devnet-api`, `devnet-wallet-api`, `devnet-sxcp-api`, and related records already point there.
-- `74.208.227.23` remains the host for the explorer/indexer/Atlas services because your existing `explorer`, `devnet-explorer`, `devnet-indexer`, `devnet-atlas-api`, `testbeta-explorer`, `testbeta-indexer`, and `testbeta-atlas-api` records already point there.
+- `65.21.202.144` remains the host for the shared beta API, wallet, faucet, verification, SXCP, and compatibility EVM surfaces.
+- `74.208.227.23` remains the host for the core RPC, core WS, explorer, indexer, and Atlas surfaces.
 - `testbeta.synergy-network.io` should resolve to the machine serving `/var/www/synergy-portal/binaries`. If that is not `65.21.202.144` in your environment, change that one record to the correct binary host.

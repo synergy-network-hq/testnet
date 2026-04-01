@@ -8,7 +8,7 @@ OUT_DIR="$ROOT_DIR/testbeta/lean15/configs"
 NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/lean15/keys/node-addresses.csv"
 USE_HOST_OVERRIDES="false"
 TESTBETA_CHAIN_ID="${TESTBETA_CHAIN_ID:-338639}"
-TESTBETA_NETWORK_ID="${TESTBETA_NETWORK_ID:-synergy-testnet-beta}"
+TESTBETA_NETWORK_NAME="${TESTBETA_NETWORK_NAME:-synergy-testnet-beta}"
 TESTBETA_BLOCK_TIME_SECS="${TESTBETA_BLOCK_TIME_SECS:-2}"
 TESTBETA_EPOCH_LENGTH="${TESTBETA_EPOCH_LENGTH:-50}"
 TESTBETA_MIN_VALIDATORS="${TESTBETA_MIN_VALIDATORS:-4}"
@@ -251,8 +251,8 @@ while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_
 # Node Type: ${node_type}
 
 [network]
-id = ${TESTBETA_NETWORK_ID}
-name = "synergy-testnet-beta"
+id = ${TESTBETA_CHAIN_ID}
+name = "${TESTBETA_NETWORK_NAME}"
 p2p_port = ${p2p_port}
 rpc_port = ${rpc_port}
 ws_port = ${ws_port}

@@ -9,21 +9,21 @@ P2P_PORT="${BOOTSTRAP_P2P_PORT:-5620}"
 SEED_HTTP_PORT="${BOOTSTRAP_SEED_HTTP_PORT:-5621}"
 GENESIS_VALIDATOR_COUNT="${BOOTSTRAP_GENESIS_VALIDATOR_COUNT:-4}"
 
-BOOTNODE_RPC_PORT=5730
-BOOTNODE_WS_PORT=5830
+BOOTNODE_RPC_PORT=5640
+BOOTNODE_WS_PORT=5660
 BOOTNODE_GRPC_PORT=50051
-BOOTNODE_DISCOVERY_PORT=5930
+BOOTNODE_DISCOVERY_PORT=5680
 
 BOOTNODES=(
   "bootnode1|74.208.227.23"
   "bootnode2|73.79.66.255"
-  "bootnode3|64.227.107.57"
+  "bootnode3|157.245.226.240"
 )
 
 SEEDS=(
   "seed1|74.208.227.23"
   "seed2|73.79.66.255"
-  "seed3|64.227.107.57"
+  "seed3|157.245.226.240"
 )
 
 DARWIN_BINARY=""
@@ -110,7 +110,7 @@ write_bootnode_config() {
   cat > "$node_dir/config/node.toml" <<EOF
 [network]
 id = 338639
-name = "Synergy Testnet Beta"
+name = "Synergy Testnet-Beta"
 p2p_port = ${P2P_PORT}
 rpc_port = ${BOOTNODE_RPC_PORT}
 ws_port = ${BOOTNODE_WS_PORT}
@@ -477,7 +477,7 @@ ${name} bootstrap-only deployment bundle
 ======================================
 
 Purpose
-- Runs a Synergy Testnet Beta node in bootstrap-only mode.
+- Runs a Synergy Testnet-Beta node in bootstrap-only mode.
 - Discovery only: no validator self-registration, no consensus engine, no public RPC services.
 
 Endpoint
@@ -1233,10 +1233,10 @@ write_root_files() {
 | --- | --- | --- | --- |
 | bootnode1 | bootnode1.${DOMAIN} | 74.208.227.23 | ${P2P_PORT}/tcp |
 | bootnode2 | bootnode2.${DOMAIN} | 73.79.66.255 | ${P2P_PORT}/tcp |
-| bootnode3 | bootnode3.${DOMAIN} | 64.227.107.57 | ${P2P_PORT}/tcp |
+| bootnode3 | bootnode3.${DOMAIN} | 157.245.226.240 | ${P2P_PORT}/tcp |
 | seed1 | seed1.${DOMAIN} | 74.208.227.23 | ${SEED_HTTP_PORT}/tcp |
 | seed2 | seed2.${DOMAIN} | 73.79.66.255 | ${SEED_HTTP_PORT}/tcp |
-| seed3 | seed3.${DOMAIN} | 64.227.107.57 | ${SEED_HTTP_PORT}/tcp |
+| seed3 | seed3.${DOMAIN} | 157.245.226.240 | ${SEED_HTTP_PORT}/tcp |
 
 ## Port Freeze
 
@@ -1244,11 +1244,10 @@ write_root_files() {
 | --- | --- |
 | Bootnode listener | ${P2P_PORT}/tcp |
 | Seed-service listener | ${SEED_HTTP_PORT}/tcp |
-| Reserved conflict port | 5622 |
-| Slotted node P2P base | 5630 + port_slot |
-| Slotted node RPC base | 5730 + port_slot |
-| Slotted node WS base | 5830 + port_slot |
-| Slotted node discovery base | 5930 + port_slot |
+| Sequential node listener base | 5622 + node assignment |
+| Slotted node RPC base | 5640 + node assignment |
+| Slotted node WS base | 5660 + node assignment |
+| Slotted node discovery base | 5680 + node assignment |
 | Slotted node metrics base | 6030 + port_slot |
 
 ## Bootnode Deployment
@@ -1301,10 +1300,10 @@ EOF
 Required A records
 bootnode1.${DOMAIN} -> 74.208.227.23
 bootnode2.${DOMAIN} -> 73.79.66.255
-bootnode3.${DOMAIN} -> 64.227.107.57
+bootnode3.${DOMAIN} -> 157.245.226.240
 seed1.${DOMAIN} -> 74.208.227.23
 seed2.${DOMAIN} -> 73.79.66.255
-seed3.${DOMAIN} -> 64.227.107.57
+seed3.${DOMAIN} -> 157.245.226.240
 
 Required TXT records for bootnode discovery
 _dnsaddr.bootstrap.${DOMAIN} -> "dnsaddr=/dns/bootnode1.${DOMAIN}/tcp/${P2P_PORT}"

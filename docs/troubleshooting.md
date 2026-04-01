@@ -245,12 +245,12 @@ If this command hangs for more than a few seconds (our test timed out after 120s
 
 **Workaround**:
 
-1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:5730`. The repo already provides `scripts/reset-testbeta.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
+1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:5640`. The repo already provides `scripts/reset-testbeta.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
 2. Point the control panel at your node instead of the remote proxy. Set the environment overrides before starting the UI (or paste them into your `.env`):
 
 ```bash
-export SYNERGY_RPC_ENDPOINT=http://localhost:5730/rpc
-export SYNERGY_WS_ENDPOINT=ws://localhost:5830
+export SYNERGY_RPC_ENDPOINT=http://localhost:5640/rpc
+export SYNERGY_WS_ENDPOINT=ws://localhost:5660
 ```
 
 3. Restart the control panel after updating the variables so it reconnects to the local RPC.

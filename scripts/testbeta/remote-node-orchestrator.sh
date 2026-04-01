@@ -5,7 +5,6 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
 HOSTS_ENV_FILE="${SYNERGY_MONITOR_HOSTS_ENV:-$ROOT_DIR/testbeta/lean15/hosts.env}"
 INSTALLERS_DIR="$ROOT_DIR/testbeta/lean15/installers"
-WIREGUARD_CONFIGS_DIR="${SYNERGY_WIREGUARD_CONFIGS_DIR:-$ROOT_DIR/testbeta/lean15/wireguard/configs}"
 REMOTE_ROOT_DEFAULT="${SYNERGY_REMOTE_ROOT:-/opt/synergy}"
 REMOTE_EXPORTS_DIR="$ROOT_DIR/testbeta/lean15/reports/remote-exports"
 
@@ -16,7 +15,7 @@ Usage: $0 <machine-id> <operation>
 Operations:
   install_node          Copy installer bundle to remote machine
   setup_node            Deploy installer bundle and run install_and_start.sh
-  bootstrap_node        install_node + wireguard_install + wireguard_connect + start
+  bootstrap_node        Deploy installer bundle and run install_and_start.sh
   reset_chain           Stop node, delete local chain state, restart from genesis
   start                 nodectl start
   stop                  nodectl stop
@@ -26,11 +25,6 @@ Operations:
   export_logs           Download logs archive from remote machine to local reports dir
   view_chain_data       Show chain data size and top files on remote machine
   export_chain_data     Download chain data archive from remote machine to local reports dir
-  wireguard_install     Install wireguard tooling on remote machine (best-effort)
-  wireguard_connect     Upload WireGuard config and bring tunnel up
-  wireguard_disconnect  Bring tunnel down
-  wireguard_status      Show wireguard tunnel status
-  wireguard_restart     Reapply WireGuard config (down/up)
   info                  Print resolved host/ssh/paths for this machine
 
 Required local files:
@@ -38,8 +32,6 @@ Required local files:
   - testbeta/lean15/hosts.env
   - testbeta/lean15/installers/<machine-id>/
 
-WireGuard operation requires:
-  - testbeta/lean15/wireguard/configs/<machine-id>.conf
 USAGE
 }
 
@@ -83,9 +75,6 @@ SSH_USER_VAR="${MACHINE_KEY_UPPER}_SSH_USER"
 SSH_PORT_VAR="${MACHINE_KEY_UPPER}_SSH_PORT"
 SSH_KEY_VAR="${MACHINE_KEY_UPPER}_SSH_KEY"
 REMOTE_DIR_VAR="${MACHINE_KEY_UPPER}_REMOTE_DIR"
-WG_INTERFACE_VAR="${MACHINE_KEY_UPPER}_WG_INTERFACE"
-WG_REMOTE_CONF_VAR="${MACHINE_KEY_UPPER}_WG_REMOTE_CONF"
-
 HOST="$(resolve_var "$HOST_VAR")"
 if [[ -z "$HOST" ]]; then
   HOST="$(inventory_host)"
@@ -112,16 +101,6 @@ fi
 REMOTE_NODE_DIR="$(resolve_var "$REMOTE_DIR_VAR")"
 if [[ -z "$REMOTE_NODE_DIR" ]]; then
   REMOTE_NODE_DIR="$REMOTE_ROOT_DEFAULT/$MACHINE_ID"
-fi
-
-WG_INTERFACE="$(resolve_var "$WG_INTERFACE_VAR")"
-if [[ -z "$WG_INTERFACE" ]]; then
-  WG_INTERFACE="${SYNERGY_TESTBETA_WG_INTERFACE:-wg0}"
-fi
-
-WG_REMOTE_CONF="$(resolve_var "$WG_REMOTE_CONF_VAR")"
-if [[ -z "$WG_REMOTE_CONF" ]]; then
-  WG_REMOTE_CONF="${SYNERGY_TESTBETA_WG_REMOTE_CONF:-/etc/wireguard/${WG_INTERFACE}.conf}"
 fi
 
 if [[ -z "$HOST" ]]; then
@@ -200,7 +179,6 @@ fi
 
 REMOTE_TARGET="${SSH_USER}@${HOST}"
 INSTALLER_DIR="$INSTALLERS_DIR/$MACHINE_ID"
-WG_CONFIG_FILE="$WIREGUARD_CONFIGS_DIR/$MACHINE_ID.conf"
 
 remote_run_script() {
   local script="$1"
@@ -209,44 +187,6 @@ remote_run_script() {
   else
     ssh "${SSH_ARGS[@]}" "$REMOTE_TARGET" "bash -s" <<<"$script"
   fi
-}
-
-resolve_remote_wireguard_interface() {
-  local desired_interface="$1"
-  local resolved_interface
-
-  resolved_interface="$(
-    remote_run_script "
-set -euo pipefail
-desired='$desired_interface'
-if ! command -v wg >/dev/null 2>&1; then
-  printf '%s\n' \"\$desired\"
-  exit 0
-fi
-interfaces=\$(wg show interfaces 2>/dev/null || true)
-if [[ -z \"\$interfaces\" ]]; then
-  if [[ \"\$desired\" == \"synergy-testbeta\" ]]; then
-    printf 'wg0\n'
-  else
-    printf '%s\n' \"\$desired\"
-  fi
-  exit 0
-fi
-if printf '%s' \"\$interfaces\" | tr ' ' '\n' | grep -Fxq \"\$desired\"; then
-  printf '%s\n' \"\$desired\"
-elif printf '%s' \"\$interfaces\" | tr ' ' '\n' | grep -Fxq 'wg0'; then
-  printf 'wg0\n'
-else
-  printf '%s\n' \"\$(printf '%s' \"\$interfaces\" | tr ' ' '\n' | sed '/^$/d' | head -n1)\"
-fi
-" 2>/dev/null | tr -d '\r' | tail -n1
-  )"
-
-  if [[ -z "$resolved_interface" ]]; then
-    resolved_interface="$desired_interface"
-  fi
-
-  printf '%s' "$resolved_interface"
 }
 
 copy_to_remote() {
@@ -323,107 +263,6 @@ echo 'Cleared chain data for $MACHINE_ID in $REMOTE_NODE_DIR'
 
   run_nodectl "start"
   run_nodectl "status" || true
-}
-
-wireguard_install() {
-  remote_run_script "
-set -euo pipefail
-if command -v wg >/dev/null 2>&1 && command -v wg-quick >/dev/null 2>&1; then
-  echo 'WireGuard tools already installed.'
-  exit 0
-fi
-if command -v apt-get >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then sudo apt-get update -y && sudo apt-get install -y wireguard wireguard-tools; else apt-get update -y && apt-get install -y wireguard wireguard-tools; fi
-elif command -v dnf >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then sudo dnf install -y wireguard-tools; else dnf install -y wireguard-tools; fi
-elif command -v yum >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then sudo yum install -y wireguard-tools; else yum install -y wireguard-tools; fi
-elif command -v pacman >/dev/null 2>&1; then
-  if command -v sudo >/dev/null 2>&1; then sudo pacman -Sy --noconfirm wireguard-tools; else pacman -Sy --noconfirm wireguard-tools; fi
-elif command -v brew >/dev/null 2>&1; then
-  brew list wireguard-tools >/dev/null 2>&1 || brew install wireguard-tools
-else
-  echo 'Unable to install wireguard-tools automatically (unsupported package manager).' >&2
-  exit 1
-fi
-"
-}
-
-wireguard_connect() {
-  if [[ ! -f "$WG_CONFIG_FILE" ]]; then
-    echo "WireGuard config missing: $WG_CONFIG_FILE" >&2
-    echo "Run scripts/testbeta/generate-wireguard-mesh.sh first." >&2
-    exit 1
-  fi
-
-  local wg_interface_effective
-  wg_interface_effective="$(resolve_remote_wireguard_interface "$WG_INTERFACE")"
-  local wg_remote_conf_effective="$WG_REMOTE_CONF"
-  if [[ "$WG_REMOTE_CONF" == "/etc/wireguard/${WG_INTERFACE}.conf" ]]; then
-    wg_remote_conf_effective="/etc/wireguard/${wg_interface_effective}.conf"
-  fi
-
-  local remote_tmp_conf
-  remote_tmp_conf="/tmp/${MACHINE_ID}-${wg_interface_effective}.conf"
-  copy_to_remote "$WG_CONFIG_FILE" "$remote_tmp_conf"
-
-  remote_run_script "
-set -euo pipefail
-if ! command -v wg-quick >/dev/null 2>&1; then
-  echo 'wg-quick is not available. Run wireguard_install first.' >&2
-  exit 1
-fi
-if command -v sudo >/dev/null 2>&1; then
-  sudo mkdir -p /etc/wireguard
-  sudo install -m 600 '$remote_tmp_conf' '$wg_remote_conf_effective'
-  sudo wg-quick down '$wg_interface_effective' >/dev/null 2>&1 || true
-  sudo wg-quick up '$wg_interface_effective'
-  sudo wg show '$wg_interface_effective' || true
-else
-  mkdir -p /etc/wireguard
-  install -m 600 '$remote_tmp_conf' '$wg_remote_conf_effective'
-  wg-quick down '$wg_interface_effective' >/dev/null 2>&1 || true
-  wg-quick up '$wg_interface_effective'
-  wg show '$wg_interface_effective' || true
-fi
-rm -f '$remote_tmp_conf'
-"
-
-  WG_INTERFACE="$wg_interface_effective"
-  WG_REMOTE_CONF="$wg_remote_conf_effective"
-}
-
-wireguard_disconnect() {
-  local wg_interface_effective
-  wg_interface_effective="$(resolve_remote_wireguard_interface "$WG_INTERFACE")"
-
-  remote_run_script "
-set -euo pipefail
-if command -v sudo >/dev/null 2>&1; then
-  sudo wg-quick down '$wg_interface_effective' >/dev/null 2>&1 || true
-else
-  wg-quick down '$wg_interface_effective' >/dev/null 2>&1 || true
-fi
-echo 'WireGuard interface $wg_interface_effective is down.'
-"
-
-  WG_INTERFACE="$wg_interface_effective"
-}
-
-wireguard_status() {
-  local wg_interface_effective
-  wg_interface_effective="$(resolve_remote_wireguard_interface "$WG_INTERFACE")"
-
-  remote_run_script "
-set -euo pipefail
-if command -v sudo >/dev/null 2>&1; then
-  sudo wg show '$wg_interface_effective' || true
-else
-  wg show '$wg_interface_effective' || true
-fi
-"
-
-  WG_INTERFACE="$wg_interface_effective"
 }
 
 export_logs() {
@@ -504,10 +343,7 @@ SSH user:           $SSH_USER
 SSH port:           $SSH_PORT
 SSH key:            ${SSH_KEY:-default-agent}
 Remote node dir:    $REMOTE_NODE_DIR
-WireGuard iface:    $WG_INTERFACE
-WireGuard conf dst: $WG_REMOTE_CONF
 Installer source:   $INSTALLER_DIR
-WireGuard source:   $WG_CONFIG_FILE
 INFO
 }
 
@@ -521,9 +357,7 @@ case "$OPERATION" in
     ;;
   bootstrap_node)
     deploy_installer_bundle
-    wireguard_install
-    wireguard_connect
-    run_nodectl "start"
+    remote_run_script "set -euo pipefail; cd '$REMOTE_NODE_DIR'; ./install_and_start.sh"
     ;;
   reset_chain)
     reset_chain
@@ -551,22 +385,6 @@ case "$OPERATION" in
     ;;
   export_chain_data)
     export_chain_data
-    ;;
-  wireguard_install)
-    wireguard_install
-    ;;
-  wireguard_connect)
-    wireguard_connect
-    ;;
-  wireguard_disconnect)
-    wireguard_disconnect
-    ;;
-  wireguard_status)
-    wireguard_status
-    ;;
-  wireguard_restart)
-    wireguard_disconnect
-    wireguard_connect
     ;;
   info)
     show_info

@@ -58,7 +58,7 @@ AMOY_RPC_URL=https://polygon-amoy.g.alchemy.com/v2/YOUR_KEY
 AMOY_WS_URL=wss://polygon-amoy.g.alchemy.com/v2/YOUR_KEY
 
 # Synergy Testnet-Beta
-SYNERGY_RPC_URL=http://127.0.0.1:5730
+SYNERGY_RPC_URL=http://127.0.0.1:5640
 
 # Relayer Identity
 RELAYER_ADDRESS=0x...

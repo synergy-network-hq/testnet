@@ -60,7 +60,6 @@ ALL_DOMAINS=(
     "testbeta-evm-ws.synergy-network.io"
     "testbeta-api.synergy-network.io"
     "testbeta-explorer.synergy-network.io"
-    "testbeta-explorer-api.synergy-network.io"
     "testbeta-indexer.synergy-network.io"
     "testbeta-atlas-api.synergy-network.io"
     "testbeta.synergy-network.io"

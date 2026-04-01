@@ -6,7 +6,9 @@ use std::path::PathBuf;
 /// Initializes and returns the blockchain with a genesis block.
 pub fn initialize_blockchain() -> BlockChain {
     let mut chain = BlockChain::new();
-    chain.genesis();
+    chain
+        .genesis()
+        .expect("failed to initialize blockchain from canonical genesis");
     chain
 }
 

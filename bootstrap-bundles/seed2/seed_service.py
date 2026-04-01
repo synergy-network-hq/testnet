@@ -17,6 +17,8 @@ PEER_PATH = BASE_DIR / "data" / "peers.json"
 PEER_LOCK = threading.Lock()
 STATE = {"generated_at": None, "bootnodes": [], "peers": [], "peer_updated_at": None}
 
+PEER_TTL_SECONDS = 300
+
 
 def load_config():
     return json.loads(CONFIG_PATH.read_text())
@@ -137,26 +139,62 @@ def normalize_peer_payload(payload):
     }
 
 
+def is_peer_expired(peer, now=None):
+    if now is None:
+        now = int(time.time())
+    updated_at = parse_int(peer.get("updated_at"))
+    if updated_at is None:
+        return True
+    return (now - updated_at) > PEER_TTL_SECONDS
+
+
+def evict_expired_peers(peers):
+    now = int(time.time())
+    return [peer for peer in peers if not is_peer_expired(peer, now)]
+
+
 def merge_peer(peers, incoming):
-    key = incoming.get("node_id") or incoming.get("dial")
+    dial = incoming.get("dial")
+    node_id = incoming.get("node_id")
+
     for idx, peer in enumerate(peers):
-        peer_key = peer.get("node_id") or peer.get("dial")
-        if peer_key == key:
+        if dial and peer.get("dial") == dial:
             merged = dict(peer)
             merged.update(incoming)
             peers[idx] = merged
             return peers
+
+    if node_id:
+        for idx, peer in enumerate(peers):
+            if peer.get("node_id") == node_id:
+                merged = dict(peer)
+                merged.update(incoming)
+                peers[idx] = merged
+                return peers
+
     peers.append(incoming)
     return peers
 
 
 def dedupe_peer_records(records):
+    seen_dials = {}
     peers = []
     for entry in records:
         normalized = normalize_peer_payload(entry)
         if not normalized:
             continue
-        peers = merge_peer(peers, normalized)
+        dial = normalized.get("dial")
+        if not dial:
+            continue
+        if dial in seen_dials:
+            existing_idx = seen_dials[dial]
+            existing_updated = parse_int(peers[existing_idx].get("updated_at")) or 0
+            incoming_updated = parse_int(normalized.get("updated_at")) or 0
+            if incoming_updated >= existing_updated:
+                peers[existing_idx] = normalized
+            continue
+        seen_dials[dial] = len(peers)
+        peers.append(normalized)
     return peers
 
 
@@ -219,7 +257,8 @@ def rebuild_state(config):
     STATE["generated_at"] = int(time.time())
     STATE["bootnodes"] = snapshot
     with PEER_LOCK:
-        peers = load_peers()
+        peers = evict_expired_peers(load_peers())
+        save_peers(peers)
         STATE["peers"] = peers
         STATE["peer_updated_at"] = int(time.time())
 
@@ -260,6 +299,36 @@ class Handler(BaseHTTPRequestHandler):
             }
         )
 
+    def _deregister_peer(self, config, payload):
+        node_id = payload.get("node_id")
+        dial = payload.get("dial")
+        if not node_id and not dial:
+            self._send_json({"error": "node_id or dial required"}, status=400)
+            return
+
+        with PEER_LOCK:
+            peers = load_peers()
+            before_count = len(peers)
+            remaining = []
+            for peer in peers:
+                if node_id and peer.get("node_id") == node_id:
+                    continue
+                if dial and peer.get("dial") == dial:
+                    continue
+                remaining.append(peer)
+            save_peers(remaining)
+            STATE["peers"] = dedupe_peer_records(remaining)
+            STATE["peer_updated_at"] = int(time.time())
+
+        removed = before_count - len(remaining)
+        self._send_json(
+            {
+                "ok": True,
+                "removed": removed,
+                "remaining": len(remaining),
+            }
+        )
+
     def log_message(self, fmt, *args):
         return
 
@@ -278,6 +347,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/peer-list.json":
+            live_peers = evict_expired_peers(STATE["peers"])
             self._send_json(
                 {
                     "service": config["service_name"],
@@ -285,7 +355,7 @@ class Handler(BaseHTTPRequestHandler):
                     "generated_at": STATE["generated_at"],
                     "bootnodes": STATE["bootnodes"],
                     "seed_services": config["seed_services"],
-                    "peers": peer_dials(STATE["peers"]),
+                    "peers": peer_dials(live_peers),
                     "dnsaddr_bootstrap": [
                         f"dnsaddr=/dns/{entry['hostname']}/tcp/{entry['port']}"
                         for entry in config["bootnodes"]
@@ -308,12 +378,14 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/peers":
+            live_peers = evict_expired_peers(STATE["peers"])
             self._send_json(
                 {
                     "service": config["service_name"],
                     "generated_at": STATE["generated_at"],
                     "peer_updated_at": STATE["peer_updated_at"],
-                    "peers": dedupe_peer_records(STATE["peers"]),
+                    "peer_ttl_seconds": PEER_TTL_SECONDS,
+                    "peers": dedupe_peer_records(live_peers),
                 }
             )
             return
@@ -325,6 +397,19 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         if path in {"/peers/clear", "/admin/peers/clear"}:
             self._clear_registered_peers(config)
+            return
+
+        if path == "/peers/deregister":
+            length = int(self.headers.get("Content-Length", 0) or 0)
+            if length <= 0:
+                self._send_json({"error": "missing_body"}, status=400)
+                return
+            try:
+                payload = json.loads(self.rfile.read(length))
+            except json.JSONDecodeError:
+                self._send_json({"error": "invalid_json"}, status=400)
+                return
+            self._deregister_peer(config, payload)
             return
 
         if path != "/peers/register":
@@ -345,11 +430,12 @@ class Handler(BaseHTTPRequestHandler):
         registrations = payload if isinstance(payload, list) else [payload]
         updated = 0
         with PEER_LOCK:
-            peers = load_peers()
+            peers = evict_expired_peers(load_peers())
             for entry in registrations:
                 normalized = normalize_peer_payload(entry)
                 if not normalized:
                     continue
+                normalized["updated_at"] = int(time.time())
                 peers = merge_peer(peers, normalized)
                 updated += 1
             save_peers(peers)

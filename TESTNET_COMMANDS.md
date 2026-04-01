@@ -6,10 +6,10 @@
 |---|---:|---:|---:|---:|
 | Bootnode P2P | 5620 | 5620 | 5620 | 5620 |
 | Seed HTTP | 5621 | 5621 | 5621 | 5621 |
-| Validator / Service P2P | 5630 + slot | 5630 | 5631 | 5632 |
-| RPC (HTTP) | 5730 + slot | 5730 | 5731 | 5732 |
-| WebSocket | 5830 + slot | 5830 | 5831 | 5832 |
-| Discovery | 5930 + slot | 5930 | 5931 | 5932 |
+| Validator / Service P2P | 5622 + slot | 5622 | 5631 | 5632 |
+| RPC (HTTP) | 5640 + slot | 5640 | 5731 | 5732 |
+| WebSocket | 5660 + slot | 5660 | 5831 | 5832 |
+| Discovery | 5680 + slot | 5680 | 5931 | 5932 |
 | Metrics | 6030 + slot | 6030 | 6031 | 6032 |
 
 ## Canonical Public Endpoints
@@ -20,7 +20,6 @@ wss://testbeta-core-ws.synergy-network.io
 https://testbeta-api.synergy-network.io
 https://testbeta-explorer.synergy-network.io
 https://testbeta-atlas-api.synergy-network.io
-https://testbeta-rpc.synergy-network.io
 ```
 
 ## Bootnodes
@@ -59,33 +58,33 @@ kill -0 "$(cat ~/bootnode1/data/node.pid)" && echo "running" || echo "dead"
 ## Local Listener Checks
 
 ```bash
-lsof -iTCP:5630 -sTCP:LISTEN
-lsof -iTCP:5730 -sTCP:LISTEN
-lsof -iTCP:5830 -sTCP:LISTEN
+lsof -iTCP:5622 -sTCP:LISTEN
+lsof -iTCP:5640 -sTCP:LISTEN
+lsof -iTCP:5660 -sTCP:LISTEN
 lsof -iTCP:6030 -sTCP:LISTEN
 
-ss -tlnp | grep -E '5620|5621|5630|5730|5830|5930|6030'
-netstat -an | grep -E '5620|5621|5630|5730|5830|5930|6030'
+ss -tlnp | grep -E '5620|5621|5622|5640|5660|5680|6030'
+netstat -an | grep -E '5620|5621|5622|5640|5660|5680|6030'
 ```
 
 ## Local RPC
 
 ```bash
-curl -s http://127.0.0.1:5730/health
+curl -s http://127.0.0.1:5640/health
 
-curl -s -X POST http://127.0.0.1:5730 \
+curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}'
 
-curl -s -X POST http://127.0.0.1:5730 \
+curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_getLatestBlock","params":[],"id":1}'
 
-curl -s -X POST http://127.0.0.1:5730 \
+curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_getPeerInfo","params":[],"id":1}'
 
-curl -s -X POST http://127.0.0.1:5730 \
+curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}'
 ```
@@ -93,7 +92,7 @@ curl -s -X POST http://127.0.0.1:5730 \
 ## Public RPC Comparison
 
 ```bash
-LOCAL=$(curl -s -X POST http://127.0.0.1:5730 \
+LOCAL=$(curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
   | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
@@ -119,7 +118,7 @@ curl -s http://seed1.synergynode.xyz:5621/dns/bootstrap.txt
 
 curl -s -X POST http://seed1.synergynode.xyz:5621/peers/register \
   -H 'Content-Type: application/json' \
-  -d '{"endpoint":"<your_public_ip>:5630","node_id":"<your_node_id>"}'
+  -d '{"endpoint":"<your_public_ip>:5622","node_id":"<your_node_id>"}'
 ```
 
 ## Bootnode Connectivity
@@ -141,15 +140,15 @@ timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergynode.xyz/5620' && echo "open"
 ```bash
 curl -s https://api.ipify.org
 
-nc -zv <your_public_ip> 5630
-ss -tlnp | grep 5730
+nc -zv <your_public_ip> 5622
+ss -tlnp | grep 5640
 
 curl -s https://portchecker.io/api/port-checker \
   -H 'Content-Type: application/json' \
-  -d "{\"host\":\"$(curl -s https://api.ipify.org)\",\"ports\":[5630]}"
+  -d "{\"host\":\"$(curl -s https://api.ipify.org)\",\"ports\":[5622]}"
 
-sudo iptables -L INPUT -n | grep 5630
-sudo ufw status | grep 5630
+sudo iptables -L INPUT -n | grep 5622
+sudo ufw status | grep 5622
 ```
 
 ## Metrics
@@ -185,11 +184,11 @@ curl -s http://seed1.synergynode.xyz:5621/peer-list.json | python3 -m json.tool
 
 ```bash
 echo "=== Process ===" && pgrep -la synergy-testbeta || echo "NOT RUNNING"
-echo "=== P2P ===" && lsof -iTCP:5630 -sTCP:LISTEN || echo "NOT LISTENING"
-echo "=== RPC ===" && lsof -iTCP:5730 -sTCP:LISTEN || echo "NOT LISTENING"
+echo "=== P2P ===" && lsof -iTCP:5622 -sTCP:LISTEN || echo "NOT LISTENING"
+echo "=== RPC ===" && lsof -iTCP:5640 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== Metrics ===" && lsof -iTCP:6030 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== Seed Health ===" && curl -s http://seed1.synergynode.xyz:5621/healthz
-echo "=== Latest Block ===" && curl -s -X POST http://127.0.0.1:5730 \
+echo "=== Latest Block ===" && curl -s -X POST http://127.0.0.1:5640 \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_getLatestBlock","params":[],"id":1}'
 ```

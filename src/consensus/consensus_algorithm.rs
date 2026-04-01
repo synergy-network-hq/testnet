@@ -7,6 +7,7 @@ use super::synergy_score::SynergyScoreCalculator;
 use super::vrf::{VRFConsensus, VRFSeed};
 use crate::block::{Block, BlockChain};
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
+use crate::genesis::canonical_genesis;
 use crate::rpc::rpc_server::{SHARED_CHAIN, TX_POOL};
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
@@ -808,171 +809,53 @@ impl ProofOfSynergy {
 
     fn initialize_genesis_validators(validator_manager: &Arc<ValidatorManager>) {
         println!("🔧 INITIALIZE_GENESIS_VALIDATORS CALLED - START");
-        println!("🔧 validator_manager initialized successfully");
-        // Load genesis validators from genesis.json
-        if let Ok(genesis_content) = std::fs::read_to_string("config/genesis.json") {
-            println!("🔧 Successfully read genesis.json");
-            if let Ok(genesis) = serde_json::from_str::<serde_json::Value>(&genesis_content) {
-                let mut allocation_stakes: HashMap<String, u64> = HashMap::new();
-                if let Some(allocations) = genesis["genesis_allocations"].as_array() {
-                    for allocation in allocations {
-                        if let (Some(address), Some(stake_str)) =
-                            (allocation["address"].as_str(), allocation["stake"].as_str())
-                        {
-                            if let Ok(stake_amount) = stake_str.parse::<u64>() {
-                                allocation_stakes.insert(address.to_string(), stake_amount);
-                            }
-                        }
-                    }
-                }
+        match canonical_genesis() {
+            Ok(genesis) => {
+                println!(
+                    "🔧 Found {} canonical genesis validators",
+                    genesis.validators().len()
+                );
+                for validator in genesis.validators() {
+                    let address = validator.operator_address.as_str();
+                    let registration = crate::validator::ValidatorRegistration {
+                        address: validator.operator_address.clone(),
+                        public_key: validator.consensus_public_key.clone(),
+                        name: validator.moniker.clone(),
+                        stake_amount: validator.stake_nwei,
+                        submitted_at: Self::current_timestamp(),
+                        registration_tx_hash: "genesis".to_string(),
+                    };
 
-                if let Some(validator_array) = genesis["validators"].as_array() {
-                    println!(
-                        "🔧 Found {} genesis validators in genesis.json",
-                        validator_array.len()
-                    );
-                    for (i, validator_data) in validator_array.iter().enumerate() {
-                        if let (Some(address), Some(pubkey_file)) = (
-                            validator_data["address"].as_str(),
-                            validator_data["public_key_file"].as_str(),
-                        ) {
-                            println!("🔧 Registering genesis validator: {}", address);
-
-                            // Read the public key from the specified file
-                            let public_key =
-                                if let Ok(key_content) = std::fs::read_to_string(pubkey_file) {
-                                    if let Ok(key_json) =
-                                        serde_json::from_str::<serde_json::Value>(&key_content)
-                                    {
-                                        key_json["public_key"]
-                                            .as_str()
-                                            .unwrap_or("genesis_key")
-                                            .to_string()
-                                    } else {
-                                        "genesis_key".to_string()
-                                    }
-                                } else {
-                                    "genesis_key".to_string()
-                                };
-
-                            let stake_amount = allocation_stakes
-                                .get(address)
-                                .cloned()
-                                .or_else(|| {
-                                    validator_data["stake"]
-                                        .as_str()
-                                        .and_then(|s| s.parse::<u64>().ok())
-                                })
-                                .unwrap_or(1000);
-
-                            // Get validator name from details
-                            let validator_name =
-                                if let Some(details) = validator_data["details"].as_object() {
-                                    details["name"]
-                                        .as_str()
-                                        .unwrap_or("Genesis Validator")
-                                        .to_string()
-                                } else {
-                                    format!("Genesis Validator {}", i + 1)
-                                };
-
-                            let registration = crate::validator::ValidatorRegistration {
-                                address: address.to_string(),
-                                public_key,
-                                name: validator_name,
-                                stake_amount,
-                                submitted_at: Self::current_timestamp(),
-                                registration_tx_hash: "genesis".to_string(),
-                            };
-
-                            if let Err(e) = validator_manager.register_validator(registration) {
-                                println!(
-                                    "⚠️ Failed to register genesis validator {}: {}",
-                                    address, e
-                                );
-                            } else {
-                                // Auto-approve genesis validators
-                                if let Err(e) = validator_manager.approve_validator(address) {
+                    if validator_manager.get_validator(address).is_none() {
+                        match validator_manager.register_validator(registration) {
+                            Ok(_) => {
+                                if let Err(error) = validator_manager.approve_validator(address) {
                                     println!(
                                         "⚠️ Failed to approve genesis validator {}: {}",
-                                        address, e
+                                        address, error
                                     );
-                                } else {
-                                    println!(
-                                        "✅ Genesis validator {} registered and approved",
-                                        address
-                                    );
-
-                                    // First, ensure the validator has the required SNRG balance
-                                    let token_manager = TOKEN_MANAGER.clone();
-
-                                    // Check if the validator already has a balance from genesis distribution
-                                    let current_balance =
-                                        token_manager.get_balance(address, "SNRG");
-                                    println!(
-                                        "🔍 Genesis validator {} current SNRG balance: {}",
-                                        address, current_balance
-                                    );
-
-                                    if current_balance >= stake_amount {
-                                        println!("✅ Genesis validator {} already has sufficient balance: {} SNRG", address, current_balance);
-
-                                        // Now stake the validator's tokens to themselves
-                                        let stake_result = token_manager.stake_tokens(
-                                            address,
-                                            address,
-                                            "SNRG",
-                                            stake_amount,
-                                        );
-
-                                        if stake_result.is_ok() {
-                                            println!(
-                                                "✅ Genesis validator {} staked {} SNRG",
-                                                address, stake_amount
-                                            );
-                                        } else {
-                                            println!("⚠️ Failed to stake tokens for genesis validator {}: {:?}", address, stake_result);
-                                        }
-                                    } else {
-                                        println!("⚠️ Genesis validator {} has insufficient balance: {} SNRG (needs {}), minting required tokens", address, current_balance, stake_amount);
-
-                                        // Mint the required tokens to the validator
-                                        let mint_result = token_manager.mint_tokens(
-                                            address,
-                                            "SNRG",
-                                            stake_amount,
-                                        );
-                                        if mint_result.is_ok() {
-                                            println!(
-                                                "✅ Minted {} SNRG to genesis validator {}",
-                                                stake_amount, address
-                                            );
-
-                                            // Now stake the validator's tokens to themselves
-                                            let stake_result = token_manager.stake_tokens(
-                                                address,
-                                                address,
-                                                "SNRG",
-                                                stake_amount,
-                                            );
-
-                                            if stake_result.is_ok() {
-                                                println!(
-                                                    "✅ Genesis validator {} staked {} SNRG",
-                                                    address, stake_amount
-                                                );
-                                            } else {
-                                                println!("⚠️ Failed to stake tokens for genesis validator {}: {:?}", address, stake_result);
-                                            }
-                                        } else {
-                                            println!("⚠️ Failed to mint tokens for genesis validator {}: {:?}", address, mint_result);
-                                        }
-                                    }
+                                    continue;
                                 }
+                                println!(
+                                    "✅ Genesis validator {} registered and approved",
+                                    address
+                                );
+                            }
+                            Err(error) => {
+                                println!(
+                                    "⚠️ Failed to register genesis validator {}: {}",
+                                    address, error
+                                );
+                                continue;
                             }
                         }
                     }
+
+                    validator_manager.update_validator_stake(address, validator.stake_nwei);
                 }
+            }
+            Err(error) => {
+                println!("⚠️ Failed to load canonical genesis validators: {}", error);
             }
         }
         println!("🔧 INITIALIZE_GENESIS_VALIDATORS CALLED - END");
@@ -980,146 +863,52 @@ impl ProofOfSynergy {
 
     fn ensure_genesis_validator_stakes(validator_manager: &Arc<ValidatorManager>) {
         println!("🔧 ENSURING_GENESIS_VALIDATOR_STAKES - START");
-        let token_manager = TOKEN_MANAGER.clone();
+        match canonical_genesis() {
+            Ok(genesis) => {
+                for validator in genesis.validators() {
+                    let address = validator.operator_address.as_str();
+                    if validator_manager.get_validator(address).is_none() {
+                        let registration = crate::validator::ValidatorRegistration {
+                            address: validator.operator_address.clone(),
+                            public_key: validator.consensus_public_key.clone(),
+                            name: validator.moniker.clone(),
+                            stake_amount: validator.stake_nwei,
+                            submitted_at: Self::current_timestamp(),
+                            registration_tx_hash: "genesis".to_string(),
+                        };
 
-        // Load genesis validators from genesis.json
-        if let Ok(genesis_content) = std::fs::read_to_string("config/genesis.json") {
-            if let Ok(genesis) = serde_json::from_str::<serde_json::Value>(&genesis_content) {
-                let mut allocation_stakes: HashMap<String, u64> = HashMap::new();
-                if let Some(allocations) = genesis["genesis_allocations"].as_array() {
-                    for allocation in allocations {
-                        if let (Some(address), Some(stake_str)) =
-                            (allocation["address"].as_str(), allocation["stake"].as_str())
-                        {
-                            if let Ok(stake_amount) = stake_str.parse::<u64>() {
-                                allocation_stakes.insert(address.to_string(), stake_amount);
-                            }
-                        }
-                    }
-                }
-
-                if let Some(validator_array) = genesis["validators"].as_array() {
-                    println!(
-                        "🔧 Found {} genesis validators in genesis.json",
-                        validator_array.len()
-                    );
-
-                    for (i, validator_data) in validator_array.iter().enumerate() {
-                        if let Some(address) = validator_data["address"].as_str() {
-                            let stake_amount = allocation_stakes
-                                .get(address)
-                                .cloned()
-                                .or_else(|| {
-                                    validator_data["stake"]
-                                        .as_str()
-                                        .and_then(|s| s.parse::<u64>().ok())
-                                })
-                                .unwrap_or(1000);
-
-                            // If this genesis validator is not yet in the registry (e.g. the
-                            // node was first launched before the full genesis.json was written,
-                            // so only the node's own address was registered at that time),
-                            // register and approve it now so it counts toward min_validators.
-                            if validator_manager.get_validator(address).is_none() {
-                                println!(
-                                    "🔧 Genesis validator {} not in registry — registering now",
-                                    address
-                                );
-
-                                let public_key = validator_data["public_key_file"]
-                                    .as_str()
-                                    .and_then(|path| std::fs::read_to_string(path).ok())
-                                    .and_then(|content| {
-                                        serde_json::from_str::<serde_json::Value>(&content).ok()
-                                    })
-                                    .and_then(|j| j["public_key"].as_str().map(|s| s.to_string()))
-                                    .unwrap_or_else(|| "genesis_key".to_string());
-
-                                let validator_name = validator_data["details"]
-                                    .as_object()
-                                    .and_then(|d| d["name"].as_str())
-                                    .map(|s| s.to_string())
-                                    .unwrap_or_else(|| format!("Genesis Validator {}", i + 1));
-
-                                let registration = crate::validator::ValidatorRegistration {
-                                    address: address.to_string(),
-                                    public_key,
-                                    name: validator_name,
-                                    stake_amount,
-                                    submitted_at: Self::current_timestamp(),
-                                    registration_tx_hash: "genesis".to_string(),
-                                };
-
-                                match validator_manager.register_validator(registration) {
-                                    Ok(_) => {
-                                        if let Err(e) = validator_manager.approve_validator(address) {
-                                            println!("⚠️ Failed to approve late-joined genesis validator {}: {}", address, e);
-                                        } else {
-                                            println!("✅ Late-joined genesis validator {} registered and approved", address);
-                                        }
-                                    }
-                                    Err(e) => {
-                                        println!("⚠️ Failed to register late-joined genesis validator {}: {}", address, e);
-                                        continue;
-                                    }
-                                }
-                            }
-
-                            validator_manager.update_validator_stake(address, stake_amount);
-
-                            let current_stake =
-                                token_manager.get_total_stake_for_validator(address);
-                            if current_stake >= stake_amount {
-                                println!(
-                                    "✅ Genesis validator {} already has active stake: {}",
-                                    address, current_stake
-                                );
-                                continue;
-                            }
-
-                            let additional_needed = stake_amount.saturating_sub(current_stake);
-                            println!(
-                                "🔧 Genesis validator {} stake shortfall: {}, targeting {}",
-                                address, additional_needed, stake_amount
-                            );
-
-                            let current_balance = token_manager.get_balance(address, "SNRG");
-                            if current_balance < additional_needed {
-                                let mint_amount = additional_needed - current_balance;
-                                if let Err(e) =
-                                    token_manager.mint_tokens(address, "SNRG", mint_amount)
-                                {
+                        match validator_manager.register_validator(registration) {
+                            Ok(_) => {
+                                if let Err(error) = validator_manager.approve_validator(address) {
                                     println!(
-                                        "⚠️ Failed to mint tokens for genesis validator {}: {}",
-                                        address, e
+                                        "⚠️ Failed to approve late-joined genesis validator {}: {}",
+                                        address, error
                                     );
                                     continue;
                                 }
                                 println!(
-                                    "✅ Minted {} SNRG to genesis validator {}",
-                                    mint_amount, address
+                                    "✅ Late-joined genesis validator {} registered and approved",
+                                    address
                                 );
                             }
-
-                            if let Err(e) = token_manager.stake_tokens(
-                                address,
-                                address,
-                                "SNRG",
-                                additional_needed,
-                            ) {
+                            Err(error) => {
                                 println!(
-                                    "⚠️ Failed to stake tokens for genesis validator {}: {}",
-                                    address, e
+                                    "⚠️ Failed to register late-joined genesis validator {}: {}",
+                                    address, error
                                 );
-                            } else {
-                                println!(
-                                    "✅ Genesis validator {} staked {} SNRG (total {})",
-                                    address, additional_needed, stake_amount
-                                );
+                                continue;
                             }
                         }
                     }
+
+                    validator_manager.update_validator_stake(address, validator.stake_nwei);
                 }
+            }
+            Err(error) => {
+                println!(
+                    "⚠️ Failed to ensure canonical genesis validator stakes: {}",
+                    error
+                );
             }
         }
         println!("🔧 ENSURING_GENESIS_VALIDATOR_STAKES - END");

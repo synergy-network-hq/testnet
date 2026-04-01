@@ -27,7 +27,7 @@
       {
         "label": "bootnode3",
         "host": "bootnode3.synergynode.xyz",
-        "ip_address": "64.227.107.57",
+        "ip_address": "157.245.226.240",
         "port": 5620
       }
     ],
@@ -47,7 +47,7 @@
       {
         "label": "seed3",
         "host": "seed3.synergynode.xyz",
-        "ip_address": "64.227.107.57",
+        "ip_address": "157.245.226.240",
         "port": 5621
       }
     ],
@@ -59,11 +59,10 @@
   "ports": {
     "bootnode": 5620,
     "seed": 5621,
-    "reserved": 5622,
-    "p2p_base": 5630,
-    "rpc_base": 5730,
-    "ws_base": 5830,
-    "discovery_base": 5930,
+    "node_listener_base": 5622,
+    "rpc_base": 5640,
+    "ws_base": 5660,
+    "discovery_base": 5680,
     "metrics_base": 6030
   },
   "public_endpoints": {
@@ -91,9 +90,6 @@
       "url": "https://testbeta-atlas-api.synergy-network.io",
       "host": "testbeta-atlas-api.synergy-network.io",
       "ip_address": "74.208.227.23"
-    },
-    "compatibility": {
-      "rpc_alias": "https://testbeta-rpc.synergy-network.io"
     }
   },
   "services": {
@@ -137,5 +133,12 @@
     "ethereum": "Sepolia",
     "solana": "Devnet",
     "mode": "deterministic-validation"
+  },
+  "launch_exceptions": {
+    "peer_identity_key": {
+      "algorithm": "Ed25519",
+      "status": "documented-beta-exception",
+      "note": "Retained only as an explicit beta exception per the technical specification until the approved replacement strategy is delivered."
+    }
   }
 }
