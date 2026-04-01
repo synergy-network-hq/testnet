@@ -287,7 +287,7 @@ impl TokenManager {
     }
 
     pub fn mint_tokens(&self, to: &str, token_symbol: &str, amount: u64) -> Result<String, String> {
-        if let Ok(tokens) = self.tokens.lock() {
+        if let Ok(mut tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get(token_symbol) {
                 if !token.mintable {
                     return Err("Token is not mintable".to_string());
@@ -305,28 +305,34 @@ impl TokenManager {
                         }
                     }
                 }
-
-                // Update total supply
-                if let Ok(mut supply) = self.total_supply.lock() {
-                    let current = *supply.get(token_symbol).unwrap_or(&0);
-                    let new_total = current + amount as u128;
-                    supply.insert(token_symbol.to_string(), new_total);
-                    drop(supply);
-                    self.update_token_supply_snapshot(token_symbol, new_total);
-                }
-
-                // Update balance
-                if let Ok(mut balances) = self.balances.lock() {
-                    let address_balances =
-                        balances.entry(to.to_string()).or_insert_with(HashMap::new);
-                    let current_balance = address_balances.get(token_symbol).unwrap_or(&0);
-                    address_balances.insert(token_symbol.to_string(), current_balance + amount);
-                }
-
-                Ok(format!("Minted {} {} to {}", amount, token_symbol, to))
             } else {
-                Err("Token not found".to_string())
+                return Err("Token not found".to_string());
             }
+
+            // Update total supply and snapshot while holding tokens lock (mut)
+            let new_total = if let Ok(mut supply) = self.total_supply.lock() {
+                let current = *supply.get(token_symbol).unwrap_or(&0);
+                let new_total = current + amount as u128;
+                supply.insert(token_symbol.to_string(), new_total);
+                new_total
+            } else {
+                return Err("Failed to acquire lock".to_string());
+            };
+
+            // Update token supply snapshot inline (tokens already locked as mut — no re-lock needed)
+            if let Some(token) = tokens.get_mut(token_symbol) {
+                token.total_supply = new_total.to_string();
+            }
+
+            // Update balance
+            if let Ok(mut balances) = self.balances.lock() {
+                let address_balances =
+                    balances.entry(to.to_string()).or_insert_with(HashMap::new);
+                let current_balance = address_balances.get(token_symbol).unwrap_or(&0);
+                address_balances.insert(token_symbol.to_string(), current_balance + amount);
+            }
+
+            Ok(format!("Minted {} {} to {}", amount, token_symbol, to))
         } else {
             Err("Failed to acquire lock".to_string())
         }
@@ -338,7 +344,7 @@ impl TokenManager {
         token_symbol: &str,
         amount: u64,
     ) -> Result<String, String> {
-        if let Ok(tokens) = self.tokens.lock() {
+        if let Ok(mut tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get(token_symbol) {
                 if !token.burnable {
                     return Err("Token is not burnable".to_string());
@@ -349,28 +355,33 @@ impl TokenManager {
                 if current_balance < amount {
                     return Err("Insufficient balance".to_string());
                 }
-
-                // Update balance
-                if let Ok(mut balances) = self.balances.lock() {
-                    if let Some(address_balances) = balances.get_mut(from) {
-                        let current = address_balances.get(token_symbol).unwrap_or(&0);
-                        address_balances.insert(token_symbol.to_string(), current - amount);
-                    }
-                }
-
-                // Update total supply
-                if let Ok(mut supply) = self.total_supply.lock() {
-                    let current = *supply.get(token_symbol).unwrap_or(&0);
-                    let new_total = current.saturating_sub(amount as u128);
-                    supply.insert(token_symbol.to_string(), new_total);
-                    drop(supply);
-                    self.update_token_supply_snapshot(token_symbol, new_total);
-                }
-
-                Ok(format!("Burned {} {} from {}", amount, token_symbol, from))
             } else {
-                Err("Token not found".to_string())
+                return Err("Token not found".to_string());
             }
+
+            // Update balance
+            if let Ok(mut balances) = self.balances.lock() {
+                if let Some(address_balances) = balances.get_mut(from) {
+                    let current = address_balances.get(token_symbol).unwrap_or(&0);
+                    address_balances.insert(token_symbol.to_string(), current - amount);
+                }
+            }
+
+            // Update total supply and snapshot inline (tokens already locked as mut — no re-lock needed)
+            let new_total = if let Ok(mut supply) = self.total_supply.lock() {
+                let current = *supply.get(token_symbol).unwrap_or(&0);
+                let new_total = current.saturating_sub(amount as u128);
+                supply.insert(token_symbol.to_string(), new_total);
+                new_total
+            } else {
+                return Err("Failed to acquire lock".to_string());
+            };
+
+            if let Some(token) = tokens.get_mut(token_symbol) {
+                token.total_supply = new_total.to_string();
+            }
+
+            Ok(format!("Burned {} {} from {}", amount, token_symbol, from))
         } else {
             Err("Failed to acquire lock".to_string())
         }
