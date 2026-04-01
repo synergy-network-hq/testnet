@@ -17,13 +17,13 @@ BOOTNODE_DISCOVERY_PORT=5680
 BOOTNODES=(
   "bootnode1|74.208.227.23"
   "bootnode2|73.79.66.255"
-  "bootnode3|157.245.226.24"
+  "bootnode3|157.245.226.240"
 )
 
 SEEDS=(
   "seed1|74.208.227.23"
   "seed2|73.79.66.255"
-  "seed3|157.245.226.24"
+  "seed3|157.245.226.240"
 )
 
 DARWIN_BINARY=""
@@ -1233,10 +1233,10 @@ write_root_files() {
 | --- | --- | --- | --- |
 | bootnode1 | bootnode1.${DOMAIN} | 74.208.227.23 | ${P2P_PORT}/tcp |
 | bootnode2 | bootnode2.${DOMAIN} | 73.79.66.255 | ${P2P_PORT}/tcp |
-| bootnode3 | bootnode3.${DOMAIN} | 157.245.226.24 | ${P2P_PORT}/tcp |
+| bootnode3 | bootnode3.${DOMAIN} | 157.245.226.240 | ${P2P_PORT}/tcp |
 | seed1 | seed1.${DOMAIN} | 74.208.227.23 | ${SEED_HTTP_PORT}/tcp |
 | seed2 | seed2.${DOMAIN} | 73.79.66.255 | ${SEED_HTTP_PORT}/tcp |
-| seed3 | seed3.${DOMAIN} | 157.245.226.24 | ${SEED_HTTP_PORT}/tcp |
+| seed3 | seed3.${DOMAIN} | 157.245.226.240 | ${SEED_HTTP_PORT}/tcp |
 
 ## Port Freeze
 
@@ -1300,10 +1300,10 @@ EOF
 Required A records
 bootnode1.${DOMAIN} -> 74.208.227.23
 bootnode2.${DOMAIN} -> 73.79.66.255
-bootnode3.${DOMAIN} -> 157.245.226.24
+bootnode3.${DOMAIN} -> 157.245.226.240
 seed1.${DOMAIN} -> 74.208.227.23
 seed2.${DOMAIN} -> 73.79.66.255
-seed3.${DOMAIN} -> 157.245.226.24
+seed3.${DOMAIN} -> 157.245.226.240
 
 Required TXT records for bootnode discovery
 _dnsaddr.bootstrap.${DOMAIN} -> "dnsaddr=/dns/bootnode1.${DOMAIN}/tcp/${P2P_PORT}"

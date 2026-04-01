@@ -27,7 +27,7 @@
       {
         "label": "bootnode3",
         "host": "bootnode3.synergynode.xyz",
-        "ip_address": "157.245.226.24",
+        "ip_address": "157.245.226.240",
         "port": 5620
       }
     ],
@@ -47,7 +47,7 @@
       {
         "label": "seed3",
         "host": "seed3.synergynode.xyz",
-        "ip_address": "157.245.226.24",
+        "ip_address": "157.245.226.240",
         "port": 5621
       }
     ],

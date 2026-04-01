@@ -469,6 +469,67 @@ fn fetch_seed_server_targets(
     }
 }
 
+fn register_self_with_seed_servers(config: &NodeConfig) {
+    if config.node.bootstrap_only || config.network.seed_servers.is_empty() {
+        return;
+    }
+    let public_address = config.p2p.public_address.trim().to_string();
+    if public_address.is_empty()
+        || public_address.starts_with("127.")
+        || public_address.starts_with("0.0.0.0")
+    {
+        return;
+    }
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(5))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let validator_address = config.node.validator_address.trim().to_string();
+    let mut payload = serde_json::json!({
+        "node_id": config.p2p.node_name,
+        "role_id": "validator",
+        "dial": public_address,
+    });
+    if !validator_address.is_empty() {
+        payload["wallet_address"] = serde_json::Value::String(validator_address);
+    }
+    for seed_server in &config.network.seed_servers {
+        let register_url = normalize_seed_server_url(seed_server, "/peers/register");
+        if register_url.is_empty() {
+            continue;
+        }
+        match client.post(&register_url).json(&payload).send() {
+            Ok(resp) if resp.status().is_success() => {
+                debug!(
+                    "p2p",
+                    "Registered self with seed server",
+                    "seed_server" => seed_server.clone(),
+                    "dial" => public_address.clone()
+                );
+            }
+            Ok(resp) => {
+                debug!(
+                    "p2p",
+                    "Seed server self-registration returned non-success",
+                    "seed_server" => seed_server.clone(),
+                    "status" => resp.status().as_u16()
+                );
+            }
+            Err(e) => {
+                debug!(
+                    "p2p",
+                    "Failed to register self with seed server",
+                    "seed_server" => seed_server.clone(),
+                    "error" => e.to_string()
+                );
+            }
+        }
+    }
+}
+
 fn normalize_seed_server_url(seed_server: &str, default_path: &str) -> String {
     let trimmed = seed_server.trim().trim_end_matches('/');
     if trimmed.is_empty() {
@@ -766,6 +827,7 @@ impl P2PNetwork {
                 {
                     bootnode_dials = resolve_bootstrap_dial_targets(&network.config);
                     last_refresh = Instant::now();
+                    register_self_with_seed_servers(&network.config);
 
                     if bootnode_dials.is_empty() {
                         warn!(
