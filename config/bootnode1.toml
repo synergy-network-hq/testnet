@@ -48,8 +48,8 @@ enable_grpc = true
 grpc_port = 50051
 cors_enabled = true
 cors_origins = ["*"]
-external_http = "https://testbeta-core-rpc.synergy-network.io"
-external_ws = "wss://testbeta-core-ws.synergy-network.io"
+external_http = "https://testbeta-core-rpc.synergynode.xyz"
+external_ws = "wss://testbeta-core-ws.synergynode.xyz"
 
 [p2p]
 listen_address = "0.0.0.0:5620"
