@@ -66,6 +66,22 @@ struct PeerConnection {
     genesis_hash: String,
 }
 
+fn should_disconnect_for_status_genesis_mismatch(
+    local_genesis_hash: &str,
+    remote_genesis_hash: &str,
+    peer_validator_address: Option<&str>,
+) -> bool {
+    let peer_is_validator = peer_validator_address
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    if remote_genesis_hash.is_empty() {
+        return peer_is_validator;
+    }
+
+    remote_genesis_hash != local_genesis_hash
+}
+
 #[derive(Debug, Deserialize)]
 struct SeedPeerListResponse {
     #[serde(default)]
@@ -1801,7 +1817,17 @@ fn handle_messages(
                             let chain = blockchain.lock().unwrap();
                             chain.get_genesis_hash().unwrap_or_default()
                         };
-                        if genesis_hash.is_empty() || genesis_hash != local_genesis_hash {
+                        let peer_validator_address = {
+                            let peers = connected_peers.lock().unwrap();
+                            peers
+                                .get(&peer_address)
+                                .and_then(|peer| peer.validator_address.clone())
+                        };
+                        if should_disconnect_for_status_genesis_mismatch(
+                            &local_genesis_hash,
+                            &genesis_hash,
+                            peer_validator_address.as_deref(),
+                        ) {
                             warn!(
                                 "p2p",
                                 "Disconnecting peer with mismatched genesis hash",
@@ -1812,6 +1838,13 @@ fn handle_messages(
                             let mut peers = connected_peers.lock().unwrap();
                             disconnect_peer_entry(&mut peers, &peer_address);
                             continue;
+                        }
+                        if genesis_hash.is_empty() {
+                            debug!(
+                                "p2p",
+                                "Keeping discovery peer without genesis hash",
+                                "peer" => peer_address.clone()
+                            );
                         }
 
                         let mut peers = connected_peers.lock().unwrap();
@@ -2339,8 +2372,9 @@ fn dial_peer_async(
 mod tests {
     use super::{
         collect_known_peer_addresses, dial_with_timeout, parse_bootnode_dial_address,
-        preferred_connection_direction, resolve_duplicate_connection, ConnectionDirection,
-        DialTargetsArc, DuplicateResolution,
+        preferred_connection_direction, resolve_duplicate_connection,
+        should_disconnect_for_status_genesis_mismatch, ConnectionDirection, DialTargetsArc,
+        DuplicateResolution,
     };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
@@ -2447,5 +2481,45 @@ mod tests {
         assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
         assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
         assert!(addresses.contains(&"157.245.226.24:5620".to_string()));
+    }
+
+    #[test]
+    fn empty_remote_genesis_hash_is_allowed_for_discovery_peer() {
+        assert!(
+            !should_disconnect_for_status_genesis_mismatch(
+                "local-hash",
+                "",
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn empty_remote_genesis_hash_disconnects_validator_peer() {
+        assert!(should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "",
+            Some("synv1validator"),
+        ));
+    }
+
+    #[test]
+    fn mismatched_nonempty_remote_genesis_hash_disconnects_peer() {
+        assert!(should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "remote-hash",
+            None,
+        ));
+    }
+
+    #[test]
+    fn matching_remote_genesis_hash_is_allowed_for_validator_peer() {
+        assert!(
+            !should_disconnect_for_status_genesis_mismatch(
+                "local-hash",
+                "local-hash",
+                Some("synv1validator"),
+            )
+        );
     }
 }
