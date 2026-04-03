@@ -64,3 +64,11 @@ path = "synergy-address-engine/src/main.rs"
 [[bin]]
 name = "wallet-pqc-cli"
 path = "bin/wallet_pqc_cli.rs"
+
+[[bin]]
+name = "synergy-rpc-gateway-node"
+path = "bin/synergy-rpc-gateway-node.rs"
+
+[[bin]]
+name = "synergy-indexer-and-explorer-node"
+path = "bin/synergy-indexer-and-explorer-node.rs"

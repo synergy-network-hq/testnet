@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::block::{Block, BlockHeader};
+use crate::consensus::dual_quorum::Vote;
 use crate::transaction::Transaction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +17,14 @@ pub enum NetworkMessage {
     },
     Block {
         block_data: Block,
+    },
+    VoteRequest {
+        block_data: Block,
+        epoch_number: u64,
+        round_number: u64,
+    },
+    Vote {
+        vote: Vote,
     },
     Transaction {
         transaction_data: Transaction,

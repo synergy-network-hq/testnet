@@ -115,9 +115,13 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
                 let mut buffer = [0; 16384];
                 if let Ok(bytes_read) = stream.read(&mut buffer) {
                     let request_str = String::from_utf8_lossy(&buffer[..bytes_read]);
+                    let request_line = request_str.lines().next().unwrap_or_default();
+                    let mut request_line_parts = request_line.split_whitespace();
+                    let http_method = request_line_parts.next().unwrap_or_default();
+                    let request_path = request_line_parts.next().unwrap_or("/");
 
                     // Handle CORS preflight
-                    if request_str.starts_with("OPTIONS") {
+                    if http_method == "OPTIONS" {
                         let response_str = format_cors_preflight_response(
                             cors_enabled_for_conn,
                             &cors_origins_for_conn,
@@ -127,8 +131,30 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
                         return;
                     }
 
+                    if http_method == "GET" {
+                        let response_str = match request_path {
+                            "/" | "/healthz" => format_text_response(
+                                "ok\n",
+                                cors_enabled_for_conn,
+                                &cors_origins_for_conn,
+                            ),
+                            "/readyz" => format_text_response(
+                                "ready\n",
+                                cors_enabled_for_conn,
+                                &cors_origins_for_conn,
+                            ),
+                            _ => format_not_found_response(
+                                cors_enabled_for_conn,
+                                &cors_origins_for_conn,
+                            ),
+                        };
+                        let _ = stream.write(response_str.as_bytes());
+                        let _ = stream.flush();
+                        return;
+                    }
+
                     // Split headers and body
-                    let parts: Vec<&str> = request_str.split("\r\n\r\n").collect();
+                    let parts: Vec<&str> = request_str.splitn(2, "\r\n\r\n").collect();
                     if parts.len() < 2 {
                         send_error(
                             &mut stream,
@@ -141,7 +167,7 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
 
                     let body = parts[1];
 
-                    if request_str.starts_with("POST") {
+                    if http_method == "POST" {
                         match serde_json::from_str::<Value>(body) {
                             Ok(parsed) => {
                                 let method =
@@ -178,6 +204,13 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
                                 &cors_origins_for_conn,
                             ),
                         }
+                    } else {
+                        send_error(
+                            &mut stream,
+                            "Unsupported HTTP method",
+                            cors_enabled_for_conn,
+                            &cors_origins_for_conn,
+                        );
                     }
                 }
             }
@@ -295,7 +328,7 @@ fn handle_json_rpc(
         }
 
         // ---------------------------------------------------------------------
-        // SXCP (Synergy Cross-Chain Protocol) – Devnet RPC surface
+        // SXCP (Synergy Cross-Chain Protocol) – Testnet-Beta RPC surface
         // ---------------------------------------------------------------------
         "synergy_registerRelayer" => {
             if let (Some(address), Some(public_key)) = (
@@ -380,14 +413,14 @@ fn handle_json_rpc(
             if params
                 .get(0)
                 .and_then(|v| v.as_str())
-                .map(|token| token == "DEVNET_RESET_SXCP_STATE")
+                .map(|token| token == "TESTBETA_RESET_SXCP_STATE")
                 .unwrap_or(false)
             {
                 sxcp::reset_state()
             } else {
                 json!({
                     "success": false,
-                    "error": "Confirmation token required as first parameter: DEVNET_RESET_SXCP_STATE"
+                    "error": "Confirmation token required as first parameter: TESTBETA_RESET_SXCP_STATE"
                 })
             }
         }
@@ -2608,10 +2641,48 @@ fn select_cors_origin(cors_origins: &[String]) -> String {
 }
 
 fn format_response(body: &str, cors_enabled: bool, cors_origins: &[String]) -> String {
+    format_http_response(
+        "200 OK",
+        "application/json",
+        body,
+        cors_enabled,
+        cors_origins,
+    )
+}
+
+fn format_text_response(body: &str, cors_enabled: bool, cors_origins: &[String]) -> String {
+    format_http_response(
+        "200 OK",
+        "text/plain; charset=utf-8",
+        body,
+        cors_enabled,
+        cors_origins,
+    )
+}
+
+fn format_not_found_response(cors_enabled: bool, cors_origins: &[String]) -> String {
+    format_http_response(
+        "404 Not Found",
+        "text/plain; charset=utf-8",
+        "not found\n",
+        cors_enabled,
+        cors_origins,
+    )
+}
+
+fn format_http_response(
+    status: &str,
+    content_type: &str,
+    body: &str,
+    cors_enabled: bool,
+    cors_origins: &[String],
+) -> String {
     if cors_enabled {
         let origin = select_cors_origin(cors_origins);
         return format!(
-            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\n\r\n{}",
+            "HTTP/1.1 {}\r\nContent-Type: {}\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: {}\r\n\r\n{}",
+            status,
+            content_type,
             origin,
             body.len(),
             body
@@ -2619,7 +2690,9 @@ fn format_response(body: &str, cors_enabled: bool, cors_origins: &[String]) -> S
     }
 
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+        "HTTP/1.1 {}\r\nContent-Type: {}\r\nContent-Length: {}\r\n\r\n{}",
+        status,
+        content_type,
         body.len(),
         body
     )
@@ -2632,7 +2705,7 @@ fn format_cors_preflight_response(cors_enabled: bool, cors_origins: &[String]) -
 
     let origin = select_cors_origin(cors_origins);
     format!(
-        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n",
+        "HTTP/1.1 200 OK\r\nAccess-Control-Allow-Origin: {}\r\nAccess-Control-Allow-Methods: GET, POST, OPTIONS\r\nAccess-Control-Allow-Headers: Content-Type\r\nContent-Length: 0\r\n\r\n",
         origin
     )
 }

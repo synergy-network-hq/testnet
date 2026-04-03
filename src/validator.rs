@@ -8,6 +8,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const VERBOSE_VALIDATOR_LOGS: bool = false;
 pub const INITIAL_VALIDATOR_SYNERGY_SCORE: f64 = 100.0;
 pub const TESTNET_BETA_VALIDATOR_CLUSTER_SIZE: usize = 5;
+pub const MISSED_VOTE_JAIL_THRESHOLD: u64 = 3;
+pub const MISSED_VOTE_SLASH_THRESHOLD: u64 = 6;
+const MISSED_VOTE_WINDOW_DECAY: u64 = 1;
+const MISSED_VOTE_UPTIME_PENALTY: f64 = 2.5;
+const MISSED_VOTE_ACCURACY_PENALTY: f64 = 2.0;
+const MISSED_VOTE_REPUTATION_PENALTY: f64 = 4.0;
+const MISSED_VOTE_SLASHING_INCREMENT: f64 = 0.05;
+const VOTE_PARTICIPATION_RECOVERY: f64 = 0.5;
 
 macro_rules! validator_log {
     ($($arg:tt)*) => {
@@ -37,6 +45,14 @@ pub struct Validator {
     pub average_block_time: f64,
     pub missed_blocks: u64,
     pub double_signs: u64,
+    #[serde(default)]
+    pub consecutive_missed_votes: u64,
+    #[serde(default)]
+    pub missed_vote_window: u64,
+    #[serde(default)]
+    pub last_vote_timestamp: u64,
+    #[serde(default)]
+    pub equivocation_evidence_count: u64,
 
     // Synergy scores
     pub synergy_score: f64,
@@ -53,6 +69,12 @@ pub struct Validator {
     pub cluster_id: Option<u64>,
     pub status: ValidatorStatus,
     pub version: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValidatorDisciplineAction {
+    JailForInactivity,
+    SlashForInactivity,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -125,6 +147,10 @@ impl Validator {
             average_block_time: 5.0,
             missed_blocks: 0,
             double_signs: 0,
+            consecutive_missed_votes: 0,
+            missed_vote_window: 0,
+            last_vote_timestamp: 0,
+            equivocation_evidence_count: 0,
             synergy_score: INITIAL_VALIDATOR_SYNERGY_SCORE,
             task_accuracy: 100.0,
             collaboration_score: 0.0,
@@ -144,20 +170,56 @@ impl Validator {
 
     pub fn record_block_production(&mut self) {
         self.total_blocks_produced += 1;
+        self.record_vote_participation();
+    }
+
+    pub fn record_missed_block(&mut self) {
+        self.record_missed_vote();
+    }
+
+    pub fn record_vote_participation(&mut self) {
+        self.total_transactions_validated += 1;
+        self.consecutive_missed_votes = 0;
+        self.missed_vote_window = self
+            .missed_vote_window
+            .saturating_sub(MISSED_VOTE_WINDOW_DECAY);
+        self.last_vote_timestamp = Self::current_timestamp();
+        self.uptime_percentage = (self.uptime_percentage + VOTE_PARTICIPATION_RECOVERY).min(100.0);
+        self.task_accuracy = (self.task_accuracy + VOTE_PARTICIPATION_RECOVERY).min(100.0);
         self.update_activity();
         self.calculate_synergy_score();
     }
 
-    pub fn record_missed_block(&mut self) {
+    pub fn record_missed_vote(&mut self) {
         self.missed_blocks += 1;
-        self.update_activity();
+        self.consecutive_missed_votes += 1;
+        self.missed_vote_window = self.missed_vote_window.saturating_add(1);
+        self.uptime_percentage = (self.uptime_percentage - MISSED_VOTE_UPTIME_PENALTY).max(0.0);
+        self.task_accuracy = (self.task_accuracy - MISSED_VOTE_ACCURACY_PENALTY).max(0.0);
+        self.reputation_score = (self.reputation_score - MISSED_VOTE_REPUTATION_PENALTY).max(0.0);
+        self.slashing_penalty = (self.slashing_penalty + MISSED_VOTE_SLASHING_INCREMENT).min(1.0);
         self.calculate_synergy_score();
     }
 
     pub fn record_double_sign(&mut self) {
         self.double_signs += 1;
-        self.status = ValidatorStatus::Jailed;
+        self.equivocation_evidence_count += 1;
+        self.slashing_penalty = 1.0;
+        self.reputation_score = 0.0;
+        self.task_accuracy = 0.0;
+        self.status = ValidatorStatus::Slashed;
         self.update_activity();
+        self.calculate_synergy_score();
+    }
+
+    fn inactivity_discipline_action(&self) -> Option<ValidatorDisciplineAction> {
+        if self.missed_vote_window >= MISSED_VOTE_SLASH_THRESHOLD {
+            Some(ValidatorDisciplineAction::SlashForInactivity)
+        } else if self.missed_vote_window >= MISSED_VOTE_JAIL_THRESHOLD {
+            Some(ValidatorDisciplineAction::JailForInactivity)
+        } else {
+            None
+        }
     }
 
     pub fn calculate_synergy_score(&mut self) {
@@ -166,13 +228,15 @@ impl Validator {
         let accuracy_factor = self.task_accuracy / 100.0;
         let reputation_factor = self.reputation_score / 100.0;
         let stake_factor = (self.stake_amount as f64 / self.min_stake_required as f64).min(2.0);
+        let slashing_factor = (1.0 - self.slashing_penalty.clamp(0.0, 1.0)).max(0.0);
 
         // Weighted average of factors
         self.synergy_score = (uptime_factor * 0.3
             + accuracy_factor * 0.3
             + reputation_factor * 0.2
             + stake_factor * 0.2)
-            * 100.0;
+            * 100.0
+            * slashing_factor;
     }
 
     pub fn is_eligible(&self, min_stake: u64) -> bool {
@@ -272,33 +336,69 @@ impl ValidatorRegistry {
         address: &str,
         performance_data: ValidatorPerformanceUpdate,
     ) {
-        if let Some(validator) = self.validators.get_mut(address) {
-            validator.update_activity();
+        let mut should_reorganize = false;
+        let mut should_jail = false;
 
+        if let Some(validator) = self.validators.get_mut(address) {
             match performance_data.update_type.as_str() {
                 "block_produced" => {
                     validator.record_block_production();
                 }
-                "block_missed" => {
-                    validator.record_missed_block();
+                "vote_cast" => {
+                    validator.record_vote_participation();
                 }
-                "double_sign" => {
+                "block_missed" => {
+                    validator.record_missed_vote();
+                }
+                "double_sign" | "equivocation" => {
                     validator.record_double_sign();
+                    should_jail = true;
+                    should_reorganize = true;
                 }
                 "uptime_update" => {
                     if let Some(uptime) = performance_data.value {
                         validator.uptime_percentage = uptime;
+                        validator.update_activity();
                     }
                 }
                 "accuracy_update" => {
                     if let Some(accuracy) = performance_data.value {
                         validator.task_accuracy = accuracy;
+                        validator.update_activity();
                     }
                 }
                 _ => {}
             }
 
+            match validator.inactivity_discipline_action() {
+                Some(ValidatorDisciplineAction::SlashForInactivity)
+                    if validator.status != ValidatorStatus::Slashed =>
+                {
+                    validator.status = ValidatorStatus::Slashed;
+                    validator.slashing_penalty = validator.slashing_penalty.max(0.5);
+                    validator.calculate_synergy_score();
+                    should_jail = true;
+                    should_reorganize = true;
+                }
+                Some(ValidatorDisciplineAction::JailForInactivity)
+                    if validator.status == ValidatorStatus::Active =>
+                {
+                    validator.status = ValidatorStatus::Jailed;
+                    should_jail = true;
+                    should_reorganize = true;
+                }
+                _ => {}
+            }
+
             validator.calculate_synergy_score();
+        }
+
+        if should_jail {
+            self.jailed_validators.insert(address.to_string());
+        }
+
+        if should_reorganize {
+            self.reorganize_clusters();
         }
     }
 
@@ -407,8 +507,21 @@ impl ValidatorRegistry {
                     validator.status = ValidatorStatus::Slashed;
                     self.jailed_validators.insert(address.to_string());
                 }
-                "inactivity" => {
+                "inactivity" | "inactivity_jail" => {
                     validator.status = ValidatorStatus::Jailed;
+                    validator.missed_vote_window =
+                        validator.missed_vote_window.max(MISSED_VOTE_JAIL_THRESHOLD);
+                    validator.slashing_penalty = validator.slashing_penalty.max(0.15);
+                    validator.calculate_synergy_score();
+                    self.jailed_validators.insert(address.to_string());
+                }
+                "inactivity_slash" => {
+                    validator.status = ValidatorStatus::Slashed;
+                    validator.missed_vote_window = validator
+                        .missed_vote_window
+                        .max(MISSED_VOTE_SLASH_THRESHOLD);
+                    validator.slashing_penalty = validator.slashing_penalty.max(0.5);
+                    validator.calculate_synergy_score();
                     self.jailed_validators.insert(address.to_string());
                 }
                 _ => {
@@ -429,8 +542,8 @@ impl ValidatorRegistry {
         if let Some(validator) = self.validators.get_mut(address) {
             if self.jailed_validators.remove(address) {
                 validator.status = ValidatorStatus::Active;
-                validator.double_signs = 0;
-                validator.missed_blocks = 0;
+                validator.consecutive_missed_votes = 0;
+                validator.missed_vote_window = 0;
                 validator.update_activity();
                 self.reorganize_clusters();
                 Ok(())
@@ -801,5 +914,83 @@ mod tests {
         assert!(cluster_sizes
             .iter()
             .all(|size| *size <= TESTNET_BETA_VALIDATOR_CLUSTER_SIZE));
+    }
+
+    #[test]
+    fn repeated_missed_votes_jail_then_slash_validator() {
+        let mut registry = active_registry(1);
+        let address = "validator-0".to_string();
+
+        for _ in 0..MISSED_VOTE_JAIL_THRESHOLD {
+            registry.update_validator_performance(
+                &address,
+                ValidatorPerformanceUpdate {
+                    validator_address: address.clone(),
+                    update_type: "block_missed".to_string(),
+                    value: None,
+                    timestamp: 0,
+                },
+            );
+        }
+
+        let validator = registry
+            .get_validator_by_address(&address)
+            .expect("validator should exist after missed-vote updates");
+        assert_eq!(validator.status, ValidatorStatus::Jailed);
+        assert_eq!(validator.missed_vote_window, MISSED_VOTE_JAIL_THRESHOLD);
+
+        for _ in MISSED_VOTE_JAIL_THRESHOLD..MISSED_VOTE_SLASH_THRESHOLD {
+            registry.update_validator_performance(
+                &address,
+                ValidatorPerformanceUpdate {
+                    validator_address: address.clone(),
+                    update_type: "block_missed".to_string(),
+                    value: None,
+                    timestamp: 0,
+                },
+            );
+        }
+
+        let validator = registry
+            .get_validator_by_address(&address)
+            .expect("validator should exist after inactivity slashing");
+        assert_eq!(validator.status, ValidatorStatus::Slashed);
+        assert_eq!(validator.missed_vote_window, MISSED_VOTE_SLASH_THRESHOLD);
+        assert!(validator.slashing_penalty >= 0.5);
+    }
+
+    #[test]
+    fn vote_participation_resets_streak_and_decays_missed_vote_window() {
+        let mut registry = active_registry(1);
+        let address = "validator-0".to_string();
+
+        for _ in 0..2 {
+            registry.update_validator_performance(
+                &address,
+                ValidatorPerformanceUpdate {
+                    validator_address: address.clone(),
+                    update_type: "block_missed".to_string(),
+                    value: None,
+                    timestamp: 0,
+                },
+            );
+        }
+
+        registry.update_validator_performance(
+            &address,
+            ValidatorPerformanceUpdate {
+                validator_address: address.clone(),
+                update_type: "vote_cast".to_string(),
+                value: None,
+                timestamp: 0,
+            },
+        );
+
+        let validator = registry
+            .get_validator_by_address(&address)
+            .expect("validator should exist after vote participation");
+        assert_eq!(validator.consecutive_missed_votes, 0);
+        assert_eq!(validator.missed_vote_window, 1);
+        assert!(validator.total_transactions_validated >= 1);
     }
 }

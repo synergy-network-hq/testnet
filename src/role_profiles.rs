@@ -130,6 +130,8 @@ const RPC_GATEWAY_SERVICES: &[&str] = &[
     "p2p",
     "rpc",
     "ws",
+    "chain-sync",
+    "state",
     "rate-limit",
     "authn/authz",
     "edge-cache",
@@ -171,7 +173,13 @@ const RPC_GATEWAY_PORTS: &[&str] = &[
     "8545 evm http",
     "8546 evm ws",
 ];
-const INDEXER_EXPLORER_PORTS: &[&str] = &["3010 ingest", "3011 indexer api", "3020 explorer api"];
+const INDEXER_EXPLORER_PORTS: &[&str] = &[
+    "3010 ingest",
+    "3011 indexer api",
+    "3020 explorer api",
+    "5647 localhost rpc",
+    "5667 localhost ws",
+];
 const OBSERVER_LIGHT_PORTS: &[&str] = &[
     "implementation-specific readonly light api",
     "6030 plus slot localhost metrics",

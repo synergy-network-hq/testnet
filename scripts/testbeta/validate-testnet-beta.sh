@@ -142,9 +142,9 @@ if manifest.get("ports") != expected_ports:
 
 public_endpoints = manifest.get("public_endpoints", {})
 expected_urls = {
-    "core_rpc": "https://testbeta-core-rpc.synergy-network.io",
-    "core_ws": "wss://testbeta-core-ws.synergy-network.io",
-    "api": "https://testbeta-api.synergy-network.io",
+    "core_rpc": "https://testbeta-core-rpc.synergynode.xyz",
+    "core_ws": "wss://testbeta-core-ws.synergynode.xyz",
+    "api": "https://testbeta-api.synergynode.xyz",
 }
 for key, expected in expected_urls.items():
     actual = public_endpoints.get(key, {}).get("url")

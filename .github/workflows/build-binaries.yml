@@ -51,7 +51,9 @@ jobs:
             --bin synergy-testbeta \
             --bin generate-node-keys \
             --bin synergy-address-engine \
-            --bin wallet-pqc-cli
+            --bin wallet-pqc-cli \
+            --bin synergy-rpc-gateway-node \
+            --bin synergy-indexer-and-explorer-node
 
       - name: Package binaries
         id: package
@@ -85,6 +87,8 @@ jobs:
               "generate-node-keys",
               "synergy-address-engine",
               "wallet-pqc-cli",
+              "synergy-rpc-gateway-node",
+              "synergy-indexer-and-explorer-node",
           ]
 
           dist = pathlib.Path("dist")

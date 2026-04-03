@@ -175,7 +175,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
     assert!(result
         .err()
         .unwrap_or_default()
-        .contains("Insufficient active validators"));
+        .contains("Insufficient live validators"));
 }
 
 #[test]
@@ -188,6 +188,7 @@ fn test_entropy_beacon() {
     let previous_qc = QuorumCertificate {
         block_hash: "test_hash".to_string(),
         epoch_number: 0,
+        round_number: 1,
         aggregate_signature: vec![1, 2, 3, 4],
         participant_bitmap: vec![255],
         cumulative_weight: 1.0,

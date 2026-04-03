@@ -76,6 +76,43 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
     config.p2p.node_name.clone()
 }
 
+fn normalize_rpc_socket_address(bind_address: &str, default_port: u16) -> String {
+    let trimmed = bind_address.trim();
+    let host = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .trim();
+
+    if host.is_empty() {
+        return format!("127.0.0.1:{default_port}");
+    }
+
+    match host {
+        "0.0.0.0" => format!("0.0.0.0:{default_port}"),
+        "::" | "[::]" => format!("[::]:{default_port}"),
+        "::1" | "[::1]" => format!("[::1]:{default_port}"),
+        _ if host.starts_with('[') && host.contains("]:") => host.to_string(),
+        _ if host.matches(':').count() == 0 => format!("{host}:{default_port}"),
+        _ => host.to_string(),
+    }
+}
+
+fn normalize_rpc_client_address(bind_address: &str, default_port: u16) -> String {
+    let normalized = normalize_rpc_socket_address(bind_address, default_port);
+
+    if let Some(port) = normalized.strip_prefix("0.0.0.0:") {
+        return format!("127.0.0.1:{port}");
+    }
+
+    if let Some(port) = normalized.strip_prefix("[::]:") {
+        return format!("127.0.0.1:{port}");
+    }
+
+    normalized
+}
+
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
     if !config.node.strict_validator_allowlist {
         return true;
@@ -271,16 +308,10 @@ fn write_status_file(path: &Path, payload: serde_json::Value) {
 }
 
 fn rpc_bind_url(config: &NodeConfig) -> String {
-    let bind = if config.rpc.bind_address.trim().is_empty() {
-        format!("127.0.0.1:{}", config.rpc.http_port)
-    } else {
-        config.rpc.bind_address.clone()
-    };
-    if bind.starts_with("http://") || bind.starts_with("https://") {
-        bind
-    } else {
-        format!("http://{bind}")
-    }
+    format!(
+        "http://{}",
+        normalize_rpc_client_address(&config.rpc.bind_address, config.rpc.http_port)
+    )
 }
 
 fn ensure_logs_dir() -> PathBuf {
@@ -368,14 +399,30 @@ fn resolve_explorer_root(project_root: &Path) -> Option<PathBuf> {
         .filter(|candidate| candidate.exists())
 }
 
+fn resolve_node_entrypoint(package_root: &Path) -> Option<PathBuf> {
+    let primary = package_root.join("dist").join("index.js");
+    if primary.exists() {
+        return Some(primary);
+    }
+
+    let nested = package_root.join("dist").join("src").join("index.js");
+    if nested.exists() {
+        return Some(nested);
+    }
+
+    None
+}
+
 fn infer_synergy_env(config: &NodeConfig) -> &'static str {
     let name = config.network.name.to_ascii_lowercase();
     if name.contains("devnet") {
         "devnet"
+    } else if name.contains("testnet") && name.contains("beta") {
+        "testnet-beta"
     } else if name.contains("testnet") {
         "testnet"
     } else if name.contains("beta") {
-        "mainnet-beta"
+        "beta"
     } else {
         "mainnet"
     }
@@ -489,57 +536,36 @@ fn start_role_local_services(
             let status_path = PathBuf::from("data").join("rpc-gateway.json");
             let running = Arc::clone(running);
             active.spawn_worker(move || {
-                let client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(2))
-                    .build();
                 while running.load(Ordering::SeqCst) {
                     let mut payload = json!({
                         "ok": false,
                         "timestamp": now_ts(),
                         "rpc_url": bind_url,
                         "block_number": null,
+                        "sync_state": null,
+                        "local_height": null,
+                        "network_height": null,
+                        "peer_count": null,
                         "error": null
                     });
 
-                    match &client {
-                        Ok(client) => {
-                            let request = json!({
-                                "jsonrpc": "2.0",
-                                "id": 1,
-                                "method": "synergy_getBlockNumber",
-                                "params": []
-                            });
-                            match client
-                                .post(payload["rpc_url"].as_str().unwrap())
-                                .json(&request)
-                                .send()
-                            {
-                                Ok(response) if response.status().is_success() => {
-                                    match response.json::<serde_json::Value>() {
-                                        Ok(body) => {
-                                            let result =
-                                                body.get("result").and_then(|v| v.as_u64());
-                                            payload["ok"] = json!(true);
-                                            payload["block_number"] = json!(result);
-                                        }
-                                        Err(error) => {
-                                            payload["error"] =
-                                                json!(format!("invalid json: {error}"));
-                                        }
-                                    }
-                                }
-                                Ok(response) => {
-                                    payload["error"] =
-                                        json!(format!("http {}", response.status().as_u16()));
-                                }
-                                Err(error) => {
-                                    payload["error"] = json!(error.to_string());
-                                }
-                            }
+                    if let Some(network) = p2p::get_p2p_network() {
+                        let mut manager = SYNC_MANAGER.lock().unwrap();
+                        manager.attach_network(Arc::clone(&network));
+                        let _ = manager.discover_network_height();
+                        if manager.local_height < manager.get_network_height() {
+                            let _ = manager.start_sync();
                         }
-                        Err(error) => {
-                            payload["error"] = json!(format!("client error: {error}"));
-                        }
+
+                        payload["ok"] = json!(true);
+                        payload["sync_state"] = json!(format!("{:?}", manager.get_state()));
+                        payload["local_height"] = json!(manager.local_height);
+                        payload["network_height"] = json!(manager.get_network_height());
+                        payload["block_number"] = json!(manager.local_height);
+                        payload["peer_count"] = json!(manager.peers.len());
+                        payload["progress_pct"] = json!(manager.get_progress_percentage());
+                    } else {
+                        payload["error"] = json!("p2p network unavailable");
                     }
 
                     write_status_file(&status_path, payload);
@@ -578,8 +604,14 @@ fn start_role_local_services(
             let synergy_env = infer_synergy_env(config).to_string();
             let indexer_dir = explorer_root.join("indexer");
             let backend_dir = explorer_root.join("backend");
-            let indexer_script = indexer_dir.join("dist").join("index.js");
-            let backend_script = backend_dir.join("dist").join("index.js");
+            let Some(indexer_script) = resolve_node_entrypoint(&indexer_dir) else {
+                eprintln!("Indexer/Explorer role could not find an Atlas indexer entrypoint.");
+                return active;
+            };
+            let Some(backend_script) = resolve_node_entrypoint(&backend_dir) else {
+                eprintln!("Indexer/Explorer role could not find an Atlas backend entrypoint.");
+                return active;
+            };
             let indexer_migrate = indexer_dir.join("scripts").join("migrate.js");
             let backend_migrate = backend_dir.join("scripts").join("migrate.js");
 
@@ -839,9 +871,10 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             );
 
             let project_root = utils::validate_project_root().unwrap_or_else(|e| {
-                eprintln!("Warning: {}", e);
-                env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                eprintln!("Failed to determine writable project root: {}", e);
+                process::exit(1);
             });
+            env::set_var("SYNERGY_PROJECT_ROOT", &project_root);
 
             let data_dir = project_root.join("data");
             let logs_dir = data_dir.join("logs");
@@ -916,11 +949,8 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
 
             let rpc_enabled = should_start_rpc(&config, role_profile);
             if rpc_enabled {
-                let rpc_bind_address = if config.rpc.bind_address.trim().is_empty() {
-                    format!("127.0.0.1:{}", config.rpc.http_port)
-                } else {
-                    config.rpc.bind_address.clone()
-                };
+                let rpc_bind_address =
+                    normalize_rpc_socket_address(&config.rpc.bind_address, config.rpc.http_port);
                 let cors_enabled = config.rpc.cors_enabled;
                 let cors_origins = config.rpc.cors_origins.clone();
                 let _rpc_handle = std::thread::spawn(move || {
@@ -1670,5 +1700,26 @@ mod tests {
     #[test]
     fn rpc_gateway_profile_starts_p2p() {
         assert!(role_profile_requires_p2p(NodeRole::RpcGateway.profile()));
+    }
+
+    #[test]
+    fn rpc_bind_address_normalizes_host_only_socket_inputs() {
+        assert_eq!(
+            normalize_rpc_socket_address("0.0.0.0", 5640),
+            "0.0.0.0:5640"
+        );
+        assert_eq!(
+            normalize_rpc_socket_address("127.0.0.1", 5640),
+            "127.0.0.1:5640"
+        );
+    }
+
+    #[test]
+    fn rpc_bind_url_uses_loopback_for_wildcard_bind_addresses() {
+        let mut config = NodeConfig::default();
+        config.rpc.bind_address = "0.0.0.0".to_string();
+        config.rpc.http_port = 5647;
+
+        assert_eq!(rpc_bind_url(&config), "http://127.0.0.1:5647");
     }
 }

@@ -20,7 +20,7 @@ use base64::{engine::general_purpose, Engine as _};
 use hex;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -281,6 +281,8 @@ impl ProofOfSynergy {
 
     pub fn initialize(&mut self) {
         let active_validators = self.validator_manager.get_active_validators();
+        let live_validator_addresses =
+            Self::collect_live_validator_addresses(&self.validator_manager);
         let chain = self.chain.lock().unwrap();
         println!(
             "🔧 Chain loaded. Latest height: {}",
@@ -293,6 +295,10 @@ impl ProofOfSynergy {
         println!(
             "🔧 Synergy scores loaded. Total entries: {}",
             self.synergy_scores.scores.len()
+        );
+        println!(
+            "🔧 Live validator participants currently visible: {}",
+            live_validator_addresses.len()
         );
         println!(
             "🔧 Minimum active validators required for block production: {}",
@@ -350,12 +356,30 @@ impl ProofOfSynergy {
 
                         // Get active validators
                         let active_validators = validator_manager.get_active_validators();
-                        consensus_log!("🔍 Found {} active validators", active_validators.len());
+                        let registry_active_count = active_validators.len();
+                        let live_validator_addresses =
+                            Self::collect_live_validator_addresses(&validator_manager);
+                        let live_validator_address_set = live_validator_addresses
+                            .iter()
+                            .cloned()
+                            .collect::<HashSet<_>>();
+                        let live_active_validators: Vec<Validator> = active_validators
+                            .into_iter()
+                            .filter(|validator| {
+                                live_validator_address_set.contains(&validator.address)
+                            })
+                            .collect();
+                        consensus_log!(
+                            "🔍 Found {} registry-active validators and {} live validator participants",
+                            registry_active_count,
+                            live_active_validators.len()
+                        );
 
-                        if active_validators.len() < min_validators {
+                        if live_active_validators.len() < min_validators {
                             println!(
-                                "⏳ Insufficient active validators for block production: {} active, {} required.",
-                                active_validators.len(),
+                                "⏳ Insufficient live validators for block production: {} live, {} registry-active, {} required.",
+                                live_active_validators.len(),
+                                registry_active_count,
                                 min_validators
                             );
                             thread::sleep(Duration::from_secs(1));
@@ -374,12 +398,30 @@ impl ProofOfSynergy {
                         // Use next block index for leader selection (current block + 1)
                         let next_block_index = latest_block_clone.block_index + 1;
                         let selected_validator = Self::select_leader_for_block(
-                            &active_validators,
+                            &live_active_validators,
                             next_block_index,
                             &synergy_calculator,
                             &entropy_beacon,
                             epoch_length,
                         );
+
+                        let local_validator_address = Self::resolve_local_validator_address();
+                        if local_validator_address.as_deref()
+                            != Some(selected_validator.address.as_str())
+                        {
+                            info!(
+                                "consensus",
+                                "Local validator is not the scheduled leader; waiting for remote proposal",
+                                "leader" => selected_validator.address.clone(),
+                                "local_validator" => local_validator_address.unwrap_or_default(),
+                                "visible_validators" => live_active_validators.len() as u64
+                            );
+                            drop(chain_guard);
+                            drop(pool);
+                            last_block_time = current_time;
+                            thread::sleep(Duration::from_millis(250));
+                            continue;
+                        }
 
                         consensus_log!("LEADER SELECTED: {}", selected_validator.address);
                         consensus_log!("Getting transactions from pool...");
@@ -861,6 +903,44 @@ impl ProofOfSynergy {
         println!("🔧 INITIALIZE_GENESIS_VALIDATORS CALLED - END");
     }
 
+    fn resolve_local_validator_address() -> Option<String> {
+        ["SYNERGY_VALIDATOR_ADDRESS", "NODE_ADDRESS"]
+            .iter()
+            .find_map(|key| {
+                std::env::var(key)
+                    .ok()
+                    .map(|value| value.trim().to_string())
+                    .filter(|value| !value.is_empty())
+            })
+    }
+
+    fn collect_live_validator_addresses(validator_manager: &Arc<ValidatorManager>) -> Vec<String> {
+        let active_validator_addresses = validator_manager
+            .get_active_validators()
+            .into_iter()
+            .map(|validator| validator.address)
+            .collect::<HashSet<_>>();
+        let mut live_validator_addresses = HashSet::new();
+
+        if let Some(local_validator_address) = Self::resolve_local_validator_address() {
+            if active_validator_addresses.contains(&local_validator_address) {
+                live_validator_addresses.insert(local_validator_address);
+            }
+        }
+
+        if let Some(network) = crate::p2p::get_p2p_network() {
+            for validator_address in network.get_connected_validator_addresses() {
+                if active_validator_addresses.contains(&validator_address) {
+                    live_validator_addresses.insert(validator_address);
+                }
+            }
+        }
+
+        let mut live_validator_addresses = live_validator_addresses.into_iter().collect::<Vec<_>>();
+        live_validator_addresses.sort();
+        live_validator_addresses
+    }
+
     fn ensure_genesis_validator_stakes(validator_manager: &Arc<ValidatorManager>) {
         println!("🔧 ENSURING_GENESIS_VALIDATOR_STAKES - START");
         match canonical_genesis() {
@@ -993,6 +1073,7 @@ impl ProofOfSynergy {
             QuorumCertificate {
                 block_hash: block.hash.clone(),
                 epoch_number: block.block_index / epoch_length.max(1), // Calculate epoch from block index
+                round_number: 1,
                 aggregate_signature: block.block_signature.clone(),
                 participant_bitmap: vec![0xFF], // Placeholder bitmap
                 cumulative_weight: 1.0,         // Placeholder weight
@@ -1005,6 +1086,7 @@ impl ProofOfSynergy {
             QuorumCertificate {
                 block_hash: "genesis_block".to_string(),
                 epoch_number: 0,
+                round_number: 0,
                 aggregate_signature: Vec::new(),
                 participant_bitmap: Vec::new(),
                 cumulative_weight: 0.0,

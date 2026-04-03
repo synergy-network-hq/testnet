@@ -56,6 +56,7 @@ pub struct ConsensusConfig {
     #[serde(default = "default_min_validators")]
     pub min_validators: usize,
     pub validator_cluster_size: usize,
+    #[serde(default = "default_max_validators")]
     pub max_validators: usize,
     pub synergy_score_decay_rate: f64,
     pub vrf_enabled: bool,
@@ -67,6 +68,10 @@ pub struct ConsensusConfig {
 
 fn default_min_validators() -> usize {
     4
+}
+
+fn default_max_validators() -> usize {
+    100
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -179,7 +184,7 @@ impl Default for NodeConfig {
                 epoch_length: 50,
                 min_validators: default_min_validators(),
                 validator_cluster_size: 4,
-                max_validators: 4,
+                max_validators: default_max_validators(),
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
                 vrf_seed_epoch_interval: 1000,
@@ -860,7 +865,7 @@ algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
 validator_cluster_size = 4
-max_validators = 4
+max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
