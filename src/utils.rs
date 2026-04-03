@@ -42,6 +42,64 @@ pub fn get_project_root() -> Option<PathBuf> {
     None
 }
 
+fn has_runtime_config_dir(path: &Path) -> bool {
+    path.join("config").is_dir()
+}
+
+fn search_runtime_root_from(start: &Path) -> Option<PathBuf> {
+    let mut current = if start.is_dir() {
+        start.to_path_buf()
+    } else {
+        start.parent()?.to_path_buf()
+    };
+
+    loop {
+        if has_runtime_config_dir(&current) {
+            return Some(current);
+        }
+
+        if let Some(parent) = current.parent() {
+            current = parent.to_path_buf();
+        } else {
+            return None;
+        }
+    }
+}
+
+/// Gets the active runtime root for a launched node workspace.
+///
+/// Unlike `get_project_root`, this prefers deployed node workspaces discovered
+/// via `SYNERGY_PROJECT_ROOT` / `SYNERGY_CONFIG_PATH` before falling back to the
+/// source checkout root.
+pub fn get_runtime_root() -> Option<PathBuf> {
+    if let Ok(configured_root) = env::var("SYNERGY_PROJECT_ROOT") {
+        let trimmed = configured_root.trim();
+        if !trimmed.is_empty() {
+            let root = PathBuf::from(trimmed);
+            if has_runtime_config_dir(&root) {
+                return Some(root);
+            }
+        }
+    }
+
+    if let Ok(config_path) = env::var("SYNERGY_CONFIG_PATH") {
+        let trimmed = config_path.trim();
+        if !trimmed.is_empty() {
+            if let Some(root) = search_runtime_root_from(Path::new(trimmed)) {
+                return Some(root);
+            }
+        }
+    }
+
+    if let Ok(current_dir) = env::current_dir() {
+        if let Some(root) = search_runtime_root_from(&current_dir) {
+            return Some(root);
+        }
+    }
+
+    get_project_root().filter(|root| has_runtime_config_dir(root))
+}
+
 /// Resolves a path relative to the project root, or returns absolute path as-is
 pub fn resolve_data_path(relative_path: &str) -> PathBuf {
     // If it's already absolute, use it as-is
@@ -49,9 +107,12 @@ pub fn resolve_data_path(relative_path: &str) -> PathBuf {
         return PathBuf::from(relative_path);
     }
 
-    // Prefer the active working directory first. Node processes are launched
-    // with their workspace as cwd, so this keeps per-node chain/state files
-    // scoped to that workspace instead of the source tree.
+    // Prefer the explicit runtime root for launched nodes so state/log paths stay
+    // anchored to the node workspace even when the process starts from another cwd.
+    if let Some(runtime_root) = get_runtime_root() {
+        return runtime_root.join(relative_path);
+    }
+
     if let Ok(current_dir) = env::current_dir() {
         return current_dir.join(relative_path);
     }
@@ -67,21 +128,110 @@ pub fn resolve_data_path(relative_path: &str) -> PathBuf {
 
 /// Validates that we're running from the correct project root
 pub fn validate_project_root() -> Result<PathBuf, String> {
-    if let Some(project_root) = get_project_root() {
-        // Check for required directories
-        let config_dir = project_root.join("config");
-        if !config_dir.exists() {
-            return Err(format!(
-                "Invalid project root: config/ directory not found in {}",
-                project_root.display()
-            ));
+    if let Some(project_root) = get_runtime_root() {
+        return Ok(project_root);
+    }
+
+    Err(
+        "Could not determine a writable runtime root. Set SYNERGY_PROJECT_ROOT or SYNERGY_CONFIG_PATH, or run from the node workspace."
+            .to_string(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::get_runtime_root;
+    use std::env;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn clear(key: &'static str) -> Self {
+            let previous = env::var(key).ok();
+            env::remove_var(key);
+            Self { key, previous }
         }
 
-        Ok(project_root)
-    } else {
-        Err(
-            "Could not determine project root. Please run from the synergy-testbeta directory."
-                .to_string(),
-        )
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            env::set_var(key, value);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                env::set_var(self.key, previous);
+            } else {
+                env::remove_var(self.key);
+            }
+        }
+    }
+
+    struct TempWorkspace {
+        root: PathBuf,
+    }
+
+    impl TempWorkspace {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time should be after unix epoch")
+                .as_nanos();
+            let root = env::temp_dir().join(format!(
+                "synergy-runtime-root-test-{}-{}",
+                std::process::id(),
+                unique
+            ));
+            fs::create_dir_all(root.join("config")).expect("temp workspace config dir should exist");
+            Self { root }
+        }
+    }
+
+    impl Drop for TempWorkspace {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    #[test]
+    fn runtime_root_prefers_synergy_project_root() {
+        let _lock = env_lock().lock().expect("env lock should be available");
+        let workspace = TempWorkspace::new();
+        let _project_root = EnvVarGuard::set(
+            "SYNERGY_PROJECT_ROOT",
+            workspace.root.to_str().expect("workspace path should be utf-8"),
+        );
+        let _config_path = EnvVarGuard::clear("SYNERGY_CONFIG_PATH");
+
+        assert_eq!(get_runtime_root(), Some(workspace.root.clone()));
+    }
+
+    #[test]
+    fn runtime_root_falls_back_to_synergy_config_path() {
+        let _lock = env_lock().lock().expect("env lock should be available");
+        let workspace = TempWorkspace::new();
+        let config_path = workspace.root.join("config").join("node.toml");
+        fs::write(&config_path, b"").expect("temp config file should be writable");
+        let _project_root = EnvVarGuard::clear("SYNERGY_PROJECT_ROOT");
+        let _config_path = EnvVarGuard::set(
+            "SYNERGY_CONFIG_PATH",
+            config_path.to_str().expect("config path should be utf-8"),
+        );
+
+        assert_eq!(get_runtime_root(), Some(workspace.root.clone()));
     }
 }
