@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: ${{ matrix.label }}
@@ -126,6 +129,7 @@ jobs:
           PY
 
       - name: Upload workflow artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
@@ -141,6 +145,7 @@ jobs:
     name: Publish unified latest.json
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name != 'release'
 
     steps:
       - name: Download all platform artifacts
