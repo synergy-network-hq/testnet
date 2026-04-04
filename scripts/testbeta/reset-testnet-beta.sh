@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-HOSTS_FILE="${HOSTS_FILE:-$ROOT_DIR/testbeta/lean15/hosts.env}"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+HOSTS_FILE="${HOSTS_FILE:-$ROOT_DIR/testbeta/runtime/hosts.env}"
 RUN_NODE_SCRIPT="$ROOT_DIR/scripts/testbeta/run-node.sh"
 RENDER_CONFIGS_SCRIPT="$ROOT_DIR/scripts/testbeta/render-configs.sh"
 GENESIS_SCRIPT="$ROOT_DIR/scripts/testbeta/generate-testnet-beta-genesis.sh"

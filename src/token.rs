@@ -326,8 +326,7 @@ impl TokenManager {
 
             // Update balance
             if let Ok(mut balances) = self.balances.lock() {
-                let address_balances =
-                    balances.entry(to.to_string()).or_insert_with(HashMap::new);
+                let address_balances = balances.entry(to.to_string()).or_insert_with(HashMap::new);
                 let current_balance = address_balances.get(token_symbol).unwrap_or(&0);
                 address_balances.insert(token_symbol.to_string(), current_balance + amount);
             }

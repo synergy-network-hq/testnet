@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-OUTPUT_FILE="${1:-$ROOT_DIR/testbeta/lean15/hosts.env}"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+OUTPUT_FILE="${1:-$ROOT_DIR/testbeta/runtime/hosts.env}"
 ORCHESTRATOR_SCRIPT="$ROOT_DIR/scripts/testbeta/remote-node-orchestrator.sh"
 
 if [[ ! -f "$INVENTORY_FILE" ]]; then
@@ -37,21 +37,21 @@ ATLAS_BASE_URL=https://testbeta-explorer.synergy-network.io
 
 HEADER
 
-while IFS=, read -r machine_id node_id role_group role node_type _ _ _ _ _ _ host vpn_ip _ _ _ || [[ -n "${machine_id:-}" ]]; do
+while IFS=, read -r machine_id node_id role_group role node_type _ _ _ _ _ _ host management_host _ _ _ || [[ -n "${machine_id:-}" ]]; do
   [[ "$machine_id" == "machine_id" ]] && continue
   [[ -z "${machine_id:-}" ]] && continue
 
   machine_key="$(printf '%s' "$machine_id" | tr '[:lower:]-' '[:upper:]_')"
 
   if [[ -z "${host:-}" ]]; then
-    host="$vpn_ip"
+    host="$management_host"
   fi
 
   cat >> "$OUTPUT_FILE" <<ENTRY
 # -----------------------------------------------------------------------------
 # $machine_id ($node_id | $role_group | $role | $node_type)
 ${machine_key}_HOST=$host
-${machine_key}_VPN_IP=$vpn_ip
+${machine_key}_MANAGEMENT_HOST=$management_host
 ${machine_key}_SSH_USER=ops
 ${machine_key}_SSH_PORT=22
 # ${machine_key}_SSH_KEY=

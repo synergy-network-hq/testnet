@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-CONFIG_DIR="$ROOT_DIR/testbeta/lean15/configs"
-KEYS_DIR="$ROOT_DIR/testbeta/lean15/keys"
-OUT_DIR="$ROOT_DIR/testbeta/lean15/installers"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+CONFIG_DIR="$ROOT_DIR/testbeta/runtime/configs"
+KEYS_DIR="$ROOT_DIR/testbeta/runtime/keys"
+OUT_DIR="$ROOT_DIR/testbeta/runtime/installers"
 
 FRESH_HOST_BINARY="$ROOT_DIR/target/release/synergy-testbeta"
 FRESH_DARWIN_BINARY="$ROOT_DIR/target/aarch64-apple-darwin/release/synergy-testbeta"
@@ -394,7 +394,7 @@ show_info() {
   echo "Address Class: $ADDRESS_CLASS"
   echo "Address: $NODE_ADDRESS"
   echo "Monitor Host: ${MONITOR_HOST:-$HOST}"
-  echo "Inventory Address: ${VPN_IP:-not-set}"
+  echo "Inventory Address: ${MANAGEMENT_HOST:-not-set}"
   echo "Transport: ${NETWORK_TRANSPORT:-standard}"
   echo "P2P: $P2P_PORT"
   echo "RPC: $RPC_PORT"
@@ -669,7 +669,7 @@ function Info-Node {
   Write-Host "Address Class: $(Get-NodeEnvValue 'ADDRESS_CLASS')"
   Write-Host "Address: $(Get-NodeEnvValue 'NODE_ADDRESS')"
   Write-Host "Monitor Host: $(Get-NodeEnvValue 'MONITOR_HOST')"
-  Write-Host "Inventory Address: $(Get-NodeEnvValue 'VPN_IP')"
+  Write-Host "Inventory Address: $(Get-NodeEnvValue 'MANAGEMENT_HOST')"
   Write-Host "Transport: $(Get-NodeEnvValue 'NETWORK_TRANSPORT')"
   Write-Host "P2P: $(Get-NodeEnvValue 'P2P_PORT')"
   Write-Host "RPC: $(Get-NodeEnvValue 'RPC_PORT')"
@@ -878,7 +878,7 @@ TXT
 
 ALLOWED_VALIDATOR_ADDRESSES_CSV="$(collect_allowlisted_validators_csv)"
 
-while IFS=, read -r machine_id node_id role_group role node_type address_class p2p_port rpc_port ws_port grpc_port discovery_port host vpn_ip auto_register enable_pruning vrf_enabled || [[ -n "${machine_id:-}" ]]; do
+while IFS=, read -r machine_id node_id role_group role node_type address_class p2p_port rpc_port ws_port grpc_port discovery_port host management_host auto_register enable_pruning vrf_enabled || [[ -n "${machine_id:-}" ]]; do
   [[ "$machine_id" == "machine_id" ]] && continue
 
   auto_register="$(normalize_bool "$auto_register")"
@@ -913,18 +913,18 @@ GRPC_PORT=$grpc_port
 DISCOVERY_PORT=$discovery_port
 HOST=$host
 MONITOR_HOST=$host
-VPN_IP=$vpn_ip
+MANAGEMENT_HOST=$management_host
 NETWORK_TRANSPORT=public
 AUTO_REGISTER_VALIDATOR=$auto_register
 ENABLE_PRUNING=$enable_pruning
 VRF_ENABLED=$vrf_enabled
 STRICT_VALIDATOR_ALLOWLIST=true
 ALLOWED_VALIDATOR_ADDRESSES=$ALLOWED_VALIDATOR_ADDRESSES_CSV
-RPC_BIND_ADDRESS=${vpn_ip}:${rpc_port}
+RPC_BIND_ADDRESS=${management_host}:${rpc_port}
 SYNERGY_AUTO_REGISTER_VALIDATOR=$auto_register
 SYNERGY_STRICT_VALIDATOR_ALLOWLIST=true
 SYNERGY_ALLOWED_VALIDATOR_ADDRESSES=$ALLOWED_VALIDATOR_ADDRESSES_CSV
-SYNERGY_RPC_BIND_ADDRESS=${vpn_ip}:${rpc_port}
+SYNERGY_RPC_BIND_ADDRESS=${management_host}:${rpc_port}
 ENV
 
   write_install_script "$node_dir"

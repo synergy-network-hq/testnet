@@ -570,7 +570,7 @@ Returns node information.
 **Returns:**
 ```json
 {
-  "name": "Synergy Devnet Node",
+  "name": "Synergy Testnet-Beta Node",
   "version": "1.0.0",
   "protocolVersion": 1,
   "networkId": 338639,

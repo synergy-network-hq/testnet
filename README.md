@@ -1,6 +1,6 @@
 # Synergy Testnet Beta
 
-`synergy-testbeta` is the testnet beta repository derived from the devnet codebase. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
+`synergy-testbeta` is the testnet beta repository derived from the earlier beta codebase. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
 
 ## 🚀 Overview
 

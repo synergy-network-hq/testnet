@@ -671,14 +671,7 @@ impl DualQuorumConsensus {
     }
 
     fn resolve_local_validator_address() -> Option<String> {
-        let from_env = ["SYNERGY_VALIDATOR_ADDRESS", "NODE_ADDRESS"]
-            .iter()
-            .find_map(|key| {
-                std::env::var(key)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-            });
+        let from_env = crate::config::resolve_runtime_validator_address();
 
         if from_env.is_some() {
             return from_env;

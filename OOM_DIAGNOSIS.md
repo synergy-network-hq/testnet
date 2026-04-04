@@ -1,15 +1,15 @@
-# Devnet OOM (Out of Memory) Diagnosis
+# Testnet-Beta OOM (Out of Memory) Diagnosis
 
 ## Root Cause
 
-The devnet is being **killed by the Linux OOM (Out Of Memory) killer** when memory usage exceeds available system memory.
+The testnet-beta is being **killed by the Linux OOM (Out Of Memory) killer** when memory usage exceeds available system memory.
 
 ### Evidence
 
 From kernel logs (`dmesg`):
 ```
-oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/user.slice/user-0.slice/session-1441.scope,task=synergy-devnet,pid=2982477,uid=0
-Out of memory: Killed process 2982477 (synergy-devnet) total-vm:7060596kB, anon-rss:3157544kB, file-rss:2176kB, shmem-rss:0kB, UID:0 pgtables:6580kB oom_score_adj:0
+oom-kill:constraint=CONSTRAINT_NONE,nodemask=(null),cpuset=/,mems_allowed=0,global_oom,task_memcg=/user.slice/user-0.slice/session-1441.scope,task=synergy-testbeta,pid=2982477,uid=0
+Out of memory: Killed process 2982477 (synergy-testbeta) total-vm:7060596kB, anon-rss:3157544kB, file-rss:2176kB, shmem-rss:0kB, UID:0 pgtables:6580kB oom_score_adj:0
 ```
 
 The process was using **~3GB of RAM** when killed.
@@ -74,16 +74,16 @@ echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
 ```
 
 #### 2. Set OOM Score Adjustment
-Make the devnet less likely to be killed:
+Make the testnet-beta less likely to be killed:
 ```bash
 # Lower OOM score (less likely to be killed)
-echo -1000 > /proc/$(pgrep synergy-devnet)/oom_score_adj
+echo -1000 > /proc/$(pgrep synergy-testbeta)/oom_score_adj
 ```
 
 #### 3. Monitor Memory Usage
 ```bash
 # Watch memory usage
-watch -n 1 'ps aux | grep synergy-devnet | grep -v grep'
+watch -n 1 'ps aux | grep synergy-testbeta | grep -v grep'
 ```
 
 ### Medium-Term Fixes
@@ -159,16 +159,16 @@ Prune old transaction data, keep only essential state:
 
 ```bash
 # Check if process is running
-ps aux | grep synergy-devnet
+ps aux | grep synergy-testbeta
 
 # Check memory usage
-ps aux | grep synergy-devnet | awk '{print $6/1024 " MB"}'
+ps aux | grep synergy-testbeta | awk '{print $6/1024 " MB"}'
 
 # Check OOM killer activity
 dmesg | grep -i "oom\|killed"
 
 # Monitor in real-time
-watch -n 1 'ps aux | grep synergy-devnet | grep -v grep | awk "{print \$6/1024 \" MB\"}"'
+watch -n 1 'ps aux | grep synergy-testbeta | grep -v grep | awk "{print \$6/1024 \" MB\"}"'
 
 # Check swap usage
 free -h

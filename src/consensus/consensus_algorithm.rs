@@ -904,14 +904,7 @@ impl ProofOfSynergy {
     }
 
     fn resolve_local_validator_address() -> Option<String> {
-        ["SYNERGY_VALIDATOR_ADDRESS", "NODE_ADDRESS"]
-            .iter()
-            .find_map(|key| {
-                std::env::var(key)
-                    .ok()
-                    .map(|value| value.trim().to_string())
-                    .filter(|value| !value.is_empty())
-            })
+        crate::config::resolve_runtime_validator_address()
     }
 
     fn collect_live_validator_addresses(validator_manager: &Arc<ValidatorManager>) -> Vec<String> {

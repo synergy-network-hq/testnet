@@ -130,8 +130,8 @@ Relevant files:
 - `explorer-app/indexer/src/index.ts`
 - `explorer-app/ops/env/backend.env.production.example`
 - `explorer-app/ops/env/indexer.env.production.example`
-- `explorer-app/ops/pm2/ecosystem.devnet.cjs`
-- `explorer-app/ops/nginx/devnet-explorer.conf`
+- `explorer-app/ecosystem.config.cjs`
+- `explorer-app/deploy-explorer.sh`
 
 ## 9. Verify Atlas End-To-End
 

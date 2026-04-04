@@ -371,11 +371,10 @@ npm ci
 npm run build
 ```
 
-2. Copy the checked-in nginx template and update the paths/domain:
+2. Create an nginx site config for the explorer and update the paths/domain:
 
 ```bash
-sudo cp /opt/synergy/explorer-app/ops/nginx/devnet-explorer.conf \
-  /etc/nginx/sites-available/testnet-beta-explorer
+sudo nano /etc/nginx/sites-available/testnet-beta-explorer
 ```
 
 3. Edit the copied config:
