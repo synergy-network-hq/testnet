@@ -1,5 +1,6 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
+use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::p2p::messages::NetworkMessage;
 use crate::rpc::rpc_server::TX_POOL;
 use crate::token::TOKEN_MANAGER;
@@ -49,6 +50,7 @@ struct PeerConnection {
     address: String,
     direction: ConnectionDirection,
     public_address: Option<String>,
+    validator_address: Option<String>,
     connected_at: u64,
     last_seen: u64,
     blocks_sent: u64,
@@ -62,6 +64,22 @@ struct PeerConnection {
     last_known_height: u64,
     best_block_hash: String,
     genesis_hash: String,
+}
+
+fn should_disconnect_for_status_genesis_mismatch(
+    local_genesis_hash: &str,
+    remote_genesis_hash: &str,
+    peer_validator_address: Option<&str>,
+) -> bool {
+    let peer_is_validator = peer_validator_address
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false);
+
+    if remote_genesis_hash.is_empty() {
+        return peer_is_validator;
+    }
+
+    remote_genesis_hash != local_genesis_hash
 }
 
 #[derive(Debug, Deserialize)]
@@ -108,7 +126,7 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
 }
 
 fn announced_validator_address(config: &NodeConfig) -> Option<String> {
-    if config.node.bootstrap_only || !config.node.auto_register_validator {
+    if config.node.bootstrap_only {
         return None;
     }
 
@@ -676,6 +694,49 @@ impl P2PNetwork {
         info!("p2p", "Block broadcast", "peers" => peers.len() as u64, "height" => block.block_index);
     }
 
+    pub fn broadcast_vote_request(
+        &self,
+        block: &Block,
+        epoch_number: u64,
+        round_number: u64,
+    ) -> usize {
+        let message = NetworkMessage::VoteRequest {
+            block_data: block.clone(),
+            epoch_number,
+            round_number,
+        };
+
+        let mut recipients = 0usize;
+        let mut peers = self.connected_peers.lock().unwrap();
+        for (address, peer) in peers.iter_mut() {
+            if peer.validator_address.is_none() {
+                continue;
+            }
+            if let Some(ref mut stream) = peer.stream {
+                if let Err(error) = send_message(stream, &message) {
+                    warn!(
+                        "p2p",
+                        "Failed to send vote request",
+                        "peer" => address.clone(),
+                        "error" => error.to_string()
+                    );
+                } else {
+                    recipients += 1;
+                }
+            }
+        }
+
+        info!(
+            "p2p",
+            "Vote request broadcast",
+            "peers" => recipients as u64,
+            "height" => block.block_index,
+            "epoch" => epoch_number,
+            "round" => round_number
+        );
+        recipients
+    }
+
     pub fn broadcast_transaction(&self, transaction: &Transaction) {
         let message = NetworkMessage::Transaction {
             transaction_data: transaction.clone(),
@@ -713,11 +774,26 @@ impl P2PNetwork {
                     "txs_sent": peer.txs_sent,
                     "txs_received": peer.txs_received,
                     "node_id": peer.node_id,
+                    "public_address": peer.public_address,
+                    "validator_address": peer.validator_address,
                     "version": peer.version,
-                    "capabilities": peer.capabilities
+                    "capabilities": peer.capabilities,
+                    "genesis_hash": peer.genesis_hash
                 })
             })
             .collect()
+    }
+
+    pub fn get_connected_validator_addresses(&self) -> Vec<String> {
+        let peers = self.connected_peers.lock().unwrap();
+        let mut validator_addresses = peers
+            .values()
+            .filter_map(|peer| peer.validator_address.clone())
+            .filter(|address| !address.trim().is_empty())
+            .collect::<Vec<_>>();
+        validator_addresses.sort();
+        validator_addresses.dedup();
+        validator_addresses
     }
 
     pub fn collect_peer_snapshots(&self) -> Vec<PeerSnapshot> {
@@ -997,6 +1073,7 @@ fn handle_incoming_connection(
                 address: peer_address.clone(),
                 direction: ConnectionDirection::Incoming,
                 public_address: None,
+                validator_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
                 blocks_sent: 0,
@@ -1082,6 +1159,7 @@ fn handle_outgoing_connection(
                 address: peer_address.clone(),
                 direction: ConnectionDirection::Outgoing,
                 public_address: None,
+                validator_address: None,
                 connected_at: current_timestamp(),
                 last_seen: current_timestamp(),
                 blocks_sent: 0,
@@ -1302,6 +1380,7 @@ fn handle_messages(
                                 peer.version = Some(version.clone());
                                 peer.capabilities = capabilities;
                                 peer.public_address = public_address;
+                                peer.validator_address = announced_validator_address.clone();
                             }
                         }
 
@@ -1495,6 +1574,110 @@ fn handle_messages(
                             );
                         }
                     }
+                    NetworkMessage::VoteRequest {
+                        block_data,
+                        epoch_number,
+                        round_number,
+                    } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring vote request",
+                                "peer" => peer_address.clone(),
+                                "height" => block_data.block_index,
+                                "epoch" => epoch_number,
+                                "round" => round_number
+                            );
+                            continue;
+                        }
+
+                        match DualQuorumConsensus::build_local_vote_for_proposal(
+                            &block_data,
+                            epoch_number,
+                            round_number,
+                        ) {
+                            Ok(vote) => {
+                                let response = NetworkMessage::Vote { vote };
+                                let mut peers = connected_peers.lock().unwrap();
+                                if let Some(peer) = peers.get_mut(&peer_address) {
+                                    if let Some(ref mut stream) = peer.stream {
+                                        if let Err(error) = send_message(stream, &response) {
+                                            warn!(
+                                                "p2p",
+                                                "Failed to send vote",
+                                                "peer" => peer_address.clone(),
+                                                "height" => block_data.block_index,
+                                                "epoch" => epoch_number,
+                                                "round" => round_number,
+                                                "error" => error.to_string()
+                                            );
+                                        }
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                warn!(
+                                    "p2p",
+                                    "Refusing vote request",
+                                    "peer" => peer_address.clone(),
+                                    "height" => block_data.block_index,
+                                    "epoch" => epoch_number,
+                                    "round" => round_number,
+                                    "error" => error
+                                );
+                            }
+                        }
+                    }
+                    NetworkMessage::Vote { vote } => {
+                        if config.node.bootstrap_only {
+                            debug!(
+                                "p2p",
+                                "Bootstrap-only node ignoring vote payload",
+                                "peer" => peer_address.clone(),
+                                "validator" => vote.validator_address.clone(),
+                                "epoch" => vote.epoch_number,
+                                "round" => vote.round_number
+                            );
+                            continue;
+                        }
+
+                        let announced_validator = {
+                            let peers = connected_peers.lock().unwrap();
+                            peers
+                                .get(&peer_address)
+                                .and_then(|peer| peer.validator_address.clone())
+                        };
+                        let Some(announced_validator) = announced_validator else {
+                            warn!(
+                                "p2p",
+                                "Ignoring vote from peer without validator identity",
+                                "peer" => peer_address.clone(),
+                                "validator" => vote.validator_address.clone()
+                            );
+                            continue;
+                        };
+                        if announced_validator != vote.validator_address {
+                            warn!(
+                                "p2p",
+                                "Ignoring vote with mismatched validator identity",
+                                "peer" => peer_address.clone(),
+                                "announced_validator" => announced_validator,
+                                "vote_validator" => vote.validator_address.clone()
+                            );
+                            continue;
+                        }
+
+                        DualQuorumConsensus::record_network_vote(vote.clone());
+                        debug!(
+                            "p2p",
+                            "Recorded network vote",
+                            "peer" => peer_address.clone(),
+                            "validator" => vote.validator_address.clone(),
+                            "block_hash" => vote.block_hash.clone(),
+                            "epoch" => vote.epoch_number,
+                            "round" => vote.round_number
+                        );
+                    }
                     NetworkMessage::Transaction { transaction_data } => {
                         if config.node.bootstrap_only {
                             debug!(
@@ -1634,7 +1817,17 @@ fn handle_messages(
                             let chain = blockchain.lock().unwrap();
                             chain.get_genesis_hash().unwrap_or_default()
                         };
-                        if genesis_hash.is_empty() || genesis_hash != local_genesis_hash {
+                        let peer_validator_address = {
+                            let peers = connected_peers.lock().unwrap();
+                            peers
+                                .get(&peer_address)
+                                .and_then(|peer| peer.validator_address.clone())
+                        };
+                        if should_disconnect_for_status_genesis_mismatch(
+                            &local_genesis_hash,
+                            &genesis_hash,
+                            peer_validator_address.as_deref(),
+                        ) {
                             warn!(
                                 "p2p",
                                 "Disconnecting peer with mismatched genesis hash",
@@ -1645,6 +1838,13 @@ fn handle_messages(
                             let mut peers = connected_peers.lock().unwrap();
                             disconnect_peer_entry(&mut peers, &peer_address);
                             continue;
+                        }
+                        if genesis_hash.is_empty() {
+                            debug!(
+                                "p2p",
+                                "Keeping discovery peer without genesis hash",
+                                "peer" => peer_address.clone()
+                            );
                         }
 
                         let mut peers = connected_peers.lock().unwrap();
@@ -2172,8 +2372,9 @@ fn dial_peer_async(
 mod tests {
     use super::{
         collect_known_peer_addresses, dial_with_timeout, parse_bootnode_dial_address,
-        preferred_connection_direction, resolve_duplicate_connection, ConnectionDirection,
-        DialTargetsArc, DuplicateResolution,
+        preferred_connection_direction, resolve_duplicate_connection,
+        should_disconnect_for_status_genesis_mismatch, ConnectionDirection, DialTargetsArc,
+        DuplicateResolution,
     };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
@@ -2280,5 +2481,45 @@ mod tests {
         assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
         assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
         assert!(addresses.contains(&"157.245.226.24:5620".to_string()));
+    }
+
+    #[test]
+    fn empty_remote_genesis_hash_is_allowed_for_discovery_peer() {
+        assert!(
+            !should_disconnect_for_status_genesis_mismatch(
+                "local-hash",
+                "",
+                None,
+            )
+        );
+    }
+
+    #[test]
+    fn empty_remote_genesis_hash_disconnects_validator_peer() {
+        assert!(should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "",
+            Some("synv1validator"),
+        ));
+    }
+
+    #[test]
+    fn mismatched_nonempty_remote_genesis_hash_disconnects_peer() {
+        assert!(should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "remote-hash",
+            None,
+        ));
+    }
+
+    #[test]
+    fn matching_remote_genesis_hash_is_allowed_for_validator_peer() {
+        assert!(
+            !should_disconnect_for_status_genesis_mismatch(
+                "local-hash",
+                "local-hash",
+                Some("synv1validator"),
+            )
+        );
     }
 }

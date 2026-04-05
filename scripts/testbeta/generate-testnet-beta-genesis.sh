@@ -6,8 +6,8 @@ echo "Use the filled canonical genesis.json from the ceremony output. Do not gen
 exit 1
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/lean15/keys/node-addresses.csv"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/runtime/keys/node-addresses.csv"
 OUTPUT_FILE="${1:-$ROOT_DIR/config/genesis.json}"
 
 if [[ ! -f "$INVENTORY_FILE" ]]; then
@@ -61,8 +61,6 @@ if Path(addresses_file).is_file():
                 addresses[machine_id] = address
 else:
     fallback_dir = Path(root_dir) / "config" / "genesis-validators"
-    if not fallback_dir.is_dir():
-        fallback_dir = Path(root_dir) / "testbeta" / "lean15" / "keys"
     for index in range(1, validator_limit + 1):
         identity_path = fallback_dir / f"node-{index:02}.identity.json"
         if not identity_path.is_file():

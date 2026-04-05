@@ -2,10 +2,10 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-HOSTS_FILE="${1:-$ROOT_DIR/testbeta/lean15/hosts.env}"
-OUT_DIR="$ROOT_DIR/testbeta/lean15/configs"
-NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/lean15/keys/node-addresses.csv"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+HOSTS_FILE="${1:-$ROOT_DIR/testbeta/runtime/hosts.env}"
+OUT_DIR="$ROOT_DIR/testbeta/runtime/configs"
+NODE_ADDRESSES_FILE="$ROOT_DIR/testbeta/runtime/keys/node-addresses.csv"
 USE_HOST_OVERRIDES="false"
 TESTBETA_CHAIN_ID="${TESTBETA_CHAIN_ID:-338639}"
 TESTBETA_NETWORK_NAME="${TESTBETA_NETWORK_NAME:-synergy-testnet-beta}"
@@ -71,12 +71,12 @@ resolve_public_host() {
 
 resolve_p2p_host() {
   local machine_id="$1"
-  local default_vpn_ip="$2"
+  local default_management_host="$2"
   local fallback_public_host="$3"
   local machine_key
   if [[ "$USE_HOST_OVERRIDES" != "true" ]]; then
-    if [[ -n "${default_vpn_ip}" ]]; then
-      echo "${default_vpn_ip}"
+    if [[ -n "${default_management_host}" ]]; then
+      echo "${default_management_host}"
     else
       echo "${fallback_public_host}"
     fi
@@ -85,12 +85,12 @@ resolve_p2p_host() {
 
   machine_key="$(echo "$machine_id" | tr '[:lower:]-' '[:upper:]_')"
 
-  local vpn_var="${machine_key}_VPN_IP"
+  local management_host_var="${machine_key}_MANAGEMENT_HOST"
   local p2p_var="${machine_key}_P2P_HOST"
   local internal_var="${machine_key}_INTERNAL_HOST"
 
-  if [[ -n "${!vpn_var:-}" ]]; then
-    echo "${!vpn_var}"
+  if [[ -n "${!management_host_var:-}" ]]; then
+    echo "${!management_host_var}"
     return
   fi
 
@@ -104,8 +104,8 @@ resolve_p2p_host() {
     return
   fi
 
-  if [[ -n "${default_vpn_ip}" ]]; then
-    echo "${default_vpn_ip}"
+  if [[ -n "${default_management_host}" ]]; then
+    echo "${default_management_host}"
     return
   fi
 
@@ -117,13 +117,12 @@ compute_listen_address() {
   local p2p_port="$2"
 
   if [[ "$p2p_host" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-    # Enforce private overlay listening for closed testnet-beta.
     if [[ "$p2p_host" =~ ^10\. ]] || [[ "$p2p_host" =~ ^192\.168\. ]] || [[ "$p2p_host" =~ ^172\.([1][6-9]|2[0-9]|3[0-1])\. ]] || [[ "$p2p_host" =~ ^127\. ]]; then
       echo "${p2p_host}:${p2p_port}"
       return
     fi
-    echo "Refusing non-private listen IP for closed testnet-beta: ${p2p_host}" >&2
-    exit 1
+    echo "0.0.0.0:${p2p_port}"
+    return
   fi
 
   if [[ "$p2p_host" == "localhost" ]]; then
@@ -131,14 +130,7 @@ compute_listen_address() {
     return
   fi
 
-  if [[ "$(normalize_bool "$ALLOW_WILDCARD_LISTEN")" == "true" ]]; then
-    echo "0.0.0.0:${p2p_port}"
-    return
-  fi
-
-  echo "Unable to derive private listen address from host '${p2p_host}'." >&2
-  echo "Set MACHINE_XX_VPN_IP in hosts.env (or set ALLOW_WILDCARD_LISTEN=true intentionally)." >&2
-  exit 1
+  echo "0.0.0.0:${p2p_port}"
 }
 
 compute_public_address() {
@@ -192,10 +184,10 @@ BOOTNODE1_PORT=""
 BOOTNODE2_HOST=""
 BOOTNODE2_PORT=""
 
-while IFS=, read -r machine_id _ _ _ _ _ p2p_port _ _ _ _ host vpn_ip _ _ _ || [[ -n "${machine_id:-}" ]]; do
+while IFS=, read -r machine_id _ _ _ _ _ p2p_port _ _ _ _ host management_host _ _ _ || [[ -n "${machine_id:-}" ]]; do
   [[ "$machine_id" == "machine_id" ]] && continue
   resolved_host="$(resolve_public_host "$machine_id" "$host")"
-  resolved_p2p_host="$(resolve_p2p_host "$machine_id" "$vpn_ip" "$resolved_host")"
+  resolved_p2p_host="$(resolve_p2p_host "$machine_id" "$management_host" "$resolved_host")"
   if [[ "$machine_id" == "machine-01" ]]; then
     BOOTNODE1_HOST="$resolved_p2p_host"
     BOOTNODE1_PORT="$p2p_port"
@@ -219,11 +211,11 @@ BOOTNODE1="snr://bootstrap@${BOOTNODE1_HOST}:${BOOTNODE1_PORT}"
 BOOTNODE2="snr://bootstrap@${BOOTNODE2_HOST}:${BOOTNODE2_PORT}"
 ALLOWED_VALIDATOR_ADDRESSES="$(collect_allowed_validator_addresses)"
 
-while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_port ws_port grpc_port discovery_port host vpn_ip auto_register enable_pruning vrf_enabled || [[ -n "${machine_id:-}" ]]; do
+while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_port ws_port grpc_port discovery_port host management_host auto_register enable_pruning vrf_enabled || [[ -n "${machine_id:-}" ]]; do
   [[ "$machine_id" == "machine_id" ]] && continue
 
   resolved_public_host="$(resolve_public_host "$machine_id" "$host")"
-  resolved_p2p_host="$(resolve_p2p_host "$machine_id" "$vpn_ip" "$resolved_public_host")"
+  resolved_p2p_host="$(resolve_p2p_host "$machine_id" "$management_host" "$resolved_public_host")"
   listen_address="$(compute_listen_address "$resolved_p2p_host" "$p2p_port")"
   public_address="$(compute_public_address "$resolved_p2p_host" "$p2p_port")"
   validator_address="$(lookup_node_address "$machine_id")"

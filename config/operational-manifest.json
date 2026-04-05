@@ -131,7 +131,7 @@
   },
   "sxcp": {
     "ethereum": "Sepolia",
-    "solana": "Devnet",
+    "solana": "Testnet",
     "mode": "deterministic-validation"
   },
   "launch_exceptions": {

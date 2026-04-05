@@ -616,7 +616,7 @@
         "replay_protection_enabled": true,
         "accepted_source_domains": [
           "ethereum-sepolia",
-          "solana-devnet",
+          "solana-testnet",
           "synergy-testbeta"
         ],
         "proof_type": "merkle",
@@ -841,7 +841,7 @@
       "bridge_contract_address": "",
       "supported_chains": [
         "ethereum-sepolia",
-        "solana-devnet"
+        "solana-testnet"
       ],
       "guardian_set": [
         "<GUARDIAN_ADDRESS>"

@@ -1,5 +1,0 @@
-# Local host overrides
-hosts.env
-
-# Generated private key material
-keys/

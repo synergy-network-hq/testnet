@@ -2,11 +2,11 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-INVENTORY_FILE="$ROOT_DIR/testbeta/lean15/node-inventory.csv"
-HOSTS_ENV_FILE="${SYNERGY_MONITOR_HOSTS_ENV:-$ROOT_DIR/testbeta/lean15/hosts.env}"
-INSTALLERS_DIR="$ROOT_DIR/testbeta/lean15/installers"
+INVENTORY_FILE="$ROOT_DIR/testbeta/runtime/node-inventory.csv"
+HOSTS_ENV_FILE="${SYNERGY_MONITOR_HOSTS_ENV:-$ROOT_DIR/testbeta/runtime/hosts.env}"
+INSTALLERS_DIR="$ROOT_DIR/testbeta/runtime/installers"
 REMOTE_ROOT_DEFAULT="${SYNERGY_REMOTE_ROOT:-/opt/synergy}"
-REMOTE_EXPORTS_DIR="$ROOT_DIR/testbeta/lean15/reports/remote-exports"
+REMOTE_EXPORTS_DIR="$ROOT_DIR/testbeta/runtime/reports/remote-exports"
 
 usage() {
   cat <<USAGE
@@ -28,9 +28,9 @@ Operations:
   info                  Print resolved host/ssh/paths for this machine
 
 Required local files:
-  - testbeta/lean15/node-inventory.csv
-  - testbeta/lean15/hosts.env
-  - testbeta/lean15/installers/<machine-id>/
+  - testbeta/runtime/node-inventory.csv
+  - testbeta/runtime/hosts.env
+  - testbeta/runtime/installers/<machine-id>/
 
 USAGE
 }
@@ -60,7 +60,7 @@ inventory_host() {
   awk -F, -v machine="$MACHINE_ID" 'NR>1 && tolower($1)==tolower(machine){print $12; exit}' "$INVENTORY_FILE"
 }
 
-inventory_vpn_ip() {
+inventory_management_host() {
   awk -F, -v machine="$MACHINE_ID" 'NR>1 && tolower($1)==tolower(machine){print $13; exit}' "$INVENTORY_FILE"
 }
 
@@ -70,7 +70,7 @@ resolve_var() {
 }
 
 HOST_VAR="${MACHINE_KEY_UPPER}_HOST"
-VPN_VAR="${MACHINE_KEY_UPPER}_VPN_IP"
+MANAGEMENT_HOST_VAR="${MACHINE_KEY_UPPER}_MANAGEMENT_HOST"
 SSH_USER_VAR="${MACHINE_KEY_UPPER}_SSH_USER"
 SSH_PORT_VAR="${MACHINE_KEY_UPPER}_SSH_PORT"
 SSH_KEY_VAR="${MACHINE_KEY_UPPER}_SSH_KEY"
@@ -79,9 +79,9 @@ HOST="$(resolve_var "$HOST_VAR")"
 if [[ -z "$HOST" ]]; then
   HOST="$(inventory_host)"
 fi
-VPN_IP="$(resolve_var "$VPN_VAR")"
-if [[ -z "$VPN_IP" ]]; then
-  VPN_IP="$(inventory_vpn_ip)"
+MANAGEMENT_HOST="$(resolve_var "$MANAGEMENT_HOST_VAR")"
+if [[ -z "$MANAGEMENT_HOST" ]]; then
+  MANAGEMENT_HOST="$(inventory_management_host)"
 fi
 
 SSH_USER="$(resolve_var "$SSH_USER_VAR")"
@@ -144,7 +144,7 @@ is_local_host_token() {
 }
 
 IS_LOCAL_TARGET=0
-if is_local_host_token "$HOST" || { [[ -n "$VPN_IP" ]] && is_local_host_token "$VPN_IP"; }; then
+if is_local_host_token "$HOST" || { [[ -n "$MANAGEMENT_HOST" ]] && is_local_host_token "$MANAGEMENT_HOST"; }; then
   IS_LOCAL_TARGET=1
 fi
 
@@ -337,7 +337,7 @@ show_info() {
   cat <<INFO
 Machine:            $MACHINE_ID
 Host:               $HOST
-VPN IP:             ${VPN_IP:-unknown}
+Management Host:             ${MANAGEMENT_HOST:-unknown}
 Execution mode:     $([[ "$IS_LOCAL_TARGET" -eq 1 ]] && echo "local" || echo "ssh")
 SSH user:           $SSH_USER
 SSH port:           $SSH_PORT

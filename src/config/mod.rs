@@ -56,6 +56,7 @@ pub struct ConsensusConfig {
     #[serde(default = "default_min_validators")]
     pub min_validators: usize,
     pub validator_cluster_size: usize,
+    #[serde(default = "default_max_validators")]
     pub max_validators: usize,
     pub synergy_score_decay_rate: f64,
     pub vrf_enabled: bool,
@@ -67,6 +68,10 @@ pub struct ConsensusConfig {
 
 fn default_min_validators() -> usize {
     4
+}
+
+fn default_max_validators() -> usize {
+    100
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -179,7 +184,7 @@ impl Default for NodeConfig {
                 epoch_length: 50,
                 min_validators: default_min_validators(),
                 validator_cluster_size: 4,
-                max_validators: 4,
+                max_validators: default_max_validators(),
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
                 vrf_seed_epoch_interval: 1000,
@@ -266,6 +271,27 @@ pub fn load_node_config(path: Option<&str>) -> Result<NodeConfig, Box<dyn Error>
     config = apply_env_overrides(config)?;
 
     Ok(config)
+}
+
+pub fn resolve_runtime_validator_address() -> Option<String> {
+    ["SYNERGY_VALIDATOR_ADDRESS", "NODE_ADDRESS"]
+        .iter()
+        .find_map(|key| {
+            env::var(key)
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        })
+        .or_else(|| {
+            load_node_config(None).ok().and_then(|config| {
+                let configured = config.node.validator_address.trim();
+                if configured.is_empty() {
+                    None
+                } else {
+                    Some(configured.to_string())
+                }
+            })
+        })
 }
 
 /// Loads a node configuration from a template file by node type
@@ -768,7 +794,47 @@ fn parse_port_from_address(value: &str) -> Option<u16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = env::var(key).ok();
+            unsafe {
+                env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+
+        fn clear(key: &'static str) -> Self {
+            let previous = env::var(key).ok();
+            unsafe {
+                env::remove_var(key);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(previous) = &self.previous {
+                unsafe {
+                    env::set_var(self.key, previous);
+                }
+            } else {
+                unsafe {
+                    env::remove_var(self.key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn parses_testbeta_control_panel_workspace_config() {
@@ -860,7 +926,7 @@ algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 30000
 validator_cluster_size = 4
-max_validators = 4
+max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -946,6 +1012,119 @@ additional_dial_targets = ["73.79.66.255:39638"]
 
         fs::remove_file(&node_path).ok();
         fs::remove_file(&peers_path).ok();
+        fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn resolve_runtime_validator_address_prefers_env() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
+        let _validator = EnvVarGuard::set(
+            "SYNERGY_VALIDATOR_ADDRESS",
+            "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu",
+        );
+        let _node_address = EnvVarGuard::clear("NODE_ADDRESS");
+        let _config_path = EnvVarGuard::clear("SYNERGY_CONFIG_PATH");
+
+        assert_eq!(
+            resolve_runtime_validator_address().as_deref(),
+            Some("synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu")
+        );
+    }
+
+    #[test]
+    fn resolve_runtime_validator_address_falls_back_to_config() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
+        let _validator = EnvVarGuard::clear("SYNERGY_VALIDATOR_ADDRESS");
+        let _node_address = EnvVarGuard::clear("NODE_ADDRESS");
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("synergy-config-identity-{unique}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+        let config_path = temp_dir.join("node.toml");
+        fs::write(
+            &config_path,
+            r#"
+[network]
+id = 338639
+name = "synergy-testnet-beta"
+p2p_port = 5622
+rpc_port = 5640
+ws_port = 5660
+max_peers = 32
+
+[blockchain]
+block_time = 5
+max_gas_limit = "0x2fefd8"
+chain_id = 338639
+
+[consensus]
+algorithm = "Proof of Synergy"
+block_time_secs = 5
+epoch_length = 30000
+validator_cluster_size = 4
+max_validators = 100
+synergy_score_decay_rate = 0.05
+vrf_enabled = true
+vrf_seed_epoch_interval = 1000
+max_synergy_points_per_epoch = 100
+max_tasks_per_validator = 10
+
+[consensus.reward_weighting]
+task_accuracy = 0.5
+uptime = 0.3
+collaboration = 0.2
+
+[logging]
+log_level = "info"
+log_file = "data/logs/validator.log"
+enable_console = true
+max_file_size = 10485760
+max_files = 5
+
+[rpc]
+bind_address = "127.0.0.1:5640"
+enable_http = true
+http_port = 5640
+enable_ws = true
+ws_port = 5660
+enable_grpc = true
+grpc_port = 5640
+cors_enabled = false
+cors_origins = []
+
+[p2p]
+listen_address = "0.0.0.0:5622"
+public_address = "71.86.65.178:5622"
+node_name = "tbeta-test"
+enable_discovery = true
+discovery_port = 5680
+heartbeat_interval = 30
+
+[storage]
+database = "rocksdb"
+path = "data/chain"
+enable_pruning = false
+pruning_interval = 86400
+
+[node]
+validator_address = "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49"
+"#,
+        )
+        .expect("config should write");
+        let _config_path = EnvVarGuard::set(
+            "SYNERGY_CONFIG_PATH",
+            config_path.to_str().expect("config path should be utf-8"),
+        );
+
+        assert_eq!(
+            resolve_runtime_validator_address().as_deref(),
+            Some("synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49")
+        );
+
+        fs::remove_file(&config_path).ok();
         fs::remove_dir_all(&temp_dir).ok();
     }
 }

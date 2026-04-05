@@ -92,15 +92,15 @@
 
 ---
 
-## 🌐 Phase 6: Developer Tooling + Devnet
+## 🌐 Phase 6: Developer Tooling + Testnet-Beta
 
 ### 💻 Tooling
 - [ ] CLI deployment + bytecode viewer
 - [ ] QuantumWallet for PQC account management
-- [ ] DevNet dashboard with PQC metrics (sig size, tx gas, verifier time)
+- [ ] Testnet-Beta dashboard with PQC metrics (sig size, tx gas, verifier time)
 
-### 🧪 Devnet
-- [ ] Launch Synergy PQC DevNet
+### 🧪 Testnet-Beta
+- [ ] Launch Synergy PQC Testnet-Beta
 - [ ] Enable PQC-based accounts, contract deployment, and voting
 - [ ] Recruit cryptography/security researchers to test PQC edge cases
 

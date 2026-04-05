@@ -1,7 +1,7 @@
 {
   "name": "synergy-deps",
   "version": "1.0.0",
-  "description": "Node.js dependencies for Synergy Network Devnet",
+  "description": "Node.js dependencies for Synergy Network Testnet-Beta",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"

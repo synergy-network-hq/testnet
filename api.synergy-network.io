@@ -1,6 +1,6 @@
 # Global API Router - Compliant with Synergy_Network_Master_Config_FULL.md
 # Section 6.2: Global API Router with path-based routing
-# Note: upstream devnet_api is defined in synergy-network.io-subdomains.conf
+# Note: upstream testbeta_api is defined in synergy-network.io-subdomains.conf
 
 server {
     listen 80;
@@ -28,7 +28,7 @@ server {
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
     location /testnet-beta/ {
-        proxy_pass http://devnet_api/;
+        proxy_pass http://testbeta_api/;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;

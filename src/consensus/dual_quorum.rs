@@ -2,23 +2,39 @@ use crate::block::Block;
 use crate::crypto::pqc::{
     PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey, PQCSignature,
 };
-use crate::validator::{ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE};
+use crate::validator::{
+    Validator, ValidatorManager, ValidatorPerformanceUpdate, ValidatorStatus,
+    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+};
+use crate::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 lazy_static::lazy_static! {
     static ref EPHEMERAL_VALIDATOR_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    static ref NETWORK_VOTE_MAILBOX: Arc<Mutex<HashMap<String, Vec<Vote>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    static ref OBSERVED_VOTES: Arc<Mutex<HashMap<String, Vote>>> = Arc::new(Mutex::new(HashMap::new()));
+    static ref EQUIVOCATION_EVIDENCE_LOG: Arc<Mutex<HashMap<String, VoteEquivocationEvidence>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    static ref PROCESSED_EQUIVOCATION_EVIDENCE: Arc<Mutex<BTreeSet<String>>> =
+        Arc::new(Mutex::new(BTreeSet::new()));
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Vote {
     pub validator_address: String,
     pub block_hash: String,
+    #[serde(default)]
+    pub block_index: u64,
     pub epoch_number: u64,
+    #[serde(default)]
+    pub round_number: u64,
     pub signature: PQCSignature,
     #[serde(default)]
     pub signer_public_key: Vec<u8>,
@@ -26,9 +42,21 @@ pub struct Vote {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoteEquivocationEvidence {
+    pub validator_address: String,
+    pub epoch_number: u64,
+    pub block_index: u64,
+    pub round_number: u64,
+    pub first_vote: Vote,
+    pub conflicting_vote: Vote,
+    pub detected_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuorumCertificate {
     pub block_hash: String,
     pub epoch_number: u64,
+    pub round_number: u64,
     pub aggregate_signature: Vec<u8>,
     pub participant_bitmap: Vec<u8>,
     pub cumulative_weight: f64,
@@ -55,6 +83,7 @@ pub struct DualQuorumConsensus {
     pub vote_timeout: u64,
     pub block_timeout: u64,
     pub current_epoch: u64,
+    pub current_round_by_height: HashMap<u64, u64>,
     pub votes: HashMap<String, Vec<Vote>>, // block_hash -> votes
     pub quorum_certificates: HashMap<String, QuorumCertificate>, // block_hash -> QC
 }
@@ -74,6 +103,7 @@ impl DualQuorumConsensus {
             vote_timeout: 3,
             block_timeout: 5,
             current_epoch: 0,
+            current_round_by_height: HashMap::new(),
             votes: HashMap::new(),
             quorum_certificates: HashMap::new(),
         }
@@ -85,84 +115,308 @@ impl DualQuorumConsensus {
     ) -> Result<QuorumCertificate, String> {
         let block_hash = proposed_block.hash.clone();
         let epoch_number = self.current_epoch;
+        let round_number = self.allocate_round_number(proposed_block.block_index);
 
         // Phase 1: Proposal validation
         self.validate_block_proposal(proposed_block)?;
 
         // Phase 2: Voting
-        let votes = self.collect_votes(&block_hash, epoch_number)?;
+        let votes = self.collect_votes(proposed_block, &block_hash, epoch_number, round_number)?;
 
         // Phase 3: Commitment
-        self.check_quorums_and_commit(&block_hash, epoch_number, &votes)
+        self.check_quorums_and_commit(&block_hash, epoch_number, round_number, &votes)
     }
 
     fn validate_block_proposal(&self, block: &Block) -> Result<(), String> {
+        Self::validate_block_proposal_static(block)
+    }
+
+    pub fn validate_block_proposal_static(block: &Block) -> Result<(), String> {
         if !Self::is_block_hash_valid(block) {
             return Err("Invalid block hash payload".to_string());
         }
 
         // Verify leader signature
-        let leader = self.get_block_leader(block)?;
+        let leader = Self::get_block_leader_static(block)?;
 
-        if !self.verify_block_signature(block, &leader) {
+        if !Self::verify_block_signature_static(block, &leader) {
             return Err("Invalid block signature".to_string());
         }
 
         // Verify all transactions in the block
         for tx in &block.transactions {
-            self.verify_transaction(tx)?;
+            Self::verify_transaction_static(tx)?;
         }
 
         Ok(())
     }
 
-    fn collect_votes(&mut self, block_hash: &str, epoch_number: u64) -> Result<Vec<Vote>, String> {
-        let active_validators = self.validator_manager.get_active_validators();
-        let mut votes = Vec::new();
-
-        for validator in &active_validators {
-            // Simulate vote creation - in real implementation, this would come from network
-            let vote = self.create_vote(&validator.address, block_hash, epoch_number)?;
-            votes.push(vote);
+    fn collect_votes(
+        &mut self,
+        proposed_block: &Block,
+        block_hash: &str,
+        epoch_number: u64,
+        round_number: u64,
+    ) -> Result<Vec<Vote>, String> {
+        let active_validators = self.collect_live_validators();
+        if active_validators.len() < self.minimum_validator_count {
+            return Err(format!(
+                "Insufficient live validators: {} active on the network, {} required",
+                active_validators.len(),
+                self.minimum_validator_count
+            ));
         }
 
+        let expected_validators = active_validators
+            .iter()
+            .map(|validator| validator.address.clone())
+            .collect::<BTreeSet<_>>();
+        let local_validator_address = self
+            .resolve_local_validator_address_for_round()
+            .ok_or_else(|| "Local validator address is not configured".to_string())?;
+        if !expected_validators.contains(&local_validator_address) {
+            return Err(format!(
+                "Local validator {} is not eligible for this consensus round",
+                local_validator_address
+            ));
+        }
+
+        let local_vote = Self::create_vote_for_validator(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+        )?;
+        self.register_local_vote_or_slash(&local_vote)?;
+        let mut votes = vec![local_vote];
+
+        Self::reset_network_vote_mailbox(block_hash, epoch_number, round_number);
+
+        let remote_validators = expected_validators
+            .iter()
+            .filter(|address| *address != &local_validator_address)
+            .count();
+        if remote_validators > 0 {
+            if let Some(network) = crate::p2p::get_p2p_network() {
+                let notified =
+                    network.broadcast_vote_request(proposed_block, epoch_number, round_number);
+                debug!(
+                    "consensus",
+                    "Broadcasted vote request",
+                    "block_hash" => block_hash.to_string(),
+                    "epoch" => epoch_number,
+                    "round" => round_number,
+                    "remote_validators" => remote_validators as u64,
+                    "notified_peers" => notified as u64
+                );
+            } else {
+                warn!(
+                    "consensus",
+                    "Consensus round has remote validators but no active P2P network",
+                    "block_hash" => block_hash.to_string(),
+                    "epoch" => epoch_number,
+                    "round" => round_number
+                );
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_secs(self.vote_timeout.max(1));
+        while Instant::now() < deadline {
+            self.apply_recorded_equivocations();
+            votes.retain(|vote| self.vote_is_eligible(vote));
+
+            let pending_votes =
+                Self::snapshot_network_votes(block_hash, epoch_number, round_number);
+            self.merge_remote_votes(
+                &mut votes,
+                &expected_validators,
+                block_hash,
+                epoch_number,
+                round_number,
+                pending_votes,
+            );
+
+            if self.has_commit_quorum(&active_validators, &votes) {
+                break;
+            }
+
+            thread::sleep(Duration::from_millis(100));
+        }
+
+        self.apply_recorded_equivocations();
+        votes.retain(|vote| self.vote_is_eligible(vote));
+        self.record_vote_participation(&votes);
+        self.record_missed_vote_timeouts(&active_validators, &votes);
+
+        Self::reset_network_vote_mailbox(block_hash, epoch_number, round_number);
         self.votes.insert(block_hash.to_string(), votes.clone());
         Ok(votes)
     }
 
-    fn create_vote(
-        &self,
-        validator_address: &str,
-        block_hash: &str,
+    pub fn build_local_vote_for_proposal(
+        proposed_block: &Block,
         epoch_number: u64,
+        round_number: u64,
+    ) -> Result<Vote, String> {
+        Self::validate_block_proposal_static(proposed_block)?;
+
+        let local_validator_address = Self::resolve_local_validator_address()
+            .ok_or_else(|| "Local validator address is not configured for voting".to_string())?;
+        let local_validator_is_active = VALIDATOR_MANAGER
+            .get_active_validators()
+            .into_iter()
+            .any(|validator| validator.address == local_validator_address);
+        if !local_validator_is_active {
+            return Err(format!(
+                "Local validator {} is not an active validator",
+                local_validator_address
+            ));
+        }
+
+        let vote = Self::create_vote_for_validator(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+        )?;
+        if let Some(evidence) = Self::register_vote_observation(&vote) {
+            let _ = VALIDATOR_MANAGER.slash_validator(&evidence.validator_address, "double_sign");
+            return Err(format!(
+                "Refusing to double-sign for validator {} at height {} in epoch {} round {}",
+                evidence.validator_address,
+                evidence.block_index,
+                evidence.epoch_number,
+                evidence.round_number
+            ));
+        }
+
+        Ok(vote)
+    }
+
+    pub fn record_network_vote(vote: Vote) {
+        if vote.validator_address.trim().is_empty() || vote.block_hash.trim().is_empty() {
+            return;
+        }
+
+        if Self::register_vote_observation(&vote).is_some() {
+            return;
+        }
+
+        let key = Self::vote_mailbox_key(&vote.block_hash, vote.epoch_number, vote.round_number);
+        if let Ok(mut mailbox) = NETWORK_VOTE_MAILBOX.lock() {
+            let entry = mailbox.entry(key).or_default();
+            if entry
+                .iter()
+                .all(|existing| existing.validator_address != vote.validator_address)
+            {
+                entry.push(vote);
+            }
+        }
+    }
+
+    fn create_vote_for_validator(
+        validator_address: &str,
+        proposed_block: &Block,
+        epoch_number: u64,
+        round_number: u64,
     ) -> Result<Vote, String> {
         let timestamp = Self::current_timestamp();
-        let message = format!("{}:{}:{}", validator_address, block_hash, epoch_number);
+        let message = Self::vote_signature_payload(
+            validator_address,
+            &proposed_block.hash,
+            proposed_block.block_index,
+            epoch_number,
+            round_number,
+        );
 
-        let (public_key, private_key) = self.get_or_create_validator_keypair(validator_address)?;
+        let (public_key, private_key) = Self::get_or_create_validator_keypair(validator_address)?;
 
-        let mut pqc_manager = self.pqc_manager.lock().unwrap();
+        let mut pqc_manager = PQCManager::new();
         let signature = pqc_manager.sign(&private_key, message.as_bytes())?;
 
         Ok(Vote {
             validator_address: validator_address.to_string(),
-            block_hash: block_hash.to_string(),
+            block_hash: proposed_block.hash.clone(),
+            block_index: proposed_block.block_index,
             epoch_number,
+            round_number,
             signature,
             signer_public_key: public_key.key_data,
             timestamp,
         })
     }
 
+    fn merge_remote_votes(
+        &self,
+        votes: &mut Vec<Vote>,
+        expected_validators: &BTreeSet<String>,
+        block_hash: &str,
+        epoch_number: u64,
+        round_number: u64,
+        pending_votes: Vec<Vote>,
+    ) {
+        for vote in pending_votes {
+            if vote.block_hash != block_hash
+                || vote.epoch_number != epoch_number
+                || vote.round_number != round_number
+            {
+                continue;
+            }
+            if Self::has_equivocation_evidence(
+                &vote.validator_address,
+                vote.epoch_number,
+                vote.block_index,
+                vote.round_number,
+            ) {
+                warn!(
+                    "consensus",
+                    "Discarding equivocating vote",
+                    "validator" => vote.validator_address.clone(),
+                    "block_hash" => vote.block_hash.clone(),
+                    "height" => vote.block_index,
+                    "epoch" => vote.epoch_number,
+                    "round" => vote.round_number
+                );
+                continue;
+            }
+            if !expected_validators.contains(&vote.validator_address) {
+                continue;
+            }
+            if !self.vote_is_eligible(&vote) {
+                continue;
+            }
+            if votes
+                .iter()
+                .any(|existing| existing.validator_address == vote.validator_address)
+            {
+                continue;
+            }
+            if let Err(error) = self.verify_vote_signature(&vote) {
+                warn!(
+                    "consensus",
+                    "Discarding invalid remote vote",
+                    "validator" => vote.validator_address.clone(),
+                    "block_hash" => vote.block_hash.clone(),
+                    "epoch" => vote.epoch_number,
+                    "round" => vote.round_number,
+                    "error" => error
+                );
+                continue;
+            }
+            votes.push(vote);
+        }
+    }
+
     fn check_quorums_and_commit(
         &mut self,
         block_hash: &str,
         epoch_number: u64,
+        round_number: u64,
         votes: &[Vote],
     ) -> Result<QuorumCertificate, String> {
         let cumulative_weight = self.calculate_cumulative_vote_weight(votes);
         let validator_count = votes.len();
-        let active_validators = self.validator_manager.get_active_validators();
+        let active_validators = self.collect_live_validators();
         let total_validators = active_validators.len();
 
         if total_validators < self.minimum_validator_count {
@@ -172,23 +426,32 @@ impl DualQuorumConsensus {
             ));
         }
 
-        if validator_count < self.minimum_validator_count {
+        let required_validator_votes = Self::required_validator_votes(total_validators);
+        if validator_count < required_validator_votes {
             return Err(format!(
-                "Insufficient validator votes: {} votes, {} required",
-                validator_count, self.minimum_validator_count
+                "Insufficient validator votes: {} votes, {} required for quorum",
+                validator_count, required_validator_votes
             ));
         }
 
-        // Check validation quorum (weighted by synergy score)
-        let validation_quorum_met = cumulative_weight > self.validation_quorum_threshold;
+        // Check validation quorum against the total live validator weight for the round.
+        let total_live_weight = self.total_validator_weight(&active_validators);
+        let validation_ratio = if total_live_weight > 0.0 {
+            cumulative_weight / total_live_weight
+        } else {
+            0.0
+        };
+        let validation_quorum_met = validation_ratio >= self.validation_quorum_threshold;
 
-        // Check cooperation quorum (simple count)
-        let cooperation_quorum_met =
-            validator_count as f64 / total_validators as f64 > self.cooperation_quorum_threshold;
+        // Check cooperation quorum using a BFT-style supermajority count.
+        let cooperation_ratio = validator_count as f64 / total_validators as f64;
+        let cooperation_quorum_met = cooperation_ratio >= self.cooperation_quorum_threshold
+            && validator_count >= required_validator_votes;
 
         if validation_quorum_met && cooperation_quorum_met {
             // Create quorum certificate
-            let qc = self.create_quorum_certificate(block_hash, epoch_number, votes)?;
+            let qc =
+                self.create_quorum_certificate(block_hash, epoch_number, round_number, votes)?;
             self.quorum_certificates
                 .insert(block_hash.to_string(), qc.clone());
             Ok(qc)
@@ -213,10 +476,80 @@ impl DualQuorumConsensus {
         total_weight
     }
 
+    fn total_validator_weight(&self, validators: &[Validator]) -> f64 {
+        validators
+            .iter()
+            .map(|validator| (validator.synergy_score / 100.0).max(0.0))
+            .sum()
+    }
+
+    fn required_validator_votes(total_validators: usize) -> usize {
+        ((2 * total_validators) / 3) + 1
+    }
+
+    fn has_commit_quorum(&self, live_validators: &[Validator], votes: &[Vote]) -> bool {
+        if live_validators.is_empty() {
+            return false;
+        }
+
+        let required_validator_votes = Self::required_validator_votes(live_validators.len());
+        if votes.len() < required_validator_votes {
+            return false;
+        }
+
+        let total_live_weight = self.total_validator_weight(live_validators);
+        if total_live_weight <= 0.0 {
+            return false;
+        }
+
+        let cumulative_weight = self.calculate_cumulative_vote_weight(votes);
+        (cumulative_weight / total_live_weight) >= self.validation_quorum_threshold
+    }
+
+    fn record_missed_vote_timeouts(&self, live_validators: &[Validator], votes: &[Vote]) {
+        let received_votes = votes
+            .iter()
+            .map(|vote| vote.validator_address.clone())
+            .collect::<BTreeSet<_>>();
+
+        for validator in live_validators {
+            if received_votes.contains(&validator.address) {
+                continue;
+            }
+
+            self.validator_manager
+                .update_performance(ValidatorPerformanceUpdate {
+                    validator_address: validator.address.clone(),
+                    update_type: "block_missed".to_string(),
+                    value: None,
+                    timestamp: Self::current_timestamp(),
+                });
+
+            warn!(
+                "consensus",
+                "Validator missed vote deadline",
+                "validator" => validator.address.clone()
+            );
+        }
+    }
+
+    fn record_vote_participation(&self, votes: &[Vote]) {
+        for vote in votes {
+            self.validator_manager
+                .update_performance(ValidatorPerformanceUpdate {
+                    validator_address: vote.validator_address.clone(),
+                    update_type: "vote_cast".to_string(),
+                    value: None,
+                    timestamp: Self::current_timestamp(),
+                });
+        }
+    }
+
     fn create_quorum_certificate(
         &self,
         block_hash: &str,
         epoch_number: u64,
+        round_number: u64,
         votes: &[Vote],
     ) -> Result<QuorumCertificate, String> {
         // Aggregate signatures
@@ -231,6 +564,7 @@ impl DualQuorumConsensus {
         Ok(QuorumCertificate {
             block_hash: block_hash.to_string(),
             epoch_number,
+            round_number,
             aggregate_signature: aggregate_sig.combined_signature,
             participant_bitmap,
             cumulative_weight,
@@ -252,31 +586,7 @@ impl DualQuorumConsensus {
         let mut signatures = Vec::new();
 
         for vote in &sorted_votes {
-            let message = format!(
-                "{}:{}:{}",
-                vote.validator_address, vote.block_hash, vote.epoch_number
-            );
-            let public_key = PQCPublicKey {
-                algorithm: vote.signature.algorithm.clone(),
-                key_data: vote.signer_public_key.clone(),
-                key_id: format!("vote_{}", vote.validator_address),
-                created_at: vote.timestamp,
-            };
-
-            let valid = {
-                let pqc_manager = self.pqc_manager.lock().unwrap();
-                pqc_manager
-                    .verify(&public_key, &vote.signature, message.as_bytes())
-                    .map_err(|err| format!("vote signature verify error: {err}"))?
-            };
-
-            if !valid {
-                return Err(format!(
-                    "invalid vote signature from validator {}",
-                    vote.validator_address
-                ));
-            }
-
+            self.verify_vote_signature(vote)?;
             signatures.push(vote.signature.signature_data.clone());
         }
 
@@ -304,7 +614,7 @@ impl DualQuorumConsensus {
     }
 
     fn create_participant_bitmap(&self, votes: &[Vote]) -> Vec<u8> {
-        let active_validators = self.validator_manager.get_active_validators();
+        let active_validators = self.collect_live_validators();
         let mut bitmap = vec![0u8; (active_validators.len() + 7) / 8];
 
         for (i, validator) in active_validators.iter().enumerate() {
@@ -322,7 +632,7 @@ impl DualQuorumConsensus {
         bitmap
     }
 
-    fn get_block_leader(&self, block: &Block) -> Result<String, String> {
+    fn get_block_leader_static(block: &Block) -> Result<String, String> {
         // In PoSy, the leader is determined by the block's validator_id field
         if block.validator_id.is_empty() {
             Err("No validator specified in block".to_string())
@@ -331,8 +641,66 @@ impl DualQuorumConsensus {
         }
     }
 
+    fn collect_live_validators(&self) -> Vec<Validator> {
+        let active_validators = self.validator_manager.get_active_validators();
+        let active_by_address = active_validators
+            .into_iter()
+            .map(|validator| (validator.address.clone(), validator))
+            .collect::<HashMap<_, _>>();
+
+        let mut live_addresses = BTreeSet::new();
+
+        if let Some(local_validator_address) = self.resolve_local_validator_address_for_round() {
+            if active_by_address.contains_key(&local_validator_address) {
+                live_addresses.insert(local_validator_address);
+            }
+        }
+
+        if let Some(network) = crate::p2p::get_p2p_network() {
+            for validator_address in network.get_connected_validator_addresses() {
+                if active_by_address.contains_key(&validator_address) {
+                    live_addresses.insert(validator_address);
+                }
+            }
+        }
+
+        live_addresses
+            .into_iter()
+            .filter_map(|address| active_by_address.get(&address).cloned())
+            .collect()
+    }
+
+    fn resolve_local_validator_address() -> Option<String> {
+        let from_env = crate::config::resolve_runtime_validator_address();
+
+        if from_env.is_some() {
+            return from_env;
+        }
+
+        let active_validators = VALIDATOR_MANAGER.get_active_validators();
+        if active_validators.len() == 1 {
+            active_validators
+                .first()
+                .map(|validator| validator.address.clone())
+        } else {
+            None
+        }
+    }
+
+    fn resolve_local_validator_address_for_round(&self) -> Option<String> {
+        Self::resolve_local_validator_address().or_else(|| {
+            let active_validators = self.validator_manager.get_active_validators();
+            if active_validators.len() == 1 {
+                active_validators
+                    .first()
+                    .map(|validator| validator.address.clone())
+            } else {
+                None
+            }
+        })
+    }
+
     fn get_or_create_validator_keypair(
-        &self,
         validator_address: &str,
     ) -> Result<(PQCPublicKey, PQCPrivateKey), String> {
         if let Ok(cache) = EPHEMERAL_VALIDATOR_KEYS.lock() {
@@ -341,7 +709,7 @@ impl DualQuorumConsensus {
             }
         }
 
-        let mut pqc_manager = self.pqc_manager.lock().unwrap();
+        let mut pqc_manager = PQCManager::new();
         let generated = pqc_manager
             .generate_keypair(PQCAlgorithm::FNDSA)
             .map_err(|e| format!("Failed to generate validator keypair: {e}"))?;
@@ -356,7 +724,7 @@ impl DualQuorumConsensus {
         Ok(generated)
     }
 
-    fn verify_block_signature(&self, block: &Block, leader_address: &str) -> bool {
+    fn verify_block_signature_static(block: &Block, leader_address: &str) -> bool {
         if block.block_signature.is_empty() || block.proposer_public_key.is_empty() {
             return false;
         }
@@ -376,7 +744,7 @@ impl DualQuorumConsensus {
             created_at: block.timestamp,
         };
 
-        let pqc_manager = self.pqc_manager.lock().unwrap();
+        let pqc_manager = PQCManager::new();
         pqc_manager
             .verify(&public_key_obj, &signature_obj, block.hash.as_bytes())
             .unwrap_or(false)
@@ -395,7 +763,7 @@ impl DualQuorumConsensus {
         blake3::hash(expected.as_bytes()).to_hex().to_string() == block.hash
     }
 
-    fn verify_transaction(&self, _tx: &crate::transaction::Transaction) -> Result<(), String> {
+    fn verify_transaction_static(_tx: &crate::transaction::Transaction) -> Result<(), String> {
         // Verify transaction signature
         // Verify sender balance
         // Verify nonce
@@ -405,11 +773,373 @@ impl DualQuorumConsensus {
         Ok(())
     }
 
+    fn verify_vote_signature(&self, vote: &Vote) -> Result<(), String> {
+        let message = Self::vote_signature_payload(
+            &vote.validator_address,
+            &vote.block_hash,
+            vote.block_index,
+            vote.epoch_number,
+            vote.round_number,
+        );
+        let public_key = PQCPublicKey {
+            algorithm: vote.signature.algorithm.clone(),
+            key_data: vote.signer_public_key.clone(),
+            key_id: format!("vote_{}", vote.validator_address),
+            created_at: vote.timestamp,
+        };
+
+        let valid = {
+            let pqc_manager = self.pqc_manager.lock().unwrap();
+            pqc_manager
+                .verify(&public_key, &vote.signature, message.as_bytes())
+                .map_err(|err| format!("vote signature verify error: {err}"))?
+        };
+
+        if valid {
+            Ok(())
+        } else {
+            Err(format!(
+                "invalid vote signature from validator {}",
+                vote.validator_address
+            ))
+        }
+    }
+
+    fn vote_signature_payload(
+        validator_address: &str,
+        block_hash: &str,
+        block_index: u64,
+        epoch_number: u64,
+        round_number: u64,
+    ) -> String {
+        format!(
+            "{}:{}:{}:{}:{}",
+            validator_address, block_index, round_number, block_hash, epoch_number
+        )
+    }
+
+    fn vote_observation_key(
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+        round_number: u64,
+    ) -> String {
+        format!("{epoch_number}:{block_index}:{round_number}:{validator_address}")
+    }
+
+    fn register_vote_observation(vote: &Vote) -> Option<VoteEquivocationEvidence> {
+        let key = Self::vote_observation_key(
+            &vote.validator_address,
+            vote.epoch_number,
+            vote.block_index,
+            vote.round_number,
+        );
+
+        if let Ok(mut observed_votes) = OBSERVED_VOTES.lock() {
+            if let Some(existing) = observed_votes.get(&key) {
+                if existing.block_hash == vote.block_hash {
+                    return None;
+                }
+
+                let evidence = VoteEquivocationEvidence {
+                    validator_address: vote.validator_address.clone(),
+                    epoch_number: vote.epoch_number,
+                    block_index: vote.block_index,
+                    round_number: vote.round_number,
+                    first_vote: existing.clone(),
+                    conflicting_vote: vote.clone(),
+                    detected_at: Self::current_timestamp(),
+                };
+
+                if let Ok(mut evidence_log) = EQUIVOCATION_EVIDENCE_LOG.lock() {
+                    evidence_log.entry(key).or_insert_with(|| evidence.clone());
+                }
+
+                return Some(evidence);
+            }
+
+            observed_votes.insert(key, vote.clone());
+        }
+
+        None
+    }
+
+    fn has_equivocation_evidence(
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+        round_number: u64,
+    ) -> bool {
+        let key =
+            Self::vote_observation_key(validator_address, epoch_number, block_index, round_number);
+        EQUIVOCATION_EVIDENCE_LOG
+            .lock()
+            .ok()
+            .map(|log| log.contains_key(&key))
+            .unwrap_or(false)
+    }
+
+    fn register_local_vote_or_slash(&self, vote: &Vote) -> Result<(), String> {
+        if let Some(evidence) = Self::register_vote_observation(vote) {
+            self.apply_equivocation_evidence(&evidence);
+            return Err(format!(
+                "Validator {} attempted conflicting votes at height {} in epoch {} round {}",
+                evidence.validator_address,
+                evidence.block_index,
+                evidence.epoch_number,
+                evidence.round_number
+            ));
+        }
+
+        Ok(())
+    }
+
+    fn pending_equivocation_evidence(&self) -> Vec<VoteEquivocationEvidence> {
+        let processed = PROCESSED_EQUIVOCATION_EVIDENCE
+            .lock()
+            .ok()
+            .map(|entries| entries.clone())
+            .unwrap_or_default();
+
+        EQUIVOCATION_EVIDENCE_LOG
+            .lock()
+            .ok()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|(key, _)| !processed.contains(*key))
+                    .map(|(_, evidence)| evidence.clone())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn apply_recorded_equivocations(&self) {
+        for evidence in self.pending_equivocation_evidence() {
+            self.apply_equivocation_evidence(&evidence);
+        }
+    }
+
+    fn apply_equivocation_evidence(&self, evidence: &VoteEquivocationEvidence) {
+        let key = Self::vote_observation_key(
+            &evidence.validator_address,
+            evidence.epoch_number,
+            evidence.block_index,
+            evidence.round_number,
+        );
+
+        let should_process = if let Ok(mut processed) = PROCESSED_EQUIVOCATION_EVIDENCE.lock() {
+            processed.insert(key)
+        } else {
+            false
+        };
+        if !should_process {
+            return;
+        }
+
+        match self
+            .validator_manager
+            .slash_validator(&evidence.validator_address, "double_sign")
+        {
+            Ok(_) => {
+                warn!(
+                    "consensus",
+                    "Slashed validator for vote equivocation",
+                    "validator" => evidence.validator_address.clone(),
+                    "height" => evidence.block_index,
+                    "epoch" => evidence.epoch_number,
+                    "round" => evidence.round_number
+                );
+            }
+            Err(error) => {
+                warn!(
+                    "consensus",
+                    "Failed to slash equivocating validator",
+                    "validator" => evidence.validator_address.clone(),
+                    "height" => evidence.block_index,
+                    "epoch" => evidence.epoch_number,
+                    "round" => evidence.round_number,
+                    "error" => error
+                );
+            }
+        }
+    }
+
+    fn vote_is_eligible(&self, vote: &Vote) -> bool {
+        if Self::has_equivocation_evidence(
+            &vote.validator_address,
+            vote.epoch_number,
+            vote.block_index,
+            vote.round_number,
+        ) {
+            return false;
+        }
+
+        matches!(
+            self.validator_manager
+                .get_validator(&vote.validator_address)
+                .map(|validator| validator.status),
+            Some(ValidatorStatus::Active)
+        )
+    }
+
+    fn vote_mailbox_key(block_hash: &str, epoch_number: u64, round_number: u64) -> String {
+        format!("{epoch_number}:{round_number}:{block_hash}")
+    }
+
+    fn reset_network_vote_mailbox(block_hash: &str, epoch_number: u64, round_number: u64) {
+        let key = Self::vote_mailbox_key(block_hash, epoch_number, round_number);
+        if let Ok(mut mailbox) = NETWORK_VOTE_MAILBOX.lock() {
+            mailbox.remove(&key);
+        }
+    }
+
+    fn snapshot_network_votes(block_hash: &str, epoch_number: u64, round_number: u64) -> Vec<Vote> {
+        let key = Self::vote_mailbox_key(block_hash, epoch_number, round_number);
+        NETWORK_VOTE_MAILBOX
+            .lock()
+            .ok()
+            .and_then(|mailbox| mailbox.get(&key).cloned())
+            .unwrap_or_default()
+    }
+
+    fn allocate_round_number(&mut self, block_index: u64) -> u64 {
+        let next_round = self.current_round_by_height.entry(block_index).or_insert(0);
+        *next_round += 1;
+        *next_round
+    }
+
     fn current_timestamp() -> u64 {
         SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
+    }
+
+    #[cfg(test)]
+    fn reset_test_vote_tracking() {
+        if let Ok(mut mailbox) = NETWORK_VOTE_MAILBOX.lock() {
+            mailbox.clear();
+        }
+        if let Ok(mut observed) = OBSERVED_VOTES.lock() {
+            observed.clear();
+        }
+        if let Ok(mut evidence) = EQUIVOCATION_EVIDENCE_LOG.lock() {
+            evidence.clear();
+        }
+        if let Ok(mut processed) = PROCESSED_EQUIVOCATION_EVIDENCE.lock() {
+            processed.clear();
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::pqc::PQCAlgorithm;
+    use crate::validator::{ValidatorRegistration, ValidatorStatus};
+
+    fn approved_validator_manager(addresses: &[&str]) -> Arc<ValidatorManager> {
+        let manager = Arc::new(ValidatorManager::new());
+        for address in addresses {
+            manager
+                .register_validator(ValidatorRegistration {
+                    address: (*address).to_string(),
+                    public_key: format!("{}-key", address),
+                    name: format!("{address} validator"),
+                    stake_amount: 1_000,
+                    submitted_at: 0,
+                    registration_tx_hash: format!("{address}-registration"),
+                })
+                .expect("validator registration should succeed");
+            manager
+                .approve_validator(address)
+                .expect("validator approval should succeed");
+        }
+        manager
+    }
+
+    fn signed_block(block_index: u64, nonce: u64, validator_id: &str) -> Block {
+        let mut block = Block::new(
+            block_index,
+            vec![],
+            "parent-hash".to_string(),
+            validator_id.to_string(),
+            nonce,
+        );
+
+        let mut pqc_manager = PQCManager::new();
+        let (public_key, private_key) = pqc_manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("FN-DSA key generation should succeed");
+        let signature = pqc_manager
+            .sign(&private_key, block.hash.as_bytes())
+            .expect("block signing should succeed");
+        block.proposer_public_key = public_key.key_data;
+        block.block_signature = signature.signature_data;
+        block.block_signature_algorithm = "fndsa".to_string();
+        block
+    }
+
+    #[test]
+    fn equivocation_evidence_slashes_conflicting_validator() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus =
+            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+
+        let first_block = signed_block(7, 1, "validator1");
+        let conflicting_block = signed_block(7, 2, "validator1");
+
+        let first_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &first_block, 12, 1)
+                .expect("first vote should be created");
+        assert!(DualQuorumConsensus::register_vote_observation(&first_vote).is_none());
+
+        let conflicting_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 12, 1)
+                .expect("conflicting vote should be created");
+        let evidence = DualQuorumConsensus::register_vote_observation(&conflicting_vote)
+            .expect("conflicting vote should emit equivocation evidence");
+
+        consensus.apply_recorded_equivocations();
+
+        let validator = validator_manager
+            .get_validator("validator2")
+            .expect("validator should still exist");
+        assert_eq!(validator.status, ValidatorStatus::Slashed);
+        assert_eq!(validator.double_signs, 1);
+        assert_eq!(validator.equivocation_evidence_count, 1);
+        assert_eq!(evidence.block_index, 7);
+        assert_eq!(evidence.epoch_number, 12);
+        assert_eq!(evidence.round_number, 1);
+    }
+
+    #[test]
+    fn validator_can_vote_again_in_a_new_round_for_same_height() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let first_block = signed_block(9, 1, "validator1");
+        let next_round_block = signed_block(9, 2, "validator1");
+
+        let first_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &first_block, 21, 1)
+                .expect("round one vote should be created");
+        assert!(DualQuorumConsensus::register_vote_observation(&first_vote).is_none());
+
+        let next_round_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &next_round_block, 21, 2)
+                .expect("round two vote should be created");
+        assert!(DualQuorumConsensus::register_vote_observation(&next_round_vote).is_none());
+
+        let validator = validator_manager
+            .get_validator("validator2")
+            .expect("validator should still exist");
+        assert_eq!(validator.status, ValidatorStatus::Active);
+        assert_eq!(validator.double_signs, 0);
     }
 }
 

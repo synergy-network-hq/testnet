@@ -130,6 +130,8 @@ const RPC_GATEWAY_SERVICES: &[&str] = &[
     "p2p",
     "rpc",
     "ws",
+    "chain-sync",
+    "state",
     "rate-limit",
     "authn/authz",
     "edge-cache",

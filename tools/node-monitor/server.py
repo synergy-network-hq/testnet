@@ -288,13 +288,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--inventory",
         type=Path,
-        default=repo_root / "testbeta/lean15/node-inventory.csv",
+        default=repo_root / "testbeta/runtime/node-inventory.csv",
         help="Path to node-inventory.csv",
     )
     parser.add_argument(
         "--hosts-env",
         type=Path,
-        default=repo_root / "testbeta/lean15/hosts.env",
+        default=repo_root / "testbeta/runtime/hosts.env",
         help="Optional hosts.env for IP overrides",
     )
     parser.add_argument(

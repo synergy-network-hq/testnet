@@ -328,7 +328,7 @@ fn handle_json_rpc(
         }
 
         // ---------------------------------------------------------------------
-        // SXCP (Synergy Cross-Chain Protocol) – Devnet RPC surface
+        // SXCP (Synergy Cross-Chain Protocol) – Testnet-Beta RPC surface
         // ---------------------------------------------------------------------
         "synergy_registerRelayer" => {
             if let (Some(address), Some(public_key)) = (
@@ -413,14 +413,14 @@ fn handle_json_rpc(
             if params
                 .get(0)
                 .and_then(|v| v.as_str())
-                .map(|token| token == "DEVNET_RESET_SXCP_STATE")
+                .map(|token| token == "TESTBETA_RESET_SXCP_STATE")
                 .unwrap_or(false)
             {
                 sxcp::reset_state()
             } else {
                 json!({
                     "success": false,
-                    "error": "Confirmation token required as first parameter: DEVNET_RESET_SXCP_STATE"
+                    "error": "Confirmation token required as first parameter: TESTBETA_RESET_SXCP_STATE"
                 })
             }
         }

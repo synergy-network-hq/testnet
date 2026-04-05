@@ -17,15 +17,16 @@ config/**/*.key
 config/**/*.pem
 config/**/identity.json
 config/testbeta_wallets.json
-testbeta/lean15/keys/*
-!testbeta/lean15/keys/README.md
-testbeta/lean15/hosts.env
-testbeta/lean15/installers/
-testbeta/lean15/reports/
+testbeta/runtime/keys/*
+!testbeta/runtime/keys/README.md
+testbeta/runtime/hosts.env
+testbeta/runtime/installers/
+testbeta/runtime/reports/
 
 # Local workspace copies and nested app builds
 tools/control-panel-workspace-files-copies/
-tools/devnet-control-panel/
+bootstrap-bundles/
+node-control-panel/
 
 # Build artifacts
 *.o

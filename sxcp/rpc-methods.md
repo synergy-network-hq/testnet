@@ -141,8 +141,8 @@ Get node information.
 - `name`: Node name
 - `version`: Node version
 - `protocolVersion`: Protocol version
-- `networkId`: Network ID (338639 for devnet)
-- `chainId`: Chain ID (338639 for devnet)
+- `networkId`: Network ID (338639 for testnet-beta)
+- `chainId`: Chain ID (338639 for testnet-beta)
 - `consensus`: Consensus algorithm
 - `syncing`: Sync status
 - `currentBlock`: Current block number
@@ -666,7 +666,7 @@ Or for simple errors, the result may be a string error message.
 
 3. **Timestamps**: All timestamps are Unix timestamps in seconds.
 
-4. **AIVM Methods**: AIVM (Artificial Intelligence Virtual Machine) methods are currently disabled in the devnet.
+4. **AIVM Methods**: AIVM (Artificial Intelligence Virtual Machine) methods are currently disabled in the testnet-beta.
 
 ## Example Usage
 

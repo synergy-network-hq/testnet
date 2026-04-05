@@ -422,7 +422,7 @@ fn infer_synergy_env(config: &NodeConfig) -> &'static str {
     } else if name.contains("testnet") {
         "testnet"
     } else if name.contains("beta") {
-        "mainnet-beta"
+        "beta"
     } else {
         "mainnet"
     }
@@ -536,57 +536,36 @@ fn start_role_local_services(
             let status_path = PathBuf::from("data").join("rpc-gateway.json");
             let running = Arc::clone(running);
             active.spawn_worker(move || {
-                let client = reqwest::blocking::Client::builder()
-                    .timeout(Duration::from_secs(2))
-                    .build();
                 while running.load(Ordering::SeqCst) {
                     let mut payload = json!({
                         "ok": false,
                         "timestamp": now_ts(),
                         "rpc_url": bind_url,
                         "block_number": null,
+                        "sync_state": null,
+                        "local_height": null,
+                        "network_height": null,
+                        "peer_count": null,
                         "error": null
                     });
 
-                    match &client {
-                        Ok(client) => {
-                            let request = json!({
-                                "jsonrpc": "2.0",
-                                "id": 1,
-                                "method": "synergy_getBlockNumber",
-                                "params": []
-                            });
-                            match client
-                                .post(payload["rpc_url"].as_str().unwrap())
-                                .json(&request)
-                                .send()
-                            {
-                                Ok(response) if response.status().is_success() => {
-                                    match response.json::<serde_json::Value>() {
-                                        Ok(body) => {
-                                            let result =
-                                                body.get("result").and_then(|v| v.as_u64());
-                                            payload["ok"] = json!(true);
-                                            payload["block_number"] = json!(result);
-                                        }
-                                        Err(error) => {
-                                            payload["error"] =
-                                                json!(format!("invalid json: {error}"));
-                                        }
-                                    }
-                                }
-                                Ok(response) => {
-                                    payload["error"] =
-                                        json!(format!("http {}", response.status().as_u16()));
-                                }
-                                Err(error) => {
-                                    payload["error"] = json!(error.to_string());
-                                }
-                            }
+                    if let Some(network) = p2p::get_p2p_network() {
+                        let mut manager = SYNC_MANAGER.lock().unwrap();
+                        manager.attach_network(Arc::clone(&network));
+                        let _ = manager.discover_network_height();
+                        if manager.local_height < manager.get_network_height() {
+                            let _ = manager.start_sync();
                         }
-                        Err(error) => {
-                            payload["error"] = json!(format!("client error: {error}"));
-                        }
+
+                        payload["ok"] = json!(true);
+                        payload["sync_state"] = json!(format!("{:?}", manager.get_state()));
+                        payload["local_height"] = json!(manager.local_height);
+                        payload["network_height"] = json!(manager.get_network_height());
+                        payload["block_number"] = json!(manager.local_height);
+                        payload["peer_count"] = json!(manager.peers.len());
+                        payload["progress_pct"] = json!(manager.get_progress_percentage());
+                    } else {
+                        payload["error"] = json!("p2p network unavailable");
                     }
 
                     write_status_file(&status_path, payload);
@@ -892,9 +871,10 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             );
 
             let project_root = utils::validate_project_root().unwrap_or_else(|e| {
-                eprintln!("Warning: {}", e);
-                env::current_dir().unwrap_or_else(|_| PathBuf::from("."))
+                eprintln!("Failed to determine writable project root: {}", e);
+                process::exit(1);
             });
+            env::set_var("SYNERGY_PROJECT_ROOT", &project_root);
 
             let data_dir = project_root.join("data");
             let logs_dir = data_dir.join("logs");
@@ -980,6 +960,29 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                         cors_origins,
                     );
                 });
+
+                // Wait until the RPC listener is actually accepting connections before
+                // allowing the consensus engine to start.  This prevents a race where
+                // the consensus engine (or the desktop app) tries to reach the RPC
+                // endpoint before it has finished binding, producing "fetch failed" errors.
+                let rpc_port = config.rpc.http_port;
+                let rpc_ready_addr = format!("127.0.0.1:{}", rpc_port);
+                let rpc_ready_deadline =
+                    std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    if std::net::TcpStream::connect(&rpc_ready_addr).is_ok() {
+                        info!("main", "RPC server ready", "port" => rpc_port);
+                        break;
+                    }
+                    if std::time::Instant::now() >= rpc_ready_deadline {
+                        eprintln!(
+                            "Warning: RPC server did not become ready within 10 s on port {}; proceeding anyway",
+                            rpc_port
+                        );
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
             } else {
                 info!(
                     "main",

@@ -1088,7 +1088,7 @@ Set the SXCP heartbeat timeout.
 Reset SXCP state (requires confirmation token).
 
 **Parameters**:
-- `confirmation_token` (string) - Must be "DEVNET_RESET_SXCP_STATE"
+- `confirmation_token` (string) - Must be "TESTBETA_RESET_SXCP_STATE"
 
 **Returns**: 
 ```json

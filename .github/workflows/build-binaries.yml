@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+
 jobs:
   build:
     name: ${{ matrix.label }}
@@ -51,7 +54,9 @@ jobs:
             --bin synergy-testbeta \
             --bin generate-node-keys \
             --bin synergy-address-engine \
-            --bin wallet-pqc-cli
+            --bin wallet-pqc-cli \
+            --bin synergy-rpc-gateway-node \
+            --bin synergy-indexer-and-explorer-node
 
       - name: Package binaries
         id: package
@@ -85,6 +90,8 @@ jobs:
               "generate-node-keys",
               "synergy-address-engine",
               "wallet-pqc-cli",
+              "synergy-rpc-gateway-node",
+              "synergy-indexer-and-explorer-node",
           ]
 
           dist = pathlib.Path("dist")
@@ -122,6 +129,7 @@ jobs:
           PY
 
       - name: Upload workflow artifact
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.label }}
@@ -137,6 +145,7 @@ jobs:
     name: Publish unified latest.json
     needs: build
     runs-on: ubuntu-latest
+    if: github.event_name != 'release'
 
     steps:
       - name: Download all platform artifacts

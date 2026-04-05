@@ -25,7 +25,7 @@
 │   ├── checklist.md
 │   ├── quantumscript.dsl
 │   └── vm.opcodes
-├── [01;34mdevnet[0m
+├── [01;34mruntime[0m
 └── [01;34mvm[0m
     ├── Cargo.lock
     ├── Cargo.toml

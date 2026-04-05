@@ -130,13 +130,22 @@ mod tests {
     #[test]
     fn wallet_address_is_41_chars() {
         let addr = generate_wallet_address(ZERO_KEY_HEX);
-        assert_eq!(addr.len(), TARGET_ADDRESS_LEN, "wallet address must be 41 chars, got: {}", addr);
+        assert_eq!(
+            addr.len(),
+            TARGET_ADDRESS_LEN,
+            "wallet address must be 41 chars, got: {}",
+            addr
+        );
     }
 
     #[test]
     fn wallet_address_starts_with_synw() {
         let addr = generate_wallet_address(ZERO_KEY_HEX);
-        assert!(addr.starts_with("synw"), "wallet address must start with synw, got: {}", addr);
+        assert!(
+            addr.starts_with("synw"),
+            "wallet address must start with synw, got: {}",
+            addr
+        );
     }
 
     #[test]
@@ -149,14 +158,24 @@ mod tests {
     #[test]
     fn wallet_address_is_valid_bech32m() {
         let addr = generate_wallet_address(ZERO_KEY_HEX);
-        assert!(is_valid_address(&addr), "wallet address must pass is_valid_address: {}", addr);
+        assert!(
+            is_valid_address(&addr),
+            "wallet address must pass is_valid_address: {}",
+            addr
+        );
     }
 
     #[test]
     fn validator_address_is_41_chars() {
         for group in 1u8..=5 {
             let addr = generate_validator_address(ZERO_KEY_HEX, group);
-            assert_eq!(addr.len(), TARGET_ADDRESS_LEN, "validator address group {} must be 41 chars: {}", group, addr);
+            assert_eq!(
+                addr.len(),
+                TARGET_ADDRESS_LEN,
+                "validator address group {} must be 41 chars: {}",
+                group,
+                addr
+            );
         }
     }
 
@@ -165,7 +184,12 @@ mod tests {
         for group in 1u8..=5 {
             let addr = generate_validator_address(ZERO_KEY_HEX, group);
             let expected_prefix = format!("synv{}", group);
-            assert!(addr.starts_with(&expected_prefix), "expected prefix {}, got: {}", expected_prefix, addr);
+            assert!(
+                addr.starts_with(&expected_prefix),
+                "expected prefix {}, got: {}",
+                expected_prefix,
+                addr
+            );
         }
     }
 
@@ -183,7 +207,12 @@ mod tests {
     #[test]
     fn class_based_address_is_41_chars() {
         let addr = generate_class_based_address(ZERO_KEY_BYTES, 1);
-        assert_eq!(addr.len(), TARGET_ADDRESS_LEN, "class-based address must be 41 chars: {}", addr);
+        assert_eq!(
+            addr.len(),
+            TARGET_ADDRESS_LEN,
+            "class-based address must be 41 chars: {}",
+            addr
+        );
     }
 
     #[test]
@@ -192,13 +221,21 @@ mod tests {
         // They should produce the same address for the same underlying key.
         let addr_class = generate_class_based_address(ZERO_KEY_BYTES, 3);
         let addr_val = generate_validator_address(ZERO_KEY_HEX, 3);
-        assert_eq!(addr_class, addr_val, "class-based and validator addresses must match for the same key");
+        assert_eq!(
+            addr_class, addr_val,
+            "class-based and validator addresses must match for the same key"
+        );
     }
 
     #[test]
     fn cluster_address_is_41_chars() {
         let addr = generate_cluster_address("test-cluster-seed", 1);
-        assert_eq!(addr.len(), TARGET_ADDRESS_LEN, "cluster address must be 41 chars: {}", addr);
+        assert_eq!(
+            addr.len(),
+            TARGET_ADDRESS_LEN,
+            "cluster address must be 41 chars: {}",
+            addr
+        );
     }
 
     #[test]
@@ -206,7 +243,12 @@ mod tests {
         for group in 1u8..=5 {
             let addr = generate_cluster_address("seed", group);
             let expected_prefix = format!("syngrp{}", group);
-            assert!(addr.starts_with(&expected_prefix), "expected prefix {}, got: {}", expected_prefix, addr);
+            assert!(
+                addr.starts_with(&expected_prefix),
+                "expected prefix {}, got: {}",
+                expected_prefix,
+                addr
+            );
         }
     }
 
@@ -220,7 +262,12 @@ mod tests {
     #[test]
     fn generic_address_is_41_chars() {
         let addr = generate_generic_address("synq", ZERO_KEY_HEX);
-        assert_eq!(addr.len(), TARGET_ADDRESS_LEN, "generic address must be 41 chars: {}", addr);
+        assert_eq!(
+            addr.len(),
+            TARGET_ADDRESS_LEN,
+            "generic address must be 41 chars: {}",
+            addr
+        );
     }
 
     #[test]
