@@ -326,6 +326,17 @@ impl ProofOfSynergy {
             let mut last_block_time = SystemTime::now();
             let mut consecutive_failures = 0;
             let mut current_epoch = 0;
+            // View-change state: tracks how many times the scheduled leader has timed out
+            // for the current block height. Increments on each leader timeout, causing
+            // select_leader_for_block to rotate to the next candidate in the top-K list.
+            let mut view_offset: usize = 0;
+            // When we first started waiting for the leader at the current height.
+            let mut block_wait_start: Option<SystemTime> = None;
+            // The chain height at which view_offset was last reset.
+            let mut last_committed_height: u64 = 0;
+            // How long to wait for a leader proposal before rotating to the next candidate.
+            // At least 15 seconds; otherwise 3× the configured block time.
+            let leader_timeout_secs = (block_time_secs * 3).max(15);
 
             loop {
                 let current_time = SystemTime::now();
@@ -338,6 +349,13 @@ impl ProofOfSynergy {
                     let chain_guard = chain.lock().unwrap();
 
                     if let Some(latest_block) = chain_guard.last() {
+                        // Reset view-change state whenever the chain has advanced.
+                        if latest_block.block_index != last_committed_height {
+                            last_committed_height = latest_block.block_index;
+                            view_offset = 0;
+                            block_wait_start = None;
+                        }
+
                         // Check for epoch boundary
                         if Self::is_epoch_boundary(latest_block.block_index, epoch_length) {
                             Self::handle_epoch_transition(
@@ -403,19 +421,50 @@ impl ProofOfSynergy {
                             &synergy_calculator,
                             &entropy_beacon,
                             epoch_length,
+                            view_offset,
                         );
 
                         let local_validator_address = Self::resolve_local_validator_address();
                         if local_validator_address.as_deref()
                             != Some(selected_validator.address.as_str())
                         {
-                            info!(
-                                "consensus",
-                                "Local validator is not the scheduled leader; waiting for remote proposal",
-                                "leader" => selected_validator.address.clone(),
-                                "local_validator" => local_validator_address.unwrap_or_default(),
-                                "visible_validators" => live_active_validators.len() as u64
-                            );
+                            // Track how long we have been waiting for the leader at this height.
+                            let wait_start = *block_wait_start.get_or_insert(current_time);
+                            let wait_elapsed = current_time
+                                .duration_since(wait_start)
+                                .unwrap_or_default();
+
+                            if wait_elapsed >= Duration::from_secs(leader_timeout_secs) {
+                                // Leader did not produce within the timeout window.
+                                // Rotate to the next candidate in the top-K list.
+                                view_offset += 1;
+                                block_wait_start = Some(current_time);
+                                warn!(
+                                    "consensus",
+                                    "Leader proposal timeout — rotating to next candidate",
+                                    "timed_out_leader" => selected_validator.address.clone(),
+                                    "new_view_offset" => view_offset,
+                                    "waited_secs" => wait_elapsed.as_secs(),
+                                    "block_height" => next_block_index
+                                );
+                                // Penalise the timed-out leader's synergy score so that
+                                // chronically offline validators sink in the epoch ranking
+                                // and are naturally displaced from the top-K rotation.
+                                Self::apply_leader_timeout_penalty(
+                                    &validator_manager,
+                                    &selected_validator.address,
+                                    next_block_index,
+                                    view_offset,
+                                );
+                            } else {
+                                info!(
+                                    "consensus",
+                                    "Local validator is not the scheduled leader; waiting for remote proposal",
+                                    "leader" => selected_validator.address.clone(),
+                                    "local_validator" => local_validator_address.unwrap_or_default(),
+                                    "visible_validators" => live_active_validators.len() as u64
+                                );
+                            }
                             drop(chain_guard);
                             drop(pool);
                             last_block_time = current_time;
@@ -496,7 +545,12 @@ impl ProofOfSynergy {
 
                         match quorum_certificate {
                             Ok(qc) => {
-                                // Block committed - update chain
+                                // Block committed - update chain.
+                                // Reset view-change state: the chain has advanced, so the next
+                                // block starts with the primary scheduled leader again.
+                                view_offset = 0;
+                                block_wait_start = None;
+                                last_block_time = current_time;
                                 drop(chain_guard);
                                 drop(pool);
 
@@ -1096,6 +1150,7 @@ impl ProofOfSynergy {
         synergy_calculator: &Arc<SynergyScoreCalculator>,
         entropy_beacon: &Arc<Mutex<EntropyBeacon>>,
         epoch_length: u64,
+        view_offset: usize,
     ) -> Validator {
         consensus_log!(
             "🔍 [select_leader_for_block] START - block_height: {}, validators: {}",
@@ -1190,11 +1245,12 @@ impl ProofOfSynergy {
             rotation.2 = 0; // Reset index for new epoch
         }
 
-        // Use round-robin within epoch (PoSy: top K validators rotate)
-        // Use block_in_epoch for deterministic rotation across all nodes
-        let rotation_index = block_in_epoch as usize % rotation.1.len();
+        // Use round-robin within epoch (PoSy: top K validators rotate).
+        // view_offset is added so that when the primary leader times out, the next
+        // candidate in the sorted list is tried without waiting for the next block.
+        let rotation_index = (block_in_epoch as usize + view_offset) % rotation.1.len();
         let leader_address = rotation.1[rotation_index].clone();
-        // Update stored index for logging/debugging, but use block_in_epoch for actual selection
+        // Update stored index for logging/debugging.
         rotation.2 = rotation_index + 1;
         drop(rotation);
 
@@ -1209,11 +1265,12 @@ impl ProofOfSynergy {
                 validators[0].clone()
             });
 
-        info!("consensus", "Selected leader for block", 
-              "block_height" => block_height, 
-              "epoch" => current_epoch, 
+        info!("consensus", "Selected leader for block",
+              "block_height" => block_height,
+              "epoch" => current_epoch,
               "block_in_epoch" => block_in_epoch,
               "rotation_index" => rotation_index,
+              "view_offset" => view_offset,
               "leader" => selected_validator.address.clone());
         println!("🏆 [select_leader_for_block] Selected leader for block {} (epoch {}, block_in_epoch {}, rotation_index {}): {}", 
                       block_height, current_epoch, block_in_epoch, rotation_index, selected_validator.address);
@@ -1423,15 +1480,52 @@ impl ProofOfSynergy {
     }
 
     fn apply_proposer_penalty(validator_manager: &Arc<ValidatorManager>, validator_address: &str) {
-        if let Some(mut validator) = validator_manager.get_validator(validator_address) {
-            // Apply reputation penalty for failed block proposal
-            validator.reputation_score *= 0.99; // 1% reduction
-            validator.calculate_synergy_score();
+        // Must mutate through the registry lock so the change is actually persisted.
+        if let Ok(mut registry) = validator_manager.registry.lock() {
+            if let Some(validator) = registry.validators.get_mut(validator_address) {
+                validator.reputation_score = (validator.reputation_score * 0.99).max(0.0);
+                validator.calculate_synergy_score();
+                println!(
+                    "⚠️ Applied proposer penalty to {}: reputation reduced to {:.2}, synergy score now {:.2}",
+                    validator_address, validator.reputation_score, validator.synergy_score
+                );
+            }
+        }
+    }
 
-            println!(
-                "⚠️ Applied proposer penalty to {}: reputation reduced to {:.2}",
-                validator_address, validator.reputation_score
-            );
+    /// Called when the view-change timer fires because the scheduled leader failed to
+    /// broadcast a block proposal within the timeout window.  Uses the existing
+    /// `record_missed_block` path so that uptime, accuracy, reputation, and slashing
+    /// penalty are all updated consistently with the rest of the PoSy rules.
+    fn apply_leader_timeout_penalty(
+        validator_manager: &Arc<ValidatorManager>,
+        validator_address: &str,
+        block_height: u64,
+        view_offset: usize,
+    ) {
+        if let Ok(mut registry) = validator_manager.registry.lock() {
+            if let Some(validator) = registry.validators.get_mut(validator_address) {
+                // record_missed_block → record_missed_vote: decrements uptime/accuracy/reputation
+                // and increments slashing_penalty + missed_vote_window atomically.
+                validator.record_missed_block();
+
+                let new_score = validator.synergy_score;
+                let new_rep = validator.reputation_score;
+                let new_penalty = validator.slashing_penalty;
+                let missed_window = validator.missed_vote_window;
+
+                warn!(
+                    "consensus",
+                    "Leader timeout penalty applied",
+                    "validator" => validator_address,
+                    "block_height" => block_height,
+                    "view_offset" => view_offset,
+                    "synergy_score" => format!("{:.4}", new_score),
+                    "reputation_score" => format!("{:.4}", new_rep),
+                    "slashing_penalty" => format!("{:.4}", new_penalty),
+                    "missed_vote_window" => missed_window
+                );
+            }
         }
     }
 

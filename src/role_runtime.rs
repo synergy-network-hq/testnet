@@ -960,6 +960,29 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                         cors_origins,
                     );
                 });
+
+                // Wait until the RPC listener is actually accepting connections before
+                // allowing the consensus engine to start.  This prevents a race where
+                // the consensus engine (or the desktop app) tries to reach the RPC
+                // endpoint before it has finished binding, producing "fetch failed" errors.
+                let rpc_port = config.rpc.http_port;
+                let rpc_ready_addr = format!("127.0.0.1:{}", rpc_port);
+                let rpc_ready_deadline =
+                    std::time::Instant::now() + Duration::from_secs(10);
+                loop {
+                    if std::net::TcpStream::connect(&rpc_ready_addr).is_ok() {
+                        info!("main", "RPC server ready", "port" => rpc_port);
+                        break;
+                    }
+                    if std::time::Instant::now() >= rpc_ready_deadline {
+                        eprintln!(
+                            "Warning: RPC server did not become ready within 10 s on port {}; proceeding anyway",
+                            rpc_port
+                        );
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
             } else {
                 info!(
                     "main",
