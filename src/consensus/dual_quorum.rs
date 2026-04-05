@@ -279,8 +279,7 @@ impl DualQuorumConsensus {
             epoch_number,
             round_number,
         )?;
-        if let Some(evidence) = Self::register_vote_observation(&vote) {
-            let _ = VALIDATOR_MANAGER.slash_validator(&evidence.validator_address, "double_sign");
+        if let Some(evidence) = Self::register_local_vote_attempt(&vote) {
             return Err(format!(
                 "Refusing to double-sign for validator {} at height {} in epoch {} round {}",
                 evidence.validator_address,
@@ -827,7 +826,10 @@ impl DualQuorumConsensus {
         format!("{epoch_number}:{block_index}:{round_number}:{validator_address}")
     }
 
-    fn register_vote_observation(vote: &Vote) -> Option<VoteEquivocationEvidence> {
+    fn observe_vote(
+        vote: &Vote,
+        persist_equivocation_evidence: bool,
+    ) -> Option<VoteEquivocationEvidence> {
         let key = Self::vote_observation_key(
             &vote.validator_address,
             vote.epoch_number,
@@ -851,8 +853,10 @@ impl DualQuorumConsensus {
                     detected_at: Self::current_timestamp(),
                 };
 
-                if let Ok(mut evidence_log) = EQUIVOCATION_EVIDENCE_LOG.lock() {
-                    evidence_log.entry(key).or_insert_with(|| evidence.clone());
+                if persist_equivocation_evidence {
+                    if let Ok(mut evidence_log) = EQUIVOCATION_EVIDENCE_LOG.lock() {
+                        evidence_log.entry(key).or_insert_with(|| evidence.clone());
+                    }
                 }
 
                 return Some(evidence);
@@ -862,6 +866,14 @@ impl DualQuorumConsensus {
         }
 
         None
+    }
+
+    fn register_vote_observation(vote: &Vote) -> Option<VoteEquivocationEvidence> {
+        Self::observe_vote(vote, true)
+    }
+
+    fn register_local_vote_attempt(vote: &Vote) -> Option<VoteEquivocationEvidence> {
+        Self::observe_vote(vote, false)
     }
 
     fn has_equivocation_evidence(
@@ -880,8 +892,7 @@ impl DualQuorumConsensus {
     }
 
     fn register_local_vote_or_slash(&self, vote: &Vote) -> Result<(), String> {
-        if let Some(evidence) = Self::register_vote_observation(vote) {
-            self.apply_equivocation_evidence(&evidence);
+        if let Some(evidence) = Self::register_local_vote_attempt(vote) {
             return Err(format!(
                 "Validator {} attempted conflicting votes at height {} in epoch {} round {}",
                 evidence.validator_address,
@@ -1140,6 +1151,48 @@ mod tests {
             .expect("validator should still exist");
         assert_eq!(validator.status, ValidatorStatus::Active);
         assert_eq!(validator.double_signs, 0);
+    }
+
+    #[test]
+    fn local_conflicting_vote_attempt_is_rejected_without_self_slashing() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus =
+            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+
+        let first_block = signed_block(11, 1, "validator1");
+        let conflicting_block = signed_block(11, 2, "validator1");
+
+        let first_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &first_block, 30, 1)
+                .expect("first local vote should be created");
+        consensus
+            .register_local_vote_or_slash(&first_vote)
+            .expect("first local vote should be accepted");
+
+        let conflicting_vote = DualQuorumConsensus::create_vote_for_validator(
+            "validator2",
+            &conflicting_block,
+            30,
+            1,
+        )
+        .expect("conflicting local vote should be created");
+        let error = consensus
+            .register_local_vote_or_slash(&conflicting_vote)
+            .expect_err("conflicting local vote should be rejected");
+        assert!(error.contains("attempted conflicting votes"));
+
+        let validator = validator_manager
+            .get_validator("validator2")
+            .expect("validator should still exist");
+        assert_eq!(validator.status, ValidatorStatus::Active);
+        assert_eq!(validator.double_signs, 0);
+        assert_eq!(validator.equivocation_evidence_count, 0);
+
+        let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
+        assert!(evidence.is_empty());
     }
 }
 
