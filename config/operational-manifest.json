@@ -67,18 +67,18 @@
   },
   "public_endpoints": {
     "core_rpc": {
-      "url": "https://testbeta-core-rpc.synergy-network.io",
-      "host": "testbeta-core-rpc.synergy-network.io",
+      "url": "https://testbeta-core-rpc.synergynode.xyz",
+      "host": "testbeta-core-rpc.synergynode.xyz",
       "ip_address": "74.208.227.23"
     },
     "core_ws": {
-      "url": "wss://testbeta-core-ws.synergy-network.io",
-      "host": "testbeta-core-ws.synergy-network.io",
+      "url": "wss://testbeta-core-ws.synergynode.xyz",
+      "host": "testbeta-core-ws.synergynode.xyz",
       "ip_address": "74.208.227.23"
     },
     "api": {
-      "url": "https://testbeta-api.synergy-network.io",
-      "host": "testbeta-api.synergy-network.io",
+      "url": "https://testbeta-api.synergynode.xyz",
+      "host": "testbeta-api.synergynode.xyz",
       "ip_address": "65.21.202.144"
     },
     "explorer": {
@@ -93,12 +93,12 @@
     }
   },
   "services": {
-    "wallet_api": "https://testbeta-wallet-api.synergy-network.io",
-    "faucet": "https://testbeta-faucet.synergy-network.io",
-    "sxcp_api": "https://testbeta-sxcp-api.synergy-network.io",
-    "sxcp_ws": "wss://testbeta-sxcp-ws.synergy-network.io",
-    "synq_verify": "https://testbeta-synq-verify.synergy-network.io",
-    "aegis_verify": "https://testbeta-aegis-verify.synergy-network.io"
+    "wallet_api": "https://testbeta-wallet-api.synergynode.xyz",
+    "faucet": "https://testbeta-faucet.synergynode.xyz",
+    "sxcp_api": "https://testbeta-sxcp-api.synergynode.xyz",
+    "sxcp_ws": "wss://testbeta-sxcp-ws.synergynode.xyz",
+    "synq_verify": "https://testbeta-synq-verify.synergynode.xyz",
+    "aegis_verify": "https://testbeta-aegis-verify.synergynode.xyz"
   },
   "validators": [
     {

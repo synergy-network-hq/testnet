@@ -7,7 +7,7 @@
       "stake": "replace-with-stake",
       "keys_location": "config/bootnode1/identity.json",
       "p2p_endpoint": "replace-with-snr-endpoint",
-      "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io"
+      "rpc_endpoint": "https://testbeta-core-rpc.synergynode.xyz"
     }
   ],
   "cluster": {
