@@ -550,7 +550,6 @@ impl ProofOfSynergy {
                                 // block starts with the primary scheduled leader again.
                                 view_offset = 0;
                                 block_wait_start = None;
-                                last_block_time = current_time;
                                 drop(chain_guard);
                                 drop(pool);
 
