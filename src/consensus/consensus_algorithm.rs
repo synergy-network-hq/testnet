@@ -23,7 +23,7 @@ use sha3::{Digest, Sha3_512};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 // CHAIN_PATH will be resolved at runtime using project root
 fn get_chain_path() -> String {
@@ -34,6 +34,7 @@ fn get_chain_path() -> String {
 }
 const VALIDATOR_REGISTRY_PATH: &str = "data/validator_registry.json";
 const VERBOSE_CONSENSUS_LOGS: bool = false;
+const VALIDATOR_MESH_SETTLE_SECS: u64 = 3;
 
 macro_rules! consensus_log {
     ($($arg:tt)*) => {
@@ -332,6 +333,7 @@ impl ProofOfSynergy {
             let mut view_offset: usize = 0;
             // When we first started waiting for the leader at the current height.
             let mut block_wait_start: Option<SystemTime> = None;
+            let mut mesh_ready_since: Option<Instant> = None;
             // The chain height at which view_offset was last reset.
             let mut last_committed_height: u64 = 0;
             // How long to wait for a leader proposal before rotating to the next candidate.
@@ -394,12 +396,71 @@ impl ProofOfSynergy {
                         );
 
                         if live_active_validators.len() < min_validators {
+                            mesh_ready_since = None;
                             println!(
                                 "⏳ Insufficient live validators for block production: {} live, {} registry-active, {} required.",
                                 live_active_validators.len(),
                                 registry_active_count,
                                 min_validators
                             );
+                            thread::sleep(Duration::from_secs(1));
+                            continue;
+                        }
+
+                        if let Some(network) = crate::p2p::get_p2p_network() {
+                            let status_ready_validators =
+                                network.get_status_ready_validator_count();
+                            if status_ready_validators < min_validators {
+                                mesh_ready_since = None;
+                                info!(
+                                    "consensus",
+                                    "Waiting for validator mesh status sync before block production",
+                                    "status_ready_validators" => status_ready_validators as u64,
+                                    "required_validators" => min_validators as u64
+                                );
+                                thread::sleep(Duration::from_secs(1));
+                                continue;
+                            }
+
+                            let best_validator_height = network.get_best_validator_peer_height();
+                            if best_validator_height > latest_block.block_index {
+                                mesh_ready_since = None;
+                                info!(
+                                    "consensus",
+                                    "Waiting to sync to best validator height before block production",
+                                    "local_height" => latest_block.block_index,
+                                    "best_validator_height" => best_validator_height
+                                );
+                                thread::sleep(Duration::from_millis(500));
+                                continue;
+                            }
+
+                            match mesh_ready_since {
+                                Some(ready_since)
+                                    if ready_since.elapsed()
+                                        >= Duration::from_secs(VALIDATOR_MESH_SETTLE_SECS) => {}
+                                Some(_) => {
+                                    info!(
+                                        "consensus",
+                                        "Validator mesh is settling before block production",
+                                        "settle_secs" => VALIDATOR_MESH_SETTLE_SECS
+                                    );
+                                    thread::sleep(Duration::from_millis(500));
+                                    continue;
+                                }
+                                None => {
+                                    mesh_ready_since = Some(Instant::now());
+                                    info!(
+                                        "consensus",
+                                        "Validator mesh reached quorum; beginning settle window",
+                                        "settle_secs" => VALIDATOR_MESH_SETTLE_SECS
+                                    );
+                                    thread::sleep(Duration::from_millis(500));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            mesh_ready_since = None;
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }

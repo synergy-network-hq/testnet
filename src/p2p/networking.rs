@@ -31,6 +31,7 @@ const FAST_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
 const TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
 const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
+const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -248,6 +249,7 @@ fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
     ordered
 }
 
+#[cfg(test)]
 fn connected_validator_participants(config: &NodeConfig, connected_peers: &PeersArc) -> usize {
     let mut validators = HashSet::<String>::new();
 
@@ -269,9 +271,53 @@ fn connected_validator_participants(config: &NodeConfig, connected_peers: &Peers
     validators.len()
 }
 
+fn status_ready_validator_participants(config: &NodeConfig, connected_peers: &PeersArc) -> usize {
+    let mut validators = HashSet::<String>::new();
+
+    if let Some(local_validator) = announced_validator_address(config) {
+        validators.insert(local_validator);
+    }
+
+    if let Ok(peers) = connected_peers.lock() {
+        for peer in peers.values() {
+            if peer.genesis_hash.trim().is_empty() {
+                continue;
+            }
+            if let Some(address) = peer.validator_address.as_deref() {
+                let trimmed = address.trim();
+                if !trimmed.is_empty() {
+                    validators.insert(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    validators.len()
+}
+
+fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
+    connected_peers
+        .lock()
+        .map(|peers| {
+            peers
+                .values()
+                .filter(|peer| {
+                    peer.validator_address
+                        .as_deref()
+                        .map(|value| !value.trim().is_empty())
+                        .unwrap_or(false)
+                        && !peer.genesis_hash.trim().is_empty()
+                })
+                .map(|peer| peer.last_known_height)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
 fn current_bootstrap_refresh_interval(config: &NodeConfig, connected_peers: &PeersArc) -> Duration {
     let required_validators = config.consensus.min_validators.max(1);
-    let discovered_validators = connected_validator_participants(config, connected_peers);
+    let discovered_validators = status_ready_validator_participants(config, connected_peers);
 
     if discovered_validators < required_validators {
         Duration::from_secs(FAST_BOOTSTRAP_REFRESH_SECS)
@@ -859,6 +905,14 @@ impl P2PNetwork {
         validator_addresses
     }
 
+    pub fn get_status_ready_validator_count(&self) -> usize {
+        status_ready_validator_participants(&self.config, &self.connected_peers)
+    }
+
+    pub fn get_best_validator_peer_height(&self) -> u64 {
+        best_connected_validator_height(&self.connected_peers)
+    }
+
     pub fn collect_peer_snapshots(&self) -> Vec<PeerSnapshot> {
         let peers = self.connected_peers.lock().unwrap();
         peers
@@ -1120,6 +1174,43 @@ fn start_listener(
     }
 
     Ok(())
+}
+
+fn request_status_from_connected_peer(peers: &mut PeerMap, peer_address: &str) {
+    let message = NetworkMessage::GetStatus;
+    if let Some(peer) = peers.get_mut(peer_address) {
+        if let Some(ref mut stream) = peer.stream {
+            if let Err(error) = send_message(stream, &message) {
+                warn!(
+                    "p2p",
+                    "Failed to request status from peer",
+                    "peer" => peer_address.to_string(),
+                    "error" => error.to_string()
+                );
+            }
+        }
+    }
+}
+
+fn request_blocks_from_connected_peer(
+    peers: &mut PeerMap,
+    peer_address: &str,
+    from_height: u64,
+    count: u32,
+) {
+    let message = NetworkMessage::GetBlocks { from_height, count };
+    if let Some(peer) = peers.get_mut(peer_address) {
+        if let Some(ref mut stream) = peer.stream {
+            if let Err(error) = send_message(stream, &message) {
+                warn!(
+                    "p2p",
+                    "Failed to request blocks from peer",
+                    "peer" => peer_address.to_string(),
+                    "error" => error.to_string()
+                );
+            }
+        }
+    }
 }
 
 fn handle_incoming_connection(
@@ -1461,6 +1552,7 @@ fn handle_messages(
                                 peer.public_address = public_address;
                                 peer.validator_address = announced_validator_address.clone();
                             }
+                            request_status_from_connected_peer(&mut peers, &peer_address);
                         }
 
                         // Auto-register new validators on testnet-beta (only if enabled in config)
@@ -1933,6 +2025,28 @@ fn handle_messages(
                             peer.genesis_hash = genesis_hash.clone();
                         }
                         info!("p2p", "Received status", "peer" => peer_address.clone(), "height" => block_height);
+
+                        let local_height = {
+                            let chain = blockchain.lock().unwrap();
+                            chain.last().map(|b| b.block_index).unwrap_or(0)
+                        };
+                        if block_height > local_height {
+                            let behind = block_height.saturating_sub(local_height);
+                            let batch = if behind > 5000 {
+                                2000
+                            } else if behind > 1000 {
+                                1000
+                            } else {
+                                IMMEDIATE_STATUS_SYNC_BATCH
+                            };
+                            let mut peers = connected_peers.lock().unwrap();
+                            request_blocks_from_connected_peer(
+                                &mut peers,
+                                &peer_address,
+                                local_height.saturating_add(1),
+                                batch,
+                            );
+                        }
                     }
                     NetworkMessage::GetBlockHeaders {
                         start_height,
@@ -2447,10 +2561,11 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_known_peer_addresses, connected_validator_participants,
-        current_bootstrap_refresh_interval, dial_with_timeout, parse_bootnode_dial_address,
-        peer_identity_key, preferred_connection_direction, resolve_duplicate_connection,
-        should_disconnect_for_status_genesis_mismatch, ConnectionDirection, DialTargetsArc,
+        best_connected_validator_height, collect_known_peer_addresses,
+        connected_validator_participants, current_bootstrap_refresh_interval, dial_with_timeout,
+        parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
+        resolve_duplicate_connection, should_disconnect_for_status_genesis_mismatch,
+        status_ready_validator_participants, ConnectionDirection, DialTargetsArc,
         DuplicateResolution, PeerConnection, FAST_BOOTSTRAP_REFRESH_SECS,
         NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
@@ -2712,7 +2827,7 @@ mod tests {
                     capabilities: Vec::new(),
                     last_known_height: 0,
                     best_block_hash: String::new(),
-                    genesis_hash: String::new(),
+                    genesis_hash: "genesis-hash".to_string(),
                 },
             );
         }
@@ -2725,5 +2840,120 @@ mod tests {
             4
         );
         assert_eq!(interval, Duration::from_secs(NORMAL_BOOTSTRAP_REFRESH_SECS));
+    }
+
+    #[test]
+    fn status_ready_validator_participants_requires_peer_status_exchange() {
+        let mut config = NodeConfig::default();
+        config.consensus.min_validators = 4;
+        config.node.validator_address = "synv1local".to_string();
+
+        let mut peers = HashMap::new();
+        peers.insert(
+            "peer-a".to_string(),
+            PeerConnection {
+                address: "127.0.0.1:5623".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-a".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+            },
+        );
+        peers.insert(
+            "peer-b".to_string(),
+            PeerConnection {
+                address: "127.0.0.1:5624".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-b".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: "genesis-hash".to_string(),
+            },
+        );
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        assert_eq!(
+            connected_validator_participants(&config, &connected_peers),
+            3
+        );
+        assert_eq!(
+            status_ready_validator_participants(&config, &connected_peers),
+            2
+        );
+    }
+
+    #[test]
+    fn best_connected_validator_height_ignores_unknown_validator_status() {
+        let mut peers = HashMap::new();
+        peers.insert(
+            "peer-a".to_string(),
+            PeerConnection {
+                address: "127.0.0.1:5623".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-a".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 99,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+            },
+        );
+        peers.insert(
+            "peer-b".to_string(),
+            PeerConnection {
+                address: "127.0.0.1:5624".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-b".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 7,
+                best_block_hash: String::new(),
+                genesis_hash: "genesis-hash".to_string(),
+            },
+        );
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        assert_eq!(best_connected_validator_height(&connected_peers), 7);
     }
 }

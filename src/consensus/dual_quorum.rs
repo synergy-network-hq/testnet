@@ -100,7 +100,7 @@ impl DualQuorumConsensus {
             minimum_validator_count: minimum_validator_count.max(1),
             validation_quorum_threshold: 0.67,
             cooperation_quorum_threshold: 0.51,
-            vote_timeout: 3,
+            vote_timeout: 8,
             block_timeout: 5,
             current_epoch: 0,
             current_round_by_height: HashMap::new(),
