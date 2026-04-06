@@ -535,6 +535,7 @@ impl ProofOfSynergy {
                             &validator_manager,
                             &dual_quorum_consensus,
                             current_epoch,
+                            view_offset,
                         );
 
                         consensus_log!("Dual-quorum consensus complete!");
@@ -1317,6 +1318,7 @@ impl ProofOfSynergy {
         _validator_manager: &Arc<ValidatorManager>,
         dual_quorum_consensus: &Arc<Mutex<DualQuorumConsensus>>,
         current_epoch: u64,
+        view_offset: usize,
     ) -> Result<QuorumCertificate, String> {
         consensus_log!(
             "🔒 [execute_dual_quorum_consensus] Attempting to lock dual_quorum_consensus..."
@@ -1330,11 +1332,12 @@ impl ProofOfSynergy {
         );
         io::stdout().flush().unwrap();
         consensus.current_epoch = current_epoch;
+        let minimum_round_number = (view_offset as u64).saturating_add(1);
 
         consensus_log!("📞 [execute_dual_quorum_consensus] Calling start_consensus_round...");
         io::stdout().flush().unwrap();
         // Execute the dual-quorum consensus process
-        let result = consensus.start_consensus_round(block);
+        let result = consensus.start_consensus_round(block, minimum_round_number);
         consensus_log!("✅ [execute_dual_quorum_consensus] start_consensus_round returned!");
         io::stdout().flush().unwrap();
         result

@@ -112,10 +112,12 @@ impl DualQuorumConsensus {
     pub fn start_consensus_round(
         &mut self,
         proposed_block: &Block,
+        minimum_round_number: u64,
     ) -> Result<QuorumCertificate, String> {
         let block_hash = proposed_block.hash.clone();
         let epoch_number = self.current_epoch;
-        let round_number = self.allocate_round_number(proposed_block.block_index);
+        let round_number =
+            self.allocate_round_number(proposed_block.block_index, minimum_round_number);
 
         // Phase 1: Proposal validation
         self.validate_block_proposal(proposed_block)?;
@@ -1014,8 +1016,12 @@ impl DualQuorumConsensus {
             .unwrap_or_default()
     }
 
-    fn allocate_round_number(&mut self, block_index: u64) -> u64 {
+    fn allocate_round_number(&mut self, block_index: u64, minimum_round_number: u64) -> u64 {
         let next_round = self.current_round_by_height.entry(block_index).or_insert(0);
+        let requested_floor = minimum_round_number.saturating_sub(1);
+        if *next_round < requested_floor {
+            *next_round = requested_floor;
+        }
         *next_round += 1;
         *next_round
     }
@@ -1151,6 +1157,21 @@ mod tests {
             .expect("validator should still exist");
         assert_eq!(validator.status, ValidatorStatus::Active);
         assert_eq!(validator.double_signs, 0);
+    }
+
+    #[test]
+    fn round_allocation_respects_view_floor() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let mut consensus =
+            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+
+        assert_eq!(consensus.allocate_round_number(4, 3), 3);
+        assert_eq!(consensus.allocate_round_number(4, 3), 4);
+        assert_eq!(consensus.allocate_round_number(4, 1), 5);
+        assert_eq!(consensus.allocate_round_number(5, 1), 1);
     }
 
     #[test]

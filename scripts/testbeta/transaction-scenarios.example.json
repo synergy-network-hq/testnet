@@ -1,0 +1,32 @@
+[
+  {
+    "label": "transfer-faucet-to-wallet-a",
+    "method": "synergy_sendTokens",
+    "params": [
+      "synwReplaceWithFundedSenderAddress",
+      "synwReplaceWithRecipientAddressA",
+      "SNRG",
+      1
+    ]
+  },
+  {
+    "label": "transfer-faucet-to-wallet-b",
+    "method": "synergy_sendTokens",
+    "params": [
+      "synwReplaceWithFundedSenderAddress",
+      "synwReplaceWithRecipientAddressB",
+      "SNRG",
+      2
+    ]
+  },
+  {
+    "label": "stake-to-validator-1",
+    "method": "synergy_stakeTokensDirect",
+    "params": [
+      "synwReplaceWithFundedSenderAddress",
+      "synvReplaceWithValidatorAddress",
+      "SNRG",
+      1
+    ]
+  }
+]

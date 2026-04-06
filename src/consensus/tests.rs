@@ -110,7 +110,7 @@ fn test_dual_quorum_consensus() {
     }
 
     // Test consensus execution
-    let result = dual_quorum.start_consensus_round(&test_block);
+    let result = dual_quorum.start_consensus_round(&test_block, 1);
 
     // Verify result
     match result {
@@ -170,7 +170,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
         test_block.block_signature_algorithm = "fndsa".to_string();
     }
 
-    let result = dual_quorum.start_consensus_round(&test_block);
+    let result = dual_quorum.start_consensus_round(&test_block, 1);
     assert!(result.is_err());
     assert!(result
         .err()
