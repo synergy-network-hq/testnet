@@ -27,9 +27,11 @@ jobs:
           - os: ubuntu-latest
             label: linux-amd64
             binary_suffix: ""
-          - os: windows-latest
-            label: windows-amd64
-            binary_suffix: .exe
+          # Windows binary builds are intentionally disabled for now while we
+          # only ship macOS/Linux artifacts for Testnet-Beta.
+          # - os: windows-latest
+          #   label: windows-amd64
+          #   binary_suffix: .exe
           - os: macos-14
             label: macos-arm64
             binary_suffix: ""
