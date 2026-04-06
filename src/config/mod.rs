@@ -181,7 +181,7 @@ impl Default for NodeConfig {
             consensus: ConsensusConfig {
                 algorithm: "Proof of Synergy".to_string(),
                 block_time_secs: 2,
-                epoch_length: 50,
+                epoch_length: 1000,
                 min_validators: default_min_validators(),
                 validator_cluster_size: 4,
                 max_validators: default_max_validators(),
@@ -924,7 +924,7 @@ chain_id = 338639
 [consensus]
 algorithm = "Proof of Synergy"
 block_time_secs = 5
-epoch_length = 30000
+epoch_length = 1000
 validator_cluster_size = 4
 max_validators = 100
 synergy_score_decay_rate = 0.05
@@ -1063,7 +1063,7 @@ chain_id = 338639
 [consensus]
 algorithm = "Proof of Synergy"
 block_time_secs = 5
-epoch_length = 30000
+epoch_length = 1000
 validator_cluster_size = 4
 max_validators = 100
 synergy_score_decay_rate = 0.05

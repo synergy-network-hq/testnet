@@ -125,7 +125,7 @@ chain_id = 338639
 [consensus]
 algorithm = "Proof of Synergy"
 block_time_secs = 5
-epoch_length = 30000
+epoch_length = 1000
 min_validators = ${GENESIS_VALIDATOR_COUNT}
 validator_cluster_size = ${GENESIS_VALIDATOR_COUNT}
 max_validators = ${GENESIS_VALIDATOR_COUNT}
