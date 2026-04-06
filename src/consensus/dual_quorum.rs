@@ -1193,13 +1193,9 @@ mod tests {
             .register_local_vote_or_slash(&first_vote)
             .expect("first local vote should be accepted");
 
-        let conflicting_vote = DualQuorumConsensus::create_vote_for_validator(
-            "validator2",
-            &conflicting_block,
-            30,
-            1,
-        )
-        .expect("conflicting local vote should be created");
+        let conflicting_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 30, 1)
+                .expect("conflicting local vote should be created");
         let error = consensus
             .register_local_vote_or_slash(&conflicting_vote)
             .expect_err("conflicting local vote should be rejected");

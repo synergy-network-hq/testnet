@@ -967,8 +967,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 // endpoint before it has finished binding, producing "fetch failed" errors.
                 let rpc_port = config.rpc.http_port;
                 let rpc_ready_addr = format!("127.0.0.1:{}", rpc_port);
-                let rpc_ready_deadline =
-                    std::time::Instant::now() + Duration::from_secs(10);
+                let rpc_ready_deadline = std::time::Instant::now() + Duration::from_secs(10);
                 loop {
                     if std::net::TcpStream::connect(&rpc_ready_addr).is_ok() {
                         info!("main", "RPC server ready", "port" => rpc_port);

@@ -196,7 +196,8 @@ mod tests {
                 std::process::id(),
                 unique
             ));
-            fs::create_dir_all(root.join("config")).expect("temp workspace config dir should exist");
+            fs::create_dir_all(root.join("config"))
+                .expect("temp workspace config dir should exist");
             Self { root }
         }
     }
@@ -213,7 +214,10 @@ mod tests {
         let workspace = TempWorkspace::new();
         let _project_root = EnvVarGuard::set(
             "SYNERGY_PROJECT_ROOT",
-            workspace.root.to_str().expect("workspace path should be utf-8"),
+            workspace
+                .root
+                .to_str()
+                .expect("workspace path should be utf-8"),
         );
         let _config_path = EnvVarGuard::clear("SYNERGY_CONFIG_PATH");
 

@@ -12,6 +12,7 @@ use hickory_resolver::Resolver;
 use lazy_static::lazy_static;
 use serde::Deserialize;
 use serde_json;
+use socket2::{SockRef, TcpKeepalive};
 use std::collections::{HashMap, HashSet};
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
@@ -25,6 +26,11 @@ type PeerMap = HashMap<String, PeerConnection>;
 type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
 type DialTargetsArc = Arc<Mutex<Vec<String>>>;
+
+const FAST_BOOTSTRAP_REFRESH_SECS: u64 = 10;
+const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
+const TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
+const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -139,18 +145,30 @@ fn announced_validator_address(config: &NodeConfig) -> Option<String> {
     }
 }
 
-fn preferred_connection_direction(
-    local_node_id: &str,
-    remote_node_id: &str,
-) -> Option<ConnectionDirection> {
-    let local_node_id = local_node_id.trim();
-    let remote_node_id = remote_node_id.trim();
+fn local_peer_identity(config: &NodeConfig) -> String {
+    announced_validator_address(config).unwrap_or_else(|| config.p2p.node_name.clone())
+}
 
-    if local_node_id.is_empty() || remote_node_id.is_empty() || local_node_id == remote_node_id {
+fn peer_identity_key(node_id: &str, validator_address: Option<&str>) -> String {
+    validator_address
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| format!("validator:{value}"))
+        .unwrap_or_else(|| format!("node:{}", node_id.trim()))
+}
+
+fn preferred_connection_direction(
+    local_identity: &str,
+    remote_identity: &str,
+) -> Option<ConnectionDirection> {
+    let local_identity = local_identity.trim();
+    let remote_identity = remote_identity.trim();
+
+    if local_identity.is_empty() || remote_identity.is_empty() || local_identity == remote_identity {
         return None;
     }
 
-    if local_node_id < remote_node_id {
+    if local_identity < remote_identity {
         Some(ConnectionDirection::Outgoing)
     } else {
         Some(ConnectionDirection::Incoming)
@@ -158,14 +176,14 @@ fn preferred_connection_direction(
 }
 
 fn resolve_duplicate_connection(
-    local_node_id: &str,
-    remote_node_id: &str,
+    local_identity: &str,
+    remote_identity: &str,
     existing_direction: ConnectionDirection,
     existing_connected_at: u64,
     new_direction: ConnectionDirection,
     new_connected_at: u64,
 ) -> DuplicateResolution {
-    match preferred_connection_direction(local_node_id, remote_node_id) {
+    match preferred_connection_direction(local_identity, remote_identity) {
         Some(preferred) if existing_direction == preferred && new_direction != preferred => {
             DuplicateResolution::KeepExisting
         }
@@ -228,6 +246,38 @@ fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
     let mut ordered = targets.into_iter().collect::<Vec<_>>();
     ordered.sort();
     ordered
+}
+
+fn connected_validator_participants(config: &NodeConfig, connected_peers: &PeersArc) -> usize {
+    let mut validators = HashSet::<String>::new();
+
+    if let Some(local_validator) = announced_validator_address(config) {
+        validators.insert(local_validator);
+    }
+
+    if let Ok(peers) = connected_peers.lock() {
+        for peer in peers.values() {
+            if let Some(address) = peer.validator_address.as_deref() {
+                let trimmed = address.trim();
+                if !trimmed.is_empty() {
+                    validators.insert(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    validators.len()
+}
+
+fn current_bootstrap_refresh_interval(config: &NodeConfig, connected_peers: &PeersArc) -> Duration {
+    let required_validators = config.consensus.min_validators.max(1);
+    let discovered_validators = connected_validator_participants(config, connected_peers);
+
+    if discovered_validators < required_validators {
+        Duration::from_secs(FAST_BOOTSTRAP_REFRESH_SECS)
+    } else {
+        Duration::from_secs(NORMAL_BOOTSTRAP_REFRESH_SECS)
+    }
 }
 
 fn resolve_dns_bootstrap_targets(record_names: &[String]) -> Vec<String> {
@@ -569,6 +619,19 @@ fn normalize_seed_server_url(seed_server: &str, default_path: &str) -> String {
     }
 }
 
+fn configure_peer_stream(stream: &TcpStream) {
+    let _ = stream.set_nodelay(true);
+    // Keep long-lived validator sockets active so NAT devices do not reap them
+    // between proposal/vote rounds.
+    let keepalive = TcpKeepalive::new()
+        .with_time(Duration::from_secs(TCP_KEEPALIVE_IDLE_SECS))
+        .with_interval(Duration::from_secs(TCP_KEEPALIVE_INTERVAL_SECS));
+    let socket = SockRef::from(stream);
+    let _ = socket.set_tcp_keepalive(&keepalive);
+    let _ = stream.set_read_timeout(None);
+    let _ = stream.set_write_timeout(None);
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerSnapshot {
     pub address: String,
@@ -801,7 +864,11 @@ impl P2PNetwork {
         peers
             .values()
             .map(|peer| PeerSnapshot {
-                address: peer.address.clone(),
+                address: peer
+                    .public_address
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| peer.address.clone()),
                 block_height: peer.last_known_height,
                 best_block_hash: peer.best_block_hash.clone(),
                 genesis_hash: peer.genesis_hash.clone(),
@@ -894,11 +961,13 @@ impl P2PNetwork {
         thread::spawn(move || {
             let heartbeat =
                 std::time::Duration::from_secs(network.config.p2p.heartbeat_interval.max(5));
-            let bootstrap_refresh_interval = std::time::Duration::from_secs(120);
             let mut bootnode_dials = Vec::<String>::new();
-            let mut last_refresh = Instant::now() - bootstrap_refresh_interval;
+            let mut last_refresh = Instant::now()
+                - current_bootstrap_refresh_interval(&network.config, &network.connected_peers);
 
             loop {
+                let bootstrap_refresh_interval =
+                    current_bootstrap_refresh_interval(&network.config, &network.connected_peers);
                 if last_refresh.elapsed() >= bootstrap_refresh_interval || bootnode_dials.is_empty()
                 {
                     bootnode_dials = resolve_bootstrap_dial_targets(&network.config);
@@ -1061,6 +1130,7 @@ fn handle_incoming_connection(
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
 
@@ -1147,6 +1217,7 @@ fn handle_outgoing_connection(
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
 
@@ -1275,9 +1346,11 @@ fn handle_messages(
                             .as_ref()
                             .map(|value| value.trim().to_string())
                             .filter(|value| !value.is_empty());
-                        let peer_identity = announced_validator_address
-                            .clone()
-                            .unwrap_or_else(|| node_id.clone());
+                        let peer_identity = peer_identity_key(
+                            &node_id,
+                            announced_validator_address.as_deref(),
+                        );
+                        let local_identity = local_peer_identity(&config);
 
                         info!(
                             "p2p",
@@ -1289,14 +1362,20 @@ fn handle_messages(
                             "public_address" => public_address.clone().unwrap_or_default()
                         );
 
-                        // Update peer info and deduplicate by node_id
+                        // Update peer info and deduplicate by stable peer identity.
                         {
                             let mut peers = connected_peers.lock().unwrap();
 
-                            // Check if we already have a connection to this node_id
+                            // Prefer validator identity when present; fall back to node_id for
+                            // non-validator/discovery peers.
                             let existing_peer_key = peers
                                 .iter()
-                                .find(|(_, peer)| peer.node_id.as_ref() == Some(&node_id))
+                                .find(|(_, peer)| {
+                                    peer_identity_key(
+                                        peer.node_id.as_deref().unwrap_or_default(),
+                                        peer.validator_address.as_deref(),
+                                    ) == peer_identity
+                                })
                                 .map(|(key, _)| key.clone());
 
                             if let Some(existing_key) = existing_peer_key.clone() {
@@ -1322,8 +1401,8 @@ fn handle_messages(
                                     ) = (existing_metadata, new_metadata)
                                     {
                                         match resolve_duplicate_connection(
-                                            &config.p2p.node_name,
-                                            &node_id,
+                                            &local_identity,
+                                            &peer_identity,
                                             existing_direction,
                                             existing_connected_at,
                                             new_direction,
@@ -1341,8 +1420,8 @@ fn handle_messages(
                                                     "preferred_direction" => format!(
                                                         "{:?}",
                                                         preferred_connection_direction(
-                                                            &config.p2p.node_name,
-                                                            &node_id
+                                                            &local_identity,
+                                                            &peer_identity
                                                         )
                                                     ),
                                                     "kept_public_address" => existing_public_address.unwrap_or_default()
@@ -1362,8 +1441,8 @@ fn handle_messages(
                                                     "preferred_direction" => format!(
                                                         "{:?}",
                                                         preferred_connection_direction(
-                                                            &config.p2p.node_name,
-                                                            &node_id
+                                                            &local_identity,
+                                                            &peer_identity
                                                         )
                                                     )
                                                 );
@@ -2221,12 +2300,7 @@ fn dial_with_timeout(peer: &str, timeout: std::time::Duration) -> io::Result<Tcp
     for addr in ipv4_addrs {
         match TcpStream::connect_timeout(&addr, timeout) {
             Ok(stream) => {
-                let _ = stream.set_nodelay(true);
-                // Keep the connect deadline, but leave established peer streams blocking.
-                // A fixed read timeout on long-lived P2P sockets causes idle bootstrap peers
-                // to be disconnected even though the link is healthy.
-                let _ = stream.set_read_timeout(None);
-                let _ = stream.set_write_timeout(None);
+                configure_peer_stream(&stream);
                 return Ok(stream);
             }
             Err(e) => last_err = Some(e),
@@ -2268,8 +2342,10 @@ fn collect_known_peer_addresses(
                     continue;
                 }
             }
-            if let Some(address) = parse_bootnode_dial_address(&peer.address) {
-                out.insert(address);
+            if peer.direction == ConnectionDirection::Outgoing {
+                if let Some(address) = parse_bootnode_dial_address(&peer.address) {
+                    out.insert(address);
+                }
             }
         }
     }
@@ -2371,10 +2447,12 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        collect_known_peer_addresses, dial_with_timeout, parse_bootnode_dial_address,
-        preferred_connection_direction, resolve_duplicate_connection,
+        collect_known_peer_addresses, connected_validator_participants,
+        current_bootstrap_refresh_interval, dial_with_timeout, parse_bootnode_dial_address,
+        peer_identity_key, preferred_connection_direction, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution,
+        DuplicateResolution, PeerConnection, FAST_BOOTSTRAP_REFRESH_SECS,
+        NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
@@ -2413,6 +2491,18 @@ mod tests {
         assert_eq!(
             preferred_connection_direction("node-02", "node-01"),
             Some(ConnectionDirection::Incoming)
+        );
+    }
+
+    #[test]
+    fn peer_identity_key_prefers_validator_address_over_node_id() {
+        assert_eq!(
+            peer_identity_key("tbeta-random-node-id", Some("synv1validator")),
+            "validator:synv1validator".to_string()
+        );
+        assert_eq!(
+            peer_identity_key("tbeta-random-node-id", None),
+            "node:tbeta-random-node-id".to_string()
         );
     }
 
@@ -2484,14 +2574,70 @@ mod tests {
     }
 
     #[test]
-    fn empty_remote_genesis_hash_is_allowed_for_discovery_peer() {
-        assert!(
-            !should_disconnect_for_status_genesis_mismatch(
-                "local-hash",
-                "",
-                None,
-            )
+    fn collect_known_peer_addresses_excludes_incoming_ephemeral_ports() {
+        let config = NodeConfig::default();
+        let mut peers = HashMap::new();
+        peers.insert(
+            "incoming".to_string(),
+            PeerConnection {
+                address: "73.79.66.255:54792".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: None,
+                validator_address: Some("synv1incoming".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("tbeta-incoming".to_string()),
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+            },
         );
+        peers.insert(
+            "outgoing".to_string(),
+            PeerConnection {
+                address: "73.79.66.255:5623".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1outgoing".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("tbeta-outgoing".to_string()),
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+            },
+        );
+        let connected_peers = Arc::new(Mutex::new(peers));
+        let discovered_targets: DialTargetsArc = Arc::new(Mutex::new(Vec::new()));
+
+        let addresses =
+            collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
+
+        assert!(!addresses.contains(&"73.79.66.255:54792".to_string()));
+        assert!(addresses.contains(&"73.79.66.255:5623".to_string()));
+    }
+
+    #[test]
+    fn empty_remote_genesis_hash_is_allowed_for_discovery_peer() {
+        assert!(!should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "",
+            None,
+        ));
     }
 
     #[test]
@@ -2514,12 +2660,70 @@ mod tests {
 
     #[test]
     fn matching_remote_genesis_hash_is_allowed_for_validator_peer() {
-        assert!(
-            !should_disconnect_for_status_genesis_mismatch(
-                "local-hash",
-                "local-hash",
-                Some("synv1validator"),
-            )
+        assert!(!should_disconnect_for_status_genesis_mismatch(
+            "local-hash",
+            "local-hash",
+            Some("synv1validator"),
+        ));
+    }
+
+    #[test]
+    fn bootstrap_refresh_stays_fast_until_validator_mesh_is_complete() {
+        let mut config = NodeConfig::default();
+        config.consensus.min_validators = 4;
+        config.node.validator_address = "synv1local".to_string();
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+
+        let interval = current_bootstrap_refresh_interval(&config, &connected_peers);
+        assert_eq!(interval, Duration::from_secs(FAST_BOOTSTRAP_REFRESH_SECS));
+        assert_eq!(
+            connected_validator_participants(&config, &connected_peers),
+            1
         );
+    }
+
+    #[test]
+    fn bootstrap_refresh_relaxes_after_validator_mesh_is_complete() {
+        let mut config = NodeConfig::default();
+        config.consensus.min_validators = 4;
+        config.node.validator_address = "synv1local".to_string();
+
+        let mut peers = HashMap::new();
+        for (index, validator_address) in ["synv1peer-a", "synv1peer-b", "synv1peer-c"]
+            .iter()
+            .enumerate()
+        {
+            peers.insert(
+                format!("peer-{index}"),
+                PeerConnection {
+                    address: format!("127.0.0.1:56{:02}", index + 20),
+                    direction: ConnectionDirection::Outgoing,
+                    public_address: None,
+                    validator_address: Some((*validator_address).to_string()),
+                    connected_at: 0,
+                    last_seen: 0,
+                    blocks_sent: 0,
+                    blocks_received: 0,
+                    txs_sent: 0,
+                    txs_received: 0,
+                    stream: None,
+                    node_id: None,
+                    version: None,
+                    capabilities: Vec::new(),
+                    last_known_height: 0,
+                    best_block_hash: String::new(),
+                    genesis_hash: String::new(),
+                },
+            );
+        }
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        let interval = current_bootstrap_refresh_interval(&config, &connected_peers);
+
+        assert_eq!(
+            connected_validator_participants(&config, &connected_peers),
+            4
+        );
+        assert_eq!(interval, Duration::from_secs(NORMAL_BOOTSTRAP_REFRESH_SECS));
     }
 }

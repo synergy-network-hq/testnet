@@ -430,9 +430,8 @@ impl ProofOfSynergy {
                         {
                             // Track how long we have been waiting for the leader at this height.
                             let wait_start = *block_wait_start.get_or_insert(current_time);
-                            let wait_elapsed = current_time
-                                .duration_since(wait_start)
-                                .unwrap_or_default();
+                            let wait_elapsed =
+                                current_time.duration_since(wait_start).unwrap_or_default();
 
                             if wait_elapsed >= Duration::from_secs(leader_timeout_secs) {
                                 // Leader did not produce within the timeout window.
