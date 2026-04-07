@@ -165,7 +165,8 @@ fn announced_validator_address(config: &NodeConfig) -> Option<String> {
 }
 
 fn local_peer_identity(config: &NodeConfig) -> String {
-    announced_validator_address(config).unwrap_or_else(|| config.p2p.node_name.clone())
+    let validator_address = announced_validator_address(config);
+    peer_identity_key(&config.p2p.node_name, validator_address.as_deref())
 }
 
 fn peer_identity_key(node_id: &str, validator_address: Option<&str>) -> String {
@@ -2797,10 +2798,11 @@ mod tests {
     use super::{
         best_connected_validator_height, cache_peer_state, collect_known_peer_addresses,
         connected_validator_participants, current_bootstrap_refresh_interval, dial_with_timeout,
-        hydrate_peer_from_cache, merge_peer_state_from_existing, parse_bootnode_dial_address,
-        peer_identity_key, preferred_connection_direction, resolve_duplicate_connection,
-        should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
-        ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection,
+        hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
+        parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
+        resolve_duplicate_connection, should_disconnect_for_status_genesis_mismatch,
+        status_ready_validator_participants, ConnectionDirection, DialTargetsArc,
+        DuplicateResolution, PeerConnection,
         FAST_BOOTSTRAP_REFRESH_SECS, NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
     use crate::config::NodeConfig;
@@ -2869,6 +2871,19 @@ mod tests {
     }
 
     #[test]
+    fn local_peer_identity_uses_same_validator_namespace_as_remote_peers() {
+        let mut config = NodeConfig::default();
+        config.node.bootstrap_only = false;
+        config.node.validator_address = "synv1local".to_string();
+        config.p2p.node_name = "tbeta-local".to_string();
+
+        assert_eq!(
+            local_peer_identity(&config),
+            "validator:synv1local".to_string()
+        );
+    }
+
+    #[test]
     fn duplicate_resolution_keeps_preferred_existing_connection() {
         assert_eq!(
             resolve_duplicate_connection(
@@ -2896,6 +2911,32 @@ mod tests {
             ),
             DuplicateResolution::ReplaceExisting
         );
+    }
+
+    #[test]
+    fn validator_duplicate_resolution_prefers_opposite_directions_on_each_side() {
+        let local_a = "validator:synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra";
+        let local_b = "validator:synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu";
+
+        let decision_a = resolve_duplicate_connection(
+            local_a,
+            local_b,
+            ConnectionDirection::Outgoing,
+            10,
+            ConnectionDirection::Incoming,
+            20,
+        );
+        let decision_b = resolve_duplicate_connection(
+            local_b,
+            local_a,
+            ConnectionDirection::Outgoing,
+            10,
+            ConnectionDirection::Incoming,
+            20,
+        );
+
+        assert_eq!(decision_a, DuplicateResolution::KeepExisting);
+        assert_eq!(decision_b, DuplicateResolution::ReplaceExisting);
     }
 
     #[test]
