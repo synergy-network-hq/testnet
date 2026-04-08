@@ -585,11 +585,12 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
         }
     }
 
-    if let Some(public_address) = get_string(raw, &["p2p", "public_address"]) {
+    let explicit_public_address = get_string(raw, &["p2p", "public_address"])
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(public_address) = explicit_public_address {
         config.p2p.public_address = public_address;
-    }
-
-    if let Some(public_host) = get_string(raw, &["network", "public_host"]) {
+    } else if let Some(public_host) = get_string(raw, &["network", "public_host"]) {
         let p2p_port = config.network.p2p_port;
         config.p2p.public_address = format!("{public_host}:{p2p_port}");
     }
@@ -1021,6 +1022,56 @@ additional_dial_targets = ["73.79.66.255:39638"]
         fs::remove_file(&node_path).ok();
         fs::remove_file(&peers_path).ok();
         fs::remove_dir_all(&temp_dir).ok();
+    }
+
+    #[test]
+    fn preserves_explicit_p2p_public_address_for_genesis_validator_configs() {
+        let content = r#"
+[identity]
+node_id = "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
+role = "validator"
+address = "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
+label = "Genesis Validator 3 Node"
+
+[network]
+chain_name = "synergy-testnet-beta"
+chain_id = 338639
+p2p_port = 5622
+public_host = "genesisval3.synergynode.xyz"
+
+[p2p]
+listen_address = "0.0.0.0:5622"
+public_address = "genesisval3.synergynode.xyz:5623"
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert_eq!(config.network.p2p_port, 5622);
+        assert_eq!(
+            config.p2p.public_address,
+            "genesisval3.synergynode.xyz:5623".to_string()
+        );
+    }
+
+    #[test]
+    fn synthesizes_public_address_from_public_host_when_explicit_value_missing() {
+        let content = r#"
+[network]
+chain_name = "synergy-testnet-beta"
+chain_id = 338639
+p2p_port = 5622
+public_host = "genesisval1.synergynode.xyz"
+
+[p2p]
+listen_address = "0.0.0.0:5622"
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert_eq!(
+            config.p2p.public_address,
+            "genesisval1.synergynode.xyz:5622".to_string()
+        );
     }
 
     #[test]
