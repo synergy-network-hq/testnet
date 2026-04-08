@@ -54,7 +54,7 @@ external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [p2p]
 listen_address = "0.0.0.0:5620"
-public_address = "bootnode1.synergyvps.xyz:5620"
+public_address = "bootnode1.synergynode.xyz:5620"
 node_name = "bootnode1-validator"
 enable_discovery = true
 discovery_port = 5680

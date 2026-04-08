@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${BOOTSTRAP_OUT_DIR:-$ROOT_DIR/bootstrap-bundles}"
 BINARIES_DIR="${BOOTSTRAP_BINARIES_DIR:-$ROOT_DIR/binaries}"
-BOOTNODE_DOMAIN="${BOOTSTRAP_BOOTNODE_DOMAIN:-synergyvps.xyz}"
+BOOTNODE_DOMAIN="${BOOTSTRAP_BOOTNODE_DOMAIN:-synergynode.xyz}"
 SEED_DOMAIN="${BOOTSTRAP_SEED_DOMAIN:-synergynode.xyz}"
 DISCOVERY_DOMAIN="${BOOTSTRAP_DISCOVERY_DOMAIN:-synergynode.xyz}"
 P2P_PORT="${BOOTSTRAP_P2P_PORT:-5620}"

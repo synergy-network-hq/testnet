@@ -856,7 +856,7 @@ label = "Validator Node 01"
 chain_name = "synergy-testnet-beta"
 chain_id = 338639
 p2p_listen = "0.0.0.0:5622"
-bootnodes = ["bootnode1.synergyvps.xyz:5620"]
+bootnodes = ["bootnode1.synergynode.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["24.181.87.76:5623"]
@@ -883,7 +883,7 @@ log_level = "debug"
         assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
         assert_eq!(
             config.network.bootnodes,
-            vec!["bootnode1.synergyvps.xyz:5620".to_string()]
+            vec!["bootnode1.synergynode.xyz:5620".to_string()]
         );
         assert_eq!(
             config.network.seed_servers,
@@ -921,7 +921,7 @@ name = "synergy-testnet-beta"
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
-bootnodes = ["bootnode1.synergyvps.xyz:5620"]
+bootnodes = ["bootnode1.synergynode.xyz:5620"]
 
 [blockchain]
 block_time = 5
@@ -984,7 +984,7 @@ pruning_interval = 86400
             &peers_path,
             r#"
 [global]
-bootnodes = ["bootnode2.synergyvps.xyz:5620"]
+bootnodes = ["bootnode2.synergynode.xyz:5620"]
 seed_servers = ["http://seed2.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["73.79.66.255:39638"]
@@ -1000,11 +1000,11 @@ additional_dial_targets = ["73.79.66.255:39638"]
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode1.synergyvps.xyz:5620".to_string()));
+            .contains(&"bootnode1.synergynode.xyz:5620".to_string()));
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode2.synergyvps.xyz:5620".to_string()));
+            .contains(&"bootnode2.synergynode.xyz:5620".to_string()));
         assert_eq!(
             config.network.seed_servers,
             vec!["http://seed2.synergynode.xyz:5621".to_string()]

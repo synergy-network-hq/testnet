@@ -294,17 +294,17 @@ netstat -an | grep -E '5620|5621|5622|5640|5660|5680|6030'
 ### Bootnode Connectivity
 ```bash
 # Test individual bootnodes
-nc -zv bootnode1.synergyvps.xyz 5620
-nc -zv bootnode2.synergyvps.xyz 5620
-nc -zv bootnode3.synergyvps.xyz 5620
+nc -zv bootnode1.synergynode.xyz 5620
+nc -zv bootnode2.synergynode.xyz 5620
+nc -zv bootnode3.synergynode.xyz 5620
 
 # Test all at once
 for host in bootnode1 bootnode2 bootnode3; do
-  nc -zv "${host}.synergyvps.xyz" 5620 2>&1
+  nc -zv "${host}.synergynode.xyz" 5620 2>&1
 done
 
 # Using bash TCP
-timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergyvps.xyz/5620' && echo "open" || echo "closed"
+timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergynode.xyz/5620' && echo "open" || echo "closed"
 ```
 
 ### External Accessibility
@@ -349,9 +349,9 @@ https://testbeta-atlas-api.synergy-network.io
 
 ### Bootnodes
 ```text
-snr://bootstrap@bootnode1.synergyvps.xyz:5620
-snr://bootstrap@bootnode2.synergyvps.xyz:5620
-snr://bootstrap@bootnode3.synergyvps.xyz:5620
+snr://bootstrap@bootnode1.synergynode.xyz:5620
+snr://bootstrap@bootnode2.synergynode.xyz:5620
+snr://bootstrap@bootnode3.synergynode.xyz:5620
 ```
 
 ---
@@ -524,7 +524,7 @@ tail -100 ~/.synergy/testnet-beta/node-01/logs/node.out
 #### Not Connecting to Peers
 ```bash
 # Verify bootnode connectivity
-nc -zv bootnode1.synergyvps.xyz 5620
+nc -zv bootnode1.synergynode.xyz 5620
 
 # Check peer count
 curl -s -X POST http://127.0.0.1:5640 \

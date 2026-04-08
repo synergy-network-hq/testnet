@@ -24,7 +24,7 @@ p2p_port = $p2p_port
 rpc_port = $rpc_port
 ws_port = $ws_port
 max_peers = 50
-bootnodes = ["snr://bootstrap@bootnode1.synergyvps.xyz:5620", "snr://bootstrap@bootnode2.synergyvps.xyz:5620", "snr://bootstrap@bootnode3.synergyvps.xyz:5620"]
+bootnodes = ["snr://bootstrap@bootnode1.synergynode.xyz:5620", "snr://bootstrap@bootnode2.synergynode.xyz:5620", "snr://bootstrap@bootnode3.synergynode.xyz:5620"]
 
 [blockchain]
 block_time = 5

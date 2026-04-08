@@ -6,9 +6,9 @@ rpc_port = 5640
 ws_port = 5660
 max_peers = 50
 bootnodes = [
-  "snr://bootstrap@bootnode1.synergyvps.xyz:5620",
-  "snr://bootstrap@bootnode2.synergyvps.xyz:5620",
-  "snr://bootstrap@bootnode3.synergyvps.xyz:5620"
+  "snr://bootstrap@bootnode1.synergynode.xyz:5620",
+  "snr://bootstrap@bootnode2.synergynode.xyz:5620",
+  "snr://bootstrap@bootnode3.synergynode.xyz:5620"
 ]
 
 [rpc]

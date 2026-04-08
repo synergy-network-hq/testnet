@@ -16,9 +16,9 @@ The required beta records should now be treated as the frozen keep set. Remainin
 
 The required 3-host bootstrap set is:
 
-- `bootnode1.synergyvps.xyz`
-- `bootnode2.synergyvps.xyz`
-- `bootnode3.synergyvps.xyz`
+- `bootnode1.synergynode.xyz`
+- `bootnode2.synergynode.xyz`
+- `bootnode3.synergynode.xyz`
 - `seed1.synergynode.xyz`
 - `seed2.synergynode.xyz`
 - `seed3.synergynode.xyz`
@@ -58,9 +58,9 @@ No compatibility aliases are part of the frozen Testnet-Beta keep set.
 
 These records remain the approved bootstrap discovery surface:
 
-- `bootnode1.synergyvps.xyz` -> `74.208.227.23`
-- `bootnode2.synergyvps.xyz` -> `73.79.66.255`
-- `bootnode3.synergyvps.xyz` -> `157.245.226.240`
+- `bootnode1.synergynode.xyz` -> `74.208.227.23`
+- `bootnode2.synergynode.xyz` -> `73.79.66.255`
+- `bootnode3.synergynode.xyz` -> `157.245.226.240`
 - `seed1.synergynode.xyz` -> `74.208.227.23`
 - `seed2.synergynode.xyz` -> `73.79.66.255`
 - `seed3.synergynode.xyz` -> `157.245.226.240`

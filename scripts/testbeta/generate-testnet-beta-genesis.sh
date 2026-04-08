@@ -80,9 +80,9 @@ with open(inventory_file, newline="", encoding="utf-8") as handle:
         inventory_rows.append(row)
 
 bootnodes = [
-    "snr://bootstrap@bootnode1.synergyvps.xyz:5620",
-    "snr://bootstrap@bootnode2.synergyvps.xyz:5620",
-    "snr://bootstrap@bootnode3.synergyvps.xyz:5620",
+    "snr://bootstrap@bootnode1.synergynode.xyz:5620",
+    "snr://bootstrap@bootnode2.synergynode.xyz:5620",
+    "snr://bootstrap@bootnode3.synergynode.xyz:5620",
 ]
 
 validator_rows = [

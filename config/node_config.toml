@@ -1,7 +1,7 @@
 [network]
 node_name = "bootnode1-validator"
 listen_address = "0.0.0.0:5620"
-public_address = "bootnode1.synergyvps.xyz:5620"
+public_address = "bootnode1.synergynode.xyz:5620"
 # Bootnode1 - First validator node (other nodes will connect to this)
 bootnodes = []
 p2p_port = 5620
