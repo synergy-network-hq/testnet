@@ -138,7 +138,9 @@ ws_port = 5660
 [consensus]
 algorithm = "proof_of_synergy"
 block_time = 5
-max_validators = 4
+min_validators = 4
+validator_vote_threshold = 3
+max_validators = 5
 ```
 
 ### Node Configuration

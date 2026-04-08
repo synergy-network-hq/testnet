@@ -80,9 +80,9 @@ with open(inventory_file, newline="", encoding="utf-8") as handle:
         inventory_rows.append(row)
 
 bootnodes = [
-    "snr://bootstrap@bootnode1.synergynode.xyz:5620",
-    "snr://bootstrap@bootnode2.synergynode.xyz:5620",
-    "snr://bootstrap@bootnode3.synergynode.xyz:5620",
+    "snr://bootstrap@bootnode1.synergyvps.xyz:5620",
+    "snr://bootstrap@bootnode2.synergyvps.xyz:5620",
+    "snr://bootstrap@bootnode3.synergyvps.xyz:5620",
 ]
 
 validator_rows = [
@@ -204,9 +204,9 @@ genesis = {
     },
     "network": {
         "chain_id": chain_id,
-        "rpc_endpoint": "https://testbeta-core-rpc.synergynode.xyz",
-        "websocket_endpoint": "wss://testbeta-core-ws.synergynode.xyz",
-        "api_endpoint": "https://testbeta-api.synergynode.xyz",
+        "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io",
+        "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
+        "api_endpoint": "https://testbeta-api.synergy-network.io",
         "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
         "rpc_port": 5640,
         "p2p_port": 5622,

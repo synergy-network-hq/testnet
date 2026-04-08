@@ -84,7 +84,7 @@ fn test_dual_quorum_consensus() {
     }
 
     let mut dual_quorum =
-        DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+        DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1, 1);
 
     // Create test block
     let mut test_block = Block::new(
@@ -147,7 +147,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
     }
 
     let mut dual_quorum =
-        DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 5);
+        DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 5, 3);
 
     let mut test_block = Block::new(
         1,

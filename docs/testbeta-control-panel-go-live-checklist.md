@@ -82,17 +82,17 @@ Relevant reference:
 
 - `scripts/testbeta/build-bootstrap-bundles.sh`
 
-**Completed 2026-03-18:** Ran `scripts/testbeta/build-bootstrap-bundles.sh` to regenerate all 6 bundles (bootnode1-3, seed1-3) in `bootstrap-bundles/`. The bundles still need to be deployed to the 3 hosts (74.208.227.23, 73.79.66.255, 157.245.226.24).
+**Completed 2026-03-18:** Ran `scripts/testbeta/build-bootstrap-bundles.sh` to regenerate all 6 bundles (bootnode1-3, seed1-3) in `bootstrap-bundles/`. The bundles still need to be deployed to the 3 hosts (74.208.227.23, 73.79.66.255, 157.245.226.240).
 
-## 6. Bring Up The 4 Real Genesis Validators
+## 6. Bring Up The 5 Real Genesis Validators
 
-You need all 4 genesis validators online against the signed ceremony data before launch acceptance.
+You need the 5 approved genesis validators configured against the signed ceremony data before launch acceptance.
 
 Operationally that means:
 
-1. start the 4 approved genesis validator nodes
+1. start at least 4 of the 5 approved genesis validator nodes
 2. make sure they can reach each other on the frozen validator port plan (`5622 + assignment`, `5640 + assignment`, `5660 + assignment`, `5680 + assignment`)
-3. verify the live validator set matches the approved four-validator launch roster
+3. verify the live validator set is a subset of the approved five-validator genesis roster and that at least 4 are active
 4. confirm the public RPC reflects a live validator set and rising block height
 
 Without this, the explorer can be online but still show no meaningful chain activity.

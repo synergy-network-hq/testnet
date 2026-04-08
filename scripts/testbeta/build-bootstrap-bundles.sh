@@ -4,10 +4,14 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 OUT_DIR="${BOOTSTRAP_OUT_DIR:-$ROOT_DIR/bootstrap-bundles}"
 BINARIES_DIR="${BOOTSTRAP_BINARIES_DIR:-$ROOT_DIR/binaries}"
-DOMAIN="${BOOTSTRAP_DOMAIN:-synergynode.xyz}"
+BOOTNODE_DOMAIN="${BOOTSTRAP_BOOTNODE_DOMAIN:-synergyvps.xyz}"
+SEED_DOMAIN="${BOOTSTRAP_SEED_DOMAIN:-synergynode.xyz}"
+DISCOVERY_DOMAIN="${BOOTSTRAP_DISCOVERY_DOMAIN:-synergynode.xyz}"
 P2P_PORT="${BOOTSTRAP_P2P_PORT:-5620}"
 SEED_HTTP_PORT="${BOOTSTRAP_SEED_HTTP_PORT:-5621}"
-GENESIS_VALIDATOR_COUNT="${BOOTSTRAP_GENESIS_VALIDATOR_COUNT:-4}"
+GENESIS_VALIDATOR_COUNT="${BOOTSTRAP_GENESIS_VALIDATOR_COUNT:-5}"
+MIN_GENESIS_VALIDATORS="${BOOTSTRAP_MIN_GENESIS_VALIDATORS:-4}"
+VALIDATOR_VOTE_THRESHOLD="${BOOTSTRAP_VALIDATOR_VOTE_THRESHOLD:-3}"
 
 BOOTNODE_RPC_PORT=5640
 BOOTNODE_WS_PORT=5660
@@ -67,7 +71,7 @@ toml_bootnodes_for() {
     if [[ "$name" == "$current" ]]; then
       continue
     fi
-    entries+=("\"snr://bootstrap@${name}.${DOMAIN}:${P2P_PORT}\"")
+    entries+=("\"snr://bootstrap@$(bootnode_host "$name"):${P2P_PORT}\"")
   done
 
   local joined=""
@@ -90,7 +94,7 @@ csv_bootnodes_for() {
     if [[ "$name" == "$current" ]]; then
       continue
     fi
-    entries+=("snr://bootstrap@${name}.${DOMAIN}:${P2P_PORT}")
+    entries+=("snr://bootstrap@$(bootnode_host "$name"):${P2P_PORT}")
   done
   local joined=""
   local entry
@@ -103,9 +107,19 @@ csv_bootnodes_for() {
   printf '%s' "$joined"
 }
 
+bootnode_host() {
+  printf '%s.%s' "$1" "$BOOTNODE_DOMAIN"
+}
+
+seed_host() {
+  printf '%s.%s' "$1" "$SEED_DOMAIN"
+}
+
 write_bootnode_config() {
   local node_dir="$1"
   local name="$2"
+  local hostname
+  hostname="$(bootnode_host "$name")"
 
   cat > "$node_dir/config/node.toml" <<EOF
 [network]
@@ -126,8 +140,9 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-min_validators = ${GENESIS_VALIDATOR_COUNT}
+min_validators = ${MIN_GENESIS_VALIDATORS}
 validator_cluster_size = ${GENESIS_VALIDATOR_COUNT}
+validator_vote_threshold = ${VALIDATOR_VOTE_THRESHOLD}
 max_validators = ${GENESIS_VALIDATOR_COUNT}
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
@@ -160,7 +175,7 @@ cors_origins = []
 
 [p2p]
 listen_address = "0.0.0.0:${P2P_PORT}"
-public_address = "${name}.${DOMAIN}:${P2P_PORT}"
+public_address = "${hostname}:${P2P_PORT}"
 node_name = "${name}"
 enable_discovery = true
 discovery_port = ${BOOTNODE_DISCOVERY_PORT}
@@ -185,12 +200,14 @@ write_bootnode_env() {
   local node_dir="$1"
   local name="$2"
   local ip="$3"
+  local hostname
+  hostname="$(bootnode_host "$name")"
 
   cat > "$node_dir/node.env" <<EOF
 MACHINE_ID=${name}
 NODE_KIND=bootnode
 NODE_NAME=${name}
-NODE_HOSTNAME=${name}.${DOMAIN}
+NODE_HOSTNAME=${hostname}
 NODE_PUBLIC_IP=${ip}
 P2P_PORT=${P2P_PORT}
 RPC_PORT=${BOOTNODE_RPC_PORT}
@@ -471,6 +488,8 @@ write_bootnode_readme() {
   local node_dir="$1"
   local name="$2"
   local ip="$3"
+  local hostname
+  hostname="$(bootnode_host "$name")"
 
   cat > "$node_dir/README.txt" <<EOF
 ${name} bootstrap-only deployment bundle
@@ -481,7 +500,7 @@ Purpose
 - Discovery only: no validator self-registration, no consensus engine, no public RPC services.
 
 Endpoint
-- Hostname: ${name}.${DOMAIN}
+- Hostname: ${hostname}
 - IP: ${ip}
 - P2P Port: ${P2P_PORT}
 
@@ -495,7 +514,7 @@ Control
 
 Notes
 - Open TCP ${P2P_PORT} on the target host firewall.
-- Publish A record ${name}.${DOMAIN} -> ${ip}
+- Publish A record ${hostname} -> ${ip}
 - Publish _dnsaddr.bootstrap TXT records from the root DNS_RECORDS.txt file in ${OUT_DIR}
 EOF
 }
@@ -512,9 +531,10 @@ EOF
 
 bootnodes_json() {
   local first=1
-  local record name ip
+  local record name ip hostname
   for record in "${BOOTNODES[@]}"; do
     IFS='|' read -r name ip <<<"$record"
+    hostname="$(bootnode_host "$name")"
     if [[ $first -eq 0 ]]; then
       printf ',\n'
     fi
@@ -522,10 +542,10 @@ bootnodes_json() {
     cat <<EOF
     {
       "name": "${name}",
-      "hostname": "${name}.${DOMAIN}",
+      "hostname": "${hostname}",
       "ip": "${ip}",
       "port": ${P2P_PORT},
-      "dial": "snr://bootstrap@${name}.${DOMAIN}:${P2P_PORT}"
+      "dial": "snr://bootstrap@${hostname}:${P2P_PORT}"
     }
 EOF
   done
@@ -533,9 +553,10 @@ EOF
 
 seeds_json() {
   local first=1
-  local record name ip
+  local record name ip hostname
   for record in "${SEEDS[@]}"; do
     IFS='|' read -r name ip <<<"$record"
+    hostname="$(seed_host "$name")"
     if [[ $first -eq 0 ]]; then
       printf ',\n'
     fi
@@ -543,10 +564,10 @@ seeds_json() {
     cat <<EOF
     {
       "name": "${name}",
-      "hostname": "${name}.${DOMAIN}",
+      "hostname": "${hostname}",
       "ip": "${ip}",
       "http_port": ${SEED_HTTP_PORT},
-      "url": "http://${name}.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json"
+      "url": "http://${hostname}:${SEED_HTTP_PORT}/peer-list.json"
     }
 EOF
   done
@@ -556,14 +577,16 @@ write_seed_config() {
   local seed_dir="$1"
   local name="$2"
   local ip="$3"
+  local hostname
+  hostname="$(seed_host "$name")"
 
   cat > "$seed_dir/config/seed-service.json" <<EOF
 {
   "service_name": "${name}",
-  "domain": "${DOMAIN}",
+  "domain": "${SEED_DOMAIN}",
   "listen_host": "0.0.0.0",
   "listen_port": ${SEED_HTTP_PORT},
-  "public_url": "http://${name}.${DOMAIN}:${SEED_HTTP_PORT}",
+  "public_url": "http://${hostname}:${SEED_HTTP_PORT}",
   "bind_ip_hint": "${ip}",
   "refresh_seconds": 30,
   "bootnodes": [
@@ -983,12 +1006,14 @@ write_seed_env() {
   local seed_dir="$1"
   local name="$2"
   local ip="$3"
+  local hostname
+  hostname="$(seed_host "$name")"
 
   cat > "$seed_dir/node.env" <<EOF
 MACHINE_ID=${name}
 NODE_KIND=seed-service
 SERVICE_NAME=${name}
-SERVICE_HOSTNAME=${name}.${DOMAIN}
+SERVICE_HOSTNAME=${hostname}
 SERVICE_IP=${ip}
 SERVICE_PORT=${SEED_HTTP_PORT}
 # Optional remote admin token for clearing peer registrations.
@@ -1178,6 +1203,8 @@ write_seed_readme() {
   local seed_dir="$1"
   local name="$2"
   local ip="$3"
+  local hostname
+  hostname="$(seed_host "$name")"
 
   cat > "$seed_dir/README.txt" <<EOF
 ${name} seed-service deployment bundle
@@ -1188,7 +1215,7 @@ Purpose
 - This is not a validator, relayer, or P2P node.
 
 Endpoint
-- Hostname: ${name}.${DOMAIN}
+- Hostname: ${hostname}
 - IP: ${ip}
 - HTTP Port: ${SEED_HTTP_PORT}
 
@@ -1206,11 +1233,11 @@ Start
 
 Clear registered peers
 - Local only without a token: curl -X DELETE http://127.0.0.1:${SEED_HTTP_PORT}/peers
-- Remote with token: curl -X DELETE -H "X-Seed-Admin-Token: <token>" http://${name}.${DOMAIN}:${SEED_HTTP_PORT}/peers
+- Remote with token: curl -X DELETE -H "X-Seed-Admin-Token: <token>" http://${hostname}:${SEED_HTTP_PORT}/peers
 
 DNS
-- Publish A record ${name}.${DOMAIN} -> ${ip}
-- Optional SRV record: _synergy-seed._tcp.${DOMAIN} -> ${name}.${DOMAIN}:${SEED_HTTP_PORT}
+- Publish A record ${hostname} -> ${ip}
+- Optional SRV record: _synergy-seed._tcp.${SEED_DOMAIN} -> ${hostname}:${SEED_HTTP_PORT}
 EOF
 }
 
@@ -1224,6 +1251,8 @@ write_root_files() {
 - Network ID: synergy-testnet-beta
 - Token symbol: SNRG
 - Genesis validators: ${GENESIS_VALIDATOR_COUNT}
+- Minimum active validators to start consensus: ${MIN_GENESIS_VALIDATORS}
+- Validator vote threshold: ${VALIDATOR_VOTE_THRESHOLD}
 - Bootnodes: 3
 - Seed services: 3
 
@@ -1231,12 +1260,12 @@ write_root_files() {
 
 | Role | Hostname | IP | Port |
 | --- | --- | --- | --- |
-| bootnode1 | bootnode1.${DOMAIN} | 74.208.227.23 | ${P2P_PORT}/tcp |
-| bootnode2 | bootnode2.${DOMAIN} | 73.79.66.255 | ${P2P_PORT}/tcp |
-| bootnode3 | bootnode3.${DOMAIN} | 157.245.226.240 | ${P2P_PORT}/tcp |
-| seed1 | seed1.${DOMAIN} | 74.208.227.23 | ${SEED_HTTP_PORT}/tcp |
-| seed2 | seed2.${DOMAIN} | 73.79.66.255 | ${SEED_HTTP_PORT}/tcp |
-| seed3 | seed3.${DOMAIN} | 157.245.226.240 | ${SEED_HTTP_PORT}/tcp |
+| bootnode1 | bootnode1.${BOOTNODE_DOMAIN} | 74.208.227.23 | ${P2P_PORT}/tcp |
+| bootnode2 | bootnode2.${BOOTNODE_DOMAIN} | 73.79.66.255 | ${P2P_PORT}/tcp |
+| bootnode3 | bootnode3.${BOOTNODE_DOMAIN} | 157.245.226.240 | ${P2P_PORT}/tcp |
+| seed1 | seed1.${SEED_DOMAIN} | 74.208.227.23 | ${SEED_HTTP_PORT}/tcp |
+| seed2 | seed2.${SEED_DOMAIN} | 73.79.66.255 | ${SEED_HTTP_PORT}/tcp |
+| seed3 | seed3.${SEED_DOMAIN} | 157.245.226.240 | ${SEED_HTTP_PORT}/tcp |
 
 ## Port Freeze
 
@@ -1276,19 +1305,19 @@ Run these checks after the assigned bundle is started.
 
 \`\`\`bash
 # Bootnode reachability
-nc -zv bootnode1.${DOMAIN} ${P2P_PORT}
-nc -zv bootnode2.${DOMAIN} ${P2P_PORT}
-nc -zv bootnode3.${DOMAIN} ${P2P_PORT}
+nc -zv bootnode1.${BOOTNODE_DOMAIN} ${P2P_PORT}
+nc -zv bootnode2.${BOOTNODE_DOMAIN} ${P2P_PORT}
+nc -zv bootnode3.${BOOTNODE_DOMAIN} ${P2P_PORT}
 
 # Seed-service health
-curl -s http://seed1.${DOMAIN}:${SEED_HTTP_PORT}/healthz
-curl -s http://seed2.${DOMAIN}:${SEED_HTTP_PORT}/healthz
-curl -s http://seed3.${DOMAIN}:${SEED_HTTP_PORT}/healthz
+curl -s http://seed1.${SEED_DOMAIN}:${SEED_HTTP_PORT}/healthz
+curl -s http://seed2.${SEED_DOMAIN}:${SEED_HTTP_PORT}/healthz
+curl -s http://seed3.${SEED_DOMAIN}:${SEED_HTTP_PORT}/healthz
 
 # Seed-service discovery payload
-curl -s http://seed1.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
-curl -s http://seed2.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
-curl -s http://seed3.${DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+curl -s http://seed1.${SEED_DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+curl -s http://seed2.${SEED_DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
+curl -s http://seed3.${SEED_DOMAIN}:${SEED_HTTP_PORT}/peer-list.json
 \`\`\`
 
 ## DNS
@@ -1298,22 +1327,22 @@ EOF
 
   cat > "$OUT_DIR/DNS_RECORDS.txt" <<EOF
 Required A records
-bootnode1.${DOMAIN} -> 74.208.227.23
-bootnode2.${DOMAIN} -> 73.79.66.255
-bootnode3.${DOMAIN} -> 157.245.226.240
-seed1.${DOMAIN} -> 74.208.227.23
-seed2.${DOMAIN} -> 73.79.66.255
-seed3.${DOMAIN} -> 157.245.226.240
+bootnode1.${BOOTNODE_DOMAIN} -> 74.208.227.23
+bootnode2.${BOOTNODE_DOMAIN} -> 73.79.66.255
+bootnode3.${BOOTNODE_DOMAIN} -> 157.245.226.240
+seed1.${SEED_DOMAIN} -> 74.208.227.23
+seed2.${SEED_DOMAIN} -> 73.79.66.255
+seed3.${SEED_DOMAIN} -> 157.245.226.240
 
 Required TXT records for bootnode discovery
-_dnsaddr.bootstrap.${DOMAIN} -> "dnsaddr=/dns/bootnode1.${DOMAIN}/tcp/${P2P_PORT}"
-_dnsaddr.bootstrap.${DOMAIN} -> "dnsaddr=/dns/bootnode2.${DOMAIN}/tcp/${P2P_PORT}"
-_dnsaddr.bootstrap.${DOMAIN} -> "dnsaddr=/dns/bootnode3.${DOMAIN}/tcp/${P2P_PORT}"
+_dnsaddr.bootstrap.${DISCOVERY_DOMAIN} -> "dnsaddr=/dns/bootnode1.${BOOTNODE_DOMAIN}/tcp/${P2P_PORT}"
+_dnsaddr.bootstrap.${DISCOVERY_DOMAIN} -> "dnsaddr=/dns/bootnode2.${BOOTNODE_DOMAIN}/tcp/${P2P_PORT}"
+_dnsaddr.bootstrap.${DISCOVERY_DOMAIN} -> "dnsaddr=/dns/bootnode3.${BOOTNODE_DOMAIN}/tcp/${P2P_PORT}"
 
 Optional SRV records for seed-service discovery
-_synergy-seed._tcp.${DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed1.${DOMAIN}
-_synergy-seed._tcp.${DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed2.${DOMAIN}
-_synergy-seed._tcp.${DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed3.${DOMAIN}
+_synergy-seed._tcp.${SEED_DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed1.${SEED_DOMAIN}
+_synergy-seed._tcp.${SEED_DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed2.${SEED_DOMAIN}
+_synergy-seed._tcp.${SEED_DOMAIN} -> 0 0 ${SEED_HTTP_PORT} seed3.${SEED_DOMAIN}
 EOF
 
   cat > "$OUT_DIR/README.txt" <<EOF

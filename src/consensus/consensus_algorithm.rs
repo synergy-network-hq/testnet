@@ -206,11 +206,20 @@ impl ProofOfSynergy {
             .unwrap_or(5)
             .max(1);
 
+        let validator_vote_threshold =
+            std::env::var("SYNERGY_CONSENSUS_VALIDATOR_VOTE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .or_else(|| consensus_cfg.as_ref().map(|c| c.validator_vote_threshold))
+                .unwrap_or(3)
+                .max(1);
+
         // Initialize dual quorum consensus after loading the minimum validator requirement.
         let dual_quorum_consensus = Arc::new(Mutex::new(DualQuorumConsensus::new(
             Arc::clone(&validator_manager),
             Arc::clone(&pqc_manager),
             min_validators,
+            validator_vote_threshold,
         )));
 
         let cluster_size = consensus_cfg

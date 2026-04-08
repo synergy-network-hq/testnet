@@ -82,8 +82,8 @@ if genesis.get("consensus", {}).get("min_validator_count") != 4:
     errors.append("genesis consensus.min_validator_count must be 4")
 if genesis.get("consensus", {}).get("min_quorum_threshold") != 3:
     errors.append("genesis consensus.min_quorum_threshold must be 3")
-if len(genesis.get("validators", [])) != 4:
-    errors.append("genesis must contain exactly 4 validators")
+if len(genesis.get("validators", [])) != 5:
+    errors.append("genesis must contain exactly 5 validators")
 if not isinstance(genesis.get("contracts"), dict):
     errors.append("genesis contracts must be an object")
 else:
@@ -135,16 +135,16 @@ if len(manifest.get("bootstrap", {}).get("bootnodes", [])) != 3:
     errors.append("operational manifest must contain exactly 3 bootnodes")
 if len(manifest.get("bootstrap", {}).get("seed_servers", [])) != 3:
     errors.append("operational manifest must contain exactly 3 seed servers")
-if len(manifest.get("validators", [])) != 4:
-    errors.append("operational manifest must contain exactly 4 validators")
+if len(manifest.get("validators", [])) != 5:
+    errors.append("operational manifest must contain exactly 5 validators")
 if manifest.get("ports") != expected_ports:
     errors.append("operational manifest ports must match the frozen beta port model")
 
 public_endpoints = manifest.get("public_endpoints", {})
 expected_urls = {
-    "core_rpc": "https://testbeta-core-rpc.synergynode.xyz",
-    "core_ws": "wss://testbeta-core-ws.synergynode.xyz",
-    "api": "https://testbeta-api.synergynode.xyz",
+    "core_rpc": "https://testbeta-core-rpc.synergy-network.io",
+    "core_ws": "wss://testbeta-core-ws.synergy-network.io",
+    "api": "https://testbeta-api.synergy-network.io",
 }
 for key, expected in expected_urls.items():
     actual = public_endpoints.get(key, {}).get("url")
@@ -171,12 +171,12 @@ for bundle in bootnode1 bootnode2 bootnode3; do
     echo "[$bundle] p2p_port must be 5620" >&2
     failures=$((failures + 1))
   fi
-  if ! rg -q '^validator_cluster_size = 4$' "$node_config"; then
-    echo "[$bundle] validator_cluster_size must be 4" >&2
+  if ! rg -q '^validator_cluster_size = 5$' "$node_config"; then
+    echo "[$bundle] validator_cluster_size must be 5" >&2
     failures=$((failures + 1))
   fi
-  if ! rg -q '^max_validators = 4$' "$node_config"; then
-    echo "[$bundle] max_validators must be 4" >&2
+  if ! rg -q '^max_validators = 5$' "$node_config"; then
+    echo "[$bundle] max_validators must be 5" >&2
     failures=$((failures + 1))
   fi
   if rg -q '38638|48638|58638|18080|5730|5830|5930' "$node_config"; then

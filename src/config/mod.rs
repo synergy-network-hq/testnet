@@ -56,6 +56,8 @@ pub struct ConsensusConfig {
     #[serde(default = "default_min_validators")]
     pub min_validators: usize,
     pub validator_cluster_size: usize,
+    #[serde(default = "default_validator_vote_threshold")]
+    pub validator_vote_threshold: usize,
     #[serde(default = "default_max_validators")]
     pub max_validators: usize,
     pub synergy_score_decay_rate: f64,
@@ -68,6 +70,10 @@ pub struct ConsensusConfig {
 
 fn default_min_validators() -> usize {
     4
+}
+
+fn default_validator_vote_threshold() -> usize {
+    3
 }
 
 fn default_max_validators() -> usize {
@@ -183,7 +189,8 @@ impl Default for NodeConfig {
                 block_time_secs: 2,
                 epoch_length: 1000,
                 min_validators: default_min_validators(),
-                validator_cluster_size: 4,
+                validator_cluster_size: 5,
+                validator_vote_threshold: default_validator_vote_threshold(),
                 max_validators: default_max_validators(),
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
@@ -849,7 +856,7 @@ label = "Validator Node 01"
 chain_name = "synergy-testnet-beta"
 chain_id = 338639
 p2p_listen = "0.0.0.0:5622"
-bootnodes = ["bootnode1.synergynode.xyz:5620"]
+bootnodes = ["bootnode1.synergyvps.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["24.181.87.76:5623"]
@@ -876,7 +883,7 @@ log_level = "debug"
         assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
         assert_eq!(
             config.network.bootnodes,
-            vec!["bootnode1.synergynode.xyz:5620".to_string()]
+            vec!["bootnode1.synergyvps.xyz:5620".to_string()]
         );
         assert_eq!(
             config.network.seed_servers,
@@ -914,7 +921,7 @@ name = "synergy-testnet-beta"
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
-bootnodes = ["bootnode1.synergynode.xyz:5620"]
+bootnodes = ["bootnode1.synergyvps.xyz:5620"]
 
 [blockchain]
 block_time = 5
@@ -925,7 +932,8 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 4
+validator_cluster_size = 5
+validator_vote_threshold = 3
 max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
@@ -976,7 +984,7 @@ pruning_interval = 86400
             &peers_path,
             r#"
 [global]
-bootnodes = ["bootnode2.synergynode.xyz:5620"]
+bootnodes = ["bootnode2.synergyvps.xyz:5620"]
 seed_servers = ["http://seed2.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 additional_dial_targets = ["73.79.66.255:39638"]
@@ -992,11 +1000,11 @@ additional_dial_targets = ["73.79.66.255:39638"]
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode1.synergynode.xyz:5620".to_string()));
+            .contains(&"bootnode1.synergyvps.xyz:5620".to_string()));
         assert!(config
             .network
             .bootnodes
-            .contains(&"bootnode2.synergynode.xyz:5620".to_string()));
+            .contains(&"bootnode2.synergyvps.xyz:5620".to_string()));
         assert_eq!(
             config.network.seed_servers,
             vec!["http://seed2.synergynode.xyz:5621".to_string()]
@@ -1064,7 +1072,8 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 4
+validator_cluster_size = 5
+validator_vote_threshold = 3
 max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true

@@ -6,15 +6,15 @@ rpc_port = 5640
 ws_port = 5660
 max_peers = 50
 bootnodes = [
-  "snr://bootstrap@bootnode1.synergynode.xyz:5620",
-  "snr://bootstrap@bootnode2.synergynode.xyz:5620",
-  "snr://bootstrap@bootnode3.synergynode.xyz:5620"
+  "snr://bootstrap@bootnode1.synergyvps.xyz:5620",
+  "snr://bootstrap@bootnode2.synergyvps.xyz:5620",
+  "snr://bootstrap@bootnode3.synergyvps.xyz:5620"
 ]
 
 [rpc]
 bind_address = "0.0.0.0:5640"
-external_http = "https://testbeta-core-rpc.synergynode.xyz"
-external_ws = "wss://testbeta-core-ws.synergynode.xyz"
+external_http = "https://testbeta-core-rpc.synergy-network.io"
+external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [network.listen]
 p2p = "0.0.0.0:5620"

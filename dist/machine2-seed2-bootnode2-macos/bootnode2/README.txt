@@ -6,7 +6,7 @@ Purpose
 - Discovery only: no validator self-registration, no consensus engine, no public RPC services.
 
 Endpoint
-- Hostname: bootnode2.synergynode.xyz
+- Hostname: bootnode2.synergyvps.xyz
 - IP: 73.79.66.255
 - P2P Port: 5620
 
@@ -20,5 +20,5 @@ Control
 
 Notes
 - Open TCP 5620 on the target host firewall.
-- Publish A record bootnode2.synergynode.xyz -> 73.79.66.255
+- Publish A record bootnode2.synergyvps.xyz -> 73.79.66.255
 - Publish _dnsaddr.bootstrap TXT records from the root DNS_RECORDS.txt file in /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/bootstrap-bundles

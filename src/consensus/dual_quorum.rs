@@ -78,6 +78,7 @@ pub struct DualQuorumConsensus {
     pub validator_manager: Arc<ValidatorManager>,
     pub pqc_manager: Arc<Mutex<PQCManager>>,
     pub minimum_validator_count: usize,
+    pub validator_vote_threshold: usize,
     pub validation_quorum_threshold: f64,
     pub cooperation_quorum_threshold: f64,
     pub vote_timeout: u64,
@@ -93,11 +94,13 @@ impl DualQuorumConsensus {
         validator_manager: Arc<ValidatorManager>,
         pqc_manager: Arc<Mutex<PQCManager>>,
         minimum_validator_count: usize,
+        validator_vote_threshold: usize,
     ) -> Self {
         DualQuorumConsensus {
             validator_manager,
             pqc_manager,
             minimum_validator_count: minimum_validator_count.max(1),
+            validator_vote_threshold: validator_vote_threshold.max(1),
             validation_quorum_threshold: 0.67,
             cooperation_quorum_threshold: 0.51,
             vote_timeout: 8,
@@ -427,7 +430,7 @@ impl DualQuorumConsensus {
             ));
         }
 
-        let required_validator_votes = Self::required_validator_votes(total_validators);
+        let required_validator_votes = self.required_validator_votes(total_validators);
         if validator_count < required_validator_votes {
             return Err(format!(
                 "Insufficient validator votes: {} votes, {} required for quorum",
@@ -484,8 +487,8 @@ impl DualQuorumConsensus {
             .sum()
     }
 
-    fn required_validator_votes(total_validators: usize) -> usize {
-        ((2 * total_validators) / 3) + 1
+    fn required_validator_votes(&self, total_validators: usize) -> usize {
+        self.validator_vote_threshold.max(1).min(total_validators.max(1))
     }
 
     fn has_commit_quorum(&self, live_validators: &[Validator], votes: &[Vote]) -> bool {
@@ -493,7 +496,7 @@ impl DualQuorumConsensus {
             return false;
         }
 
-        let required_validator_votes = Self::required_validator_votes(live_validators.len());
+        let required_validator_votes = self.required_validator_votes(live_validators.len());
         if votes.len() < required_validator_votes {
             return false;
         }
@@ -1104,8 +1107,12 @@ mod tests {
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
-        let consensus =
-            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            1,
+            1,
+        );
 
         let first_block = signed_block(7, 1, "validator1");
         let conflicting_block = signed_block(7, 2, "validator1");
@@ -1165,8 +1172,12 @@ mod tests {
 
         let validator_manager = approved_validator_manager(&["validator1"]);
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
-        let mut consensus =
-            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+        let mut consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            1,
+            1,
+        );
 
         assert_eq!(consensus.allocate_round_number(4, 3), 3);
         assert_eq!(consensus.allocate_round_number(4, 3), 4);
@@ -1180,8 +1191,12 @@ mod tests {
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
-        let consensus =
-            DualQuorumConsensus::new(Arc::clone(&validator_manager), Arc::clone(&pqc_manager), 1);
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            1,
+            1,
+        );
 
         let first_block = signed_block(11, 1, "validator1");
         let conflicting_block = signed_block(11, 2, "validator1");

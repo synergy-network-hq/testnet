@@ -12,7 +12,7 @@ NC='\033[0m' # No Color
 
 # Configuration
 FAUCET_ADDRESS="synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07"
-RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergynode.xyz/rpc}"
+RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergy-network.io/rpc}"
 
 # Check arguments
 if [ $# -lt 2 ]; then

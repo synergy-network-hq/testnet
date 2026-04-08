@@ -14,19 +14,19 @@
     "bootnodes": [
       {
         "label": "bootnode1",
-        "host": "bootnode1.synergynode.xyz",
+        "host": "bootnode1.synergyvps.xyz",
         "ip_address": "74.208.227.23",
         "port": 5620
       },
       {
         "label": "bootnode2",
-        "host": "bootnode2.synergynode.xyz",
+        "host": "bootnode2.synergyvps.xyz",
         "ip_address": "73.79.66.255",
         "port": 5620
       },
       {
         "label": "bootnode3",
-        "host": "bootnode3.synergynode.xyz",
+        "host": "bootnode3.synergyvps.xyz",
         "ip_address": "157.245.226.240",
         "port": 5620
       }
@@ -67,18 +67,18 @@
   },
   "public_endpoints": {
     "core_rpc": {
-      "url": "https://testbeta-core-rpc.synergynode.xyz",
-      "host": "testbeta-core-rpc.synergynode.xyz",
+      "url": "https://testbeta-core-rpc.synergy-network.io",
+      "host": "testbeta-core-rpc.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "core_ws": {
-      "url": "wss://testbeta-core-ws.synergynode.xyz",
-      "host": "testbeta-core-ws.synergynode.xyz",
+      "url": "wss://testbeta-core-ws.synergy-network.io",
+      "host": "testbeta-core-ws.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "api": {
-      "url": "https://testbeta-api.synergynode.xyz",
-      "host": "testbeta-api.synergynode.xyz",
+      "url": "https://testbeta-api.synergy-network.io",
+      "host": "testbeta-api.synergy-network.io",
       "ip_address": "65.21.202.144"
     },
     "explorer": {
@@ -93,33 +93,38 @@
     }
   },
   "services": {
-    "wallet_api": "https://testbeta-wallet-api.synergynode.xyz",
-    "faucet": "https://testbeta-faucet.synergynode.xyz",
-    "sxcp_api": "https://testbeta-sxcp-api.synergynode.xyz",
-    "sxcp_ws": "wss://testbeta-sxcp-ws.synergynode.xyz",
-    "synq_verify": "https://testbeta-synq-verify.synergynode.xyz",
-    "aegis_verify": "https://testbeta-aegis-verify.synergynode.xyz"
+    "wallet_api": "https://testbeta-wallet-api.synergy-network.io",
+    "faucet": "https://testbeta-faucet.synergy-network.io",
+    "sxcp_api": "https://testbeta-sxcp-api.synergy-network.io",
+    "sxcp_ws": "wss://testbeta-sxcp-ws.synergy-network.io",
+    "synq_verify": "https://testbeta-synq-verify.synergy-network.io",
+    "aegis_verify": "https://testbeta-aegis-verify.synergy-network.io"
   },
   "validators": [
     {
       "slot": 1,
-      "address": "synv11cv5akg5xa86y8tc5jg84t7a5xhxenaypq36",
+      "address": "synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra",
       "public_key_file": "config/genesis-validators/node-01.identity.json"
     },
     {
       "slot": 2,
-      "address": "synv11vwg95ecaryv33lrq6xptrg7vd5yrafturn4",
+      "address": "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu",
       "public_key_file": "config/genesis-validators/node-02.identity.json"
     },
     {
       "slot": 3,
-      "address": "synv113jp4578crnfnwg4d9r342euxfqf8a08s22g",
+      "address": "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu",
       "public_key_file": "config/genesis-validators/node-03.identity.json"
     },
     {
       "slot": 4,
-      "address": "synv11jlm4p4utpvj5ny0g8lnpa0ry65pkfecagnz",
+      "address": "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49",
       "public_key_file": "config/genesis-validators/node-04.identity.json"
+    },
+    {
+      "slot": 5,
+      "address": "synv11mvlgy72uq7kuh200qnxv67zrqjugz267k46",
+      "public_key_file": "config/genesis-validators/node-05.identity.json"
     }
   ],
   "allocations": {

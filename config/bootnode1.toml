@@ -19,8 +19,9 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 4
-max_validators = 4
+validator_cluster_size = 5
+validator_vote_threshold = 3
+max_validators = 5
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -48,12 +49,12 @@ enable_grpc = true
 grpc_port = 50051
 cors_enabled = true
 cors_origins = ["*"]
-external_http = "https://testbeta-core-rpc.synergynode.xyz"
-external_ws = "wss://testbeta-core-ws.synergynode.xyz"
+external_http = "https://testbeta-core-rpc.synergy-network.io"
+external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [p2p]
 listen_address = "0.0.0.0:5620"
-public_address = "bootnode1.synergynode.xyz:5620"
+public_address = "bootnode1.synergyvps.xyz:5620"
 node_name = "bootnode1-validator"
 enable_discovery = true
 discovery_port = 5680

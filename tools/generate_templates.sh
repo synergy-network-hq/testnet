@@ -24,7 +24,7 @@ p2p_port = $p2p_port
 rpc_port = $rpc_port
 ws_port = $ws_port
 max_peers = 50
-bootnodes = ["snr://bootstrap@bootnode1.synergynode.xyz:5620", "snr://bootstrap@bootnode2.synergynode.xyz:5620", "snr://bootstrap@bootnode3.synergynode.xyz:5620"]
+bootnodes = ["snr://bootstrap@bootnode1.synergyvps.xyz:5620", "snr://bootstrap@bootnode2.synergyvps.xyz:5620", "snr://bootstrap@bootnode3.synergyvps.xyz:5620"]
 
 [blockchain]
 block_time = 5
@@ -35,8 +35,9 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 4
-max_validators = 4
+validator_cluster_size = 5
+validator_vote_threshold = 3
+max_validators = 5
 synergy_score_decay_rate = 0.05
 vrf_enabled = $vrf_enabled
 vrf_seed_epoch_interval = 1000

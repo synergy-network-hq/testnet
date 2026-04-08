@@ -25,9 +25,9 @@ https://testbeta-atlas-api.synergy-network.io
 ## Bootnodes
 
 ```text
-snr://bootstrap@bootnode1.synergynode.xyz:5620
-snr://bootstrap@bootnode2.synergynode.xyz:5620
-snr://bootstrap@bootnode3.synergynode.xyz:5620
+snr://bootstrap@bootnode1.synergyvps.xyz:5620
+snr://bootstrap@bootnode2.synergyvps.xyz:5620
+snr://bootstrap@bootnode3.synergyvps.xyz:5620
 ```
 
 ## Seed Servers
@@ -124,15 +124,15 @@ curl -s -X POST http://seed1.synergynode.xyz:5621/peers/register \
 ## Bootnode Connectivity
 
 ```bash
-nc -zv bootnode1.synergynode.xyz 5620
-nc -zv bootnode2.synergynode.xyz 5620
-nc -zv bootnode3.synergynode.xyz 5620
+nc -zv bootnode1.synergyvps.xyz 5620
+nc -zv bootnode2.synergyvps.xyz 5620
+nc -zv bootnode3.synergyvps.xyz 5620
 
 for host in bootnode1 bootnode2 bootnode3; do
-  nc -zv "${host}.synergynode.xyz" 5620 2>&1
+  nc -zv "${host}.synergyvps.xyz" 5620 2>&1
 done
 
-timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergynode.xyz/5620' && echo "open" || echo "closed"
+timeout 5 bash -c 'echo >/dev/tcp/bootnode1.synergyvps.xyz/5620' && echo "open" || echo "closed"
 ```
 
 ## External Accessibility

@@ -3072,14 +3072,14 @@ mod tests {
         config.network.additional_dial_targets = vec!["73.79.66.255:5620".to_string()];
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
         let discovered_targets: DialTargetsArc =
-            Arc::new(Mutex::new(vec!["157.245.226.24:5620".to_string()]));
+            Arc::new(Mutex::new(vec!["157.245.226.240:5620".to_string()]));
 
         let addresses =
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
         assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
         assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
-        assert!(addresses.contains(&"157.245.226.24:5620".to_string()));
+        assert!(addresses.contains(&"157.245.226.240:5620".to_string()));
     }
 
     #[test]

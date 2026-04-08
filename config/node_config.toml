@@ -1,7 +1,7 @@
 [network]
 node_name = "bootnode1-validator"
 listen_address = "0.0.0.0:5620"
-public_address = "bootnode1.synergynode.xyz:5620"
+public_address = "bootnode1.synergyvps.xyz:5620"
 # Bootnode1 - First validator node (other nodes will connect to this)
 bootnodes = []
 p2p_port = 5620
@@ -17,7 +17,7 @@ cluster_id = "syngrp116xlcwtcuwd8cdkqrftdww5dpqvm699uanux4mc"
 [consensus]
 algorithm = "PoSy"
 block_time_secs = 3
-max_validators = 4
+max_validators = 5
 synergetic_mode = true
 vrf_enabled = true
 vrf_seed_interval = 100
@@ -31,8 +31,8 @@ enable_console = true
 http_port = 5640
 ws_port = 5660
 enable_cors = true
-external_http = "https://testbeta-core-rpc.synergynode.xyz"
-external_ws = "wss://testbeta-core-ws.synergynode.xyz"
+external_http = "https://testbeta-core-rpc.synergy-network.io"
+external_ws = "wss://testbeta-core-ws.synergy-network.io"
 
 [node]
 role = "validator"

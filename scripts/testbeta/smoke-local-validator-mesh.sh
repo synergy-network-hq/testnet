@@ -14,10 +14,12 @@ VALIDATOR_ADDRESSES=(
   "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu"
   "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
   "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49"
+  "synv11mvlgy72uq7kuh200qnxv67zrqjugz267k46"
 )
-P2P_PORTS=(5722 5723 5724 5725)
-RPC_PORTS=(5740 5741 5742 5743)
-WS_PORTS=(5760 5761 5762 5763)
+P2P_PORTS=(5722 5723 5724 5725 5726)
+RPC_PORTS=(5740 5741 5742 5743 5744)
+WS_PORTS=(5760 5761 5762 5763 5764)
+START_VALIDATOR_COUNT="${START_VALIDATOR_COUNT:-4}"
 PIDS=()
 WORKSPACES=()
 
@@ -25,8 +27,9 @@ usage() {
   cat <<USAGE
 Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir]
 
-Starts four local validator workspaces against the canonical genesis and fails
-unless all validators advance chain height from genesis within the timeout.
+Starts the first four local validators against the canonical five-validator
+genesis and fails unless all active validators advance chain height from
+genesis within the timeout.
 USAGE
 }
 
@@ -105,6 +108,27 @@ cleanup() {
 }
 trap cleanup EXIT
 
+assert_port_available() {
+  local port="$1"
+  if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "Smoke-test port already in use: $port" >&2
+    lsof -nP -iTCP:"$port" -sTCP:LISTEN >&2 || true
+    exit 1
+  fi
+}
+
+assert_ports_available() {
+  local count="$1"
+  local i
+  for ((i = 0; i < count; i++)); do
+    assert_port_available "${P2P_PORTS[$i]}"
+    assert_port_available "${RPC_PORTS[$i]}"
+    assert_port_available "${WS_PORTS[$i]}"
+  done
+}
+
+assert_ports_available "$START_VALIDATOR_COUNT"
+
 json_array() {
   python3 - "$@" <<'PY'
 import json
@@ -142,7 +166,10 @@ except Exception:
 
 result = body.get("result", -1)
 try:
-    print(int(result))
+    if isinstance(result, str):
+        print(int(result, 0))
+    else:
+        print(int(result))
 except Exception:
     print(-1)
 PY
@@ -211,7 +238,7 @@ create_workspace() {
 
   cat > "${workspace}/config/node.toml" <<CONFIG
 [identity]
-node_id = "${node_name}"
+node_id = "${validator_address}"
 role = "validator"
 role_display = "Validator Node"
 environment = "testbeta"
@@ -245,8 +272,9 @@ algorithm = "Proof of Synergy"
 block_time_secs = 2
 epoch_length = 1000
 min_validators = 4
-validator_cluster_size = 4
-max_validators = 100
+validator_cluster_size = 5
+validator_vote_threshold = 3
+max_validators = 5
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -368,7 +396,7 @@ print_diagnostics() {
   done
 }
 
-for index in 1 2 3 4; do
+for index in $(seq 1 "$START_VALIDATOR_COUNT"); do
   create_workspace "$index"
 done
 
@@ -376,13 +404,13 @@ for workspace in "${WORKSPACES[@]}"; do
   start_node "$workspace"
 done
 
-echo "Started local 4-validator smoke mesh in: $WORKDIR"
+echo "Started local ${START_VALIDATOR_COUNT}-validator smoke mesh against canonical 5-validator genesis in: $WORKDIR"
 deadline=$(( $(date +%s) + TIMEOUT_SECS ))
 while [[ "$(date +%s)" -lt "$deadline" ]]; do
   ready="true"
   min_height=999999999
   max_height=-1
-  for i in "${!RPC_PORTS[@]}"; do
+  for i in "${!WORKSPACES[@]}"; do
     height="$(rpc_height "${RPC_PORTS[$i]}")"
     if [[ "$height" -lt 1 ]]; then
       ready="false"
