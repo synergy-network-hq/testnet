@@ -611,7 +611,7 @@ impl TokenManager {
         cluster_validators: &[(String, f64)], // (validator_address, normalized_synergy_score)
         reward_amount: u64,
     ) -> Result<String, String> {
-        const REWARDS_POOL: &str = "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg";
+        const REWARDS_POOL: &str = "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze";
 
         // Check rewards pool balance
         let pool_balance = self.get_balance(REWARDS_POOL, "SNRG");
@@ -772,7 +772,7 @@ impl TokenManager {
         reward_amount: u64,
     ) -> Result<String, String> {
         // Rewards pool address from genesis.json
-        const REWARDS_POOL: &str = "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg";
+        const REWARDS_POOL: &str = "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze";
 
         // First, check if rewards pool has sufficient balance
         let pool_balance = self.get_balance(REWARDS_POOL, "SNRG");
@@ -1025,7 +1025,7 @@ impl TokenManager {
     /// Ensure the rewards pool has sufficient balance for validator rewards
     /// This should be called on startup to verify the pool is funded
     pub fn ensure_rewards_pool_funded(&self) -> Result<(), String> {
-        const REWARDS_POOL: &str = "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg";
+        const REWARDS_POOL: &str = "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze";
         const MIN_POOL_BALANCE: u64 = 1_000_000_000_000_000_000u64; // 1B SNRG minimum
         const REFILL_AMOUNT: u64 = 2_000_000_000_000_000_000u64; // 2B SNRG refill
 
@@ -1064,7 +1064,7 @@ impl TokenManager {
 
     /// Get the rewards pool address
     pub fn get_rewards_pool_address() -> &'static str {
-        "synw1zwy4m4mpdxyvz4nf8f7s0hk8nesc2cv09ex8pg"
+        "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze"
     }
 
     /// Get rewards pool balance

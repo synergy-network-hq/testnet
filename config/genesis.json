@@ -29,6 +29,10 @@
       "address": "synw1ktxszhz4w3y0tpf6nq2lxf3xkym5sy62jdzc"
     },
     {
+      "account_type": "WalletPrimary",
+      "address": "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze"
+    },
+    {
       "account_type": "SystemContract",
       "address": "synq104vnaq39r0py025muvt4zfzva6lq35v3dqcl"
     },
@@ -38,7 +42,7 @@
     }
   ],
   "allocation_sum_check": {
-    "grand_total_nwei": "50000000000000000000",
+    "grand_total_nwei": "51000000000000000000",
     "matches_supply_cap": true
   },
   "allocations": [
@@ -77,6 +81,12 @@
       "amount_nwei": "2500000000000000000",
       "locked": false,
       "name": "Faucet"
+    },
+    {
+      "address": "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze",
+      "amount_nwei": "1000000000000000000",
+      "locked": false,
+      "name": "Rewards Pool"
     }
   ],
   "balances": [
@@ -107,6 +117,10 @@
     {
       "address": "synw1ktxszhz4w3y0tpf6nq2lxf3xkym5sy62jdzc",
       "balance_nwei": "0"
+    },
+    {
+      "address": "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze",
+      "balance_nwei": "1000000000000000000"
     },
     {
       "address": "synq104vnaq39r0py025muvt4zfzva6lq35v3dqcl",
@@ -186,7 +200,7 @@
       "address": "synq1wxm7skspall8ruqjpyq9pnkfxjswlawkn4mt",
       "bytecode_hash": "6b0c84278ff2cb7d13b70e175ed657fb16d8e29f0fae750009c7a34fbe30ce22",
       "init_params": {
-        "initial_pool_balance_nwei": "10000000000000000000",
+        "initial_pool_balance_nwei": "1000000000000000000",
         "pool_address": "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze"
       }
     },
@@ -421,20 +435,20 @@
       "round": 0,
       "seal": null
     },
-    "data_root": "490221eb3b78ab2671fbf6924fd3b770b33b1d79d395d9e5101d633c4d8ec0f6",
+    "data_root": "925bae5657c5ff149653e590807a007fe0ec9c804d6ae2fd318fb6b7d34b8c7b",
     "extra_data": "synergy-network/genesis/testbeta/v1",
     "parent_hash": "0000000000000000000000000000000000000000000000000000000000000000",
     "receipts_root": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-    "state_root": "586ee1ef10ce7c5dd1463a14a58094136fec8ee5958377e842c827d4c8655914",
+    "state_root": "f6150202e72351d94bff05381b707b4bf2687331a89ffb94803151a4a01730a4",
     "timestamp": 1775044800,
     "transactions_root": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
   },
   "integrity": {
-    "allocation_hash": "abb8e44697aca988f47b422e2e680dfcf6bf6a3ccbf3b66c7d78c391312b2521",
-    "contract_hash": "1e25ff85b27eba7dc75179f95d235ae7570a216c571b58660c176333d2c6d8fe",
-    "genesis_hash": "7cb6e433e631bb57dc49f26dd68c09af972d75c6db0e8f4331450c235a497560",
+    "allocation_hash": "15f9f1c90504ec8714dfe11c15a3acd7f7a7ff82eedfab327b020e96a8099f69",
+    "contract_hash": "0d4338cb925ccbb404099cd8ceef631ff222ab453502f9547b3079f59327167d",
+    "genesis_hash": "ce86a742a3f46b372f25d12be96e2ac47e68c6dd28a9773af7157275a7a14101",
     "signed_by": [],
-    "state_root": "586ee1ef10ce7c5dd1463a14a58094136fec8ee5958377e842c827d4c8655914",
+    "state_root": "f6150202e72351d94bff05381b707b4bf2687331a89ffb94803151a4a01730a4",
     "validator_hash": "4680f495d1ec54cc3e7f23e418ff06f2a6cb48e7d0f6262be747ff838196ab8b"
   },
   "modules": {
@@ -459,7 +473,7 @@
       "block_reward_nwei": "0",
       "epoch_reward_nwei": "0",
       "initialized": true,
-      "pool_balance_nwei": "10000000000000000000"
+      "pool_balance_nwei": "1000000000000000000"
     },
     "slashing": {
       "evidence_queue": [],
@@ -477,7 +491,7 @@
       },
       "reward_distribution": {
         "delegator_share_pct": 0.1,
-        "reward_pool_initial_nwei": "10000000000000000000",
+        "reward_pool_initial_nwei": "1000000000000000000",
         "validator_share_pct": 0.9
       }
     },
@@ -714,7 +728,7 @@
     "name": "Synergy Token",
     "smallest_unit": "nwei",
     "symbol": "SNRG",
-    "total_supply_cap_nwei": "50000000000000000000"
+    "total_supply_cap_nwei": "51000000000000000000"
   },
   "upgrade": {
     "authority": "governance_and_validator_signaling",

@@ -191,7 +191,7 @@
     "symbol": "SNRG",
     "decimals": 9,
     "smallest_unit": "nwei",
-    "total_supply_cap_nwei": "50000000000000000000",
+    "total_supply_cap_nwei": "51000000000000000000",
     "initial_circulating_nwei": "12500000000000000000",
     "minting_policy": "fixed_cap"
   },
@@ -310,7 +310,7 @@
     }
   ],
   "allocation_sum_check": {
-    "grand_total_nwei": "50000000000000000000",
+    "grand_total_nwei": "51000000000000000000",
     "matches_supply_cap": true
   },
   "vesting": [
@@ -664,7 +664,7 @@
       "bytecode_hash": "<TO_BE_COMPUTED_FROM_DEPLOYMENT_ARTIFACT>",
       "init_params": {
         "pool_address": "<POOL_ADDRESS>",
-        "initial_pool_balance_nwei": "10000000000000000000"
+        "initial_pool_balance_nwei": "1000000000000000000"
       }
     },
     "slashing": {
@@ -793,7 +793,7 @@
         "max_delegation_nwei": "5000000000000000000"
       },
       "reward_distribution": {
-        "reward_pool_initial_nwei": "10000000000000000000",
+        "reward_pool_initial_nwei": "1000000000000000000",
         "validator_share_pct": 0.90,
         "delegator_share_pct": 0.10
       }
@@ -809,7 +809,7 @@
     },
     "rewards": {
       "initialized": true,
-      "pool_balance_nwei": "10000000000000000000",
+      "pool_balance_nwei": "1000000000000000000",
       "block_reward_nwei": "0",
       "epoch_reward_nwei": "0"
     },

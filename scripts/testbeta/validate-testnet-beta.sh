@@ -16,6 +16,7 @@ done
 python3 - "$GENESIS_FILE" "$MANIFEST_FILE" <<'PY'
 import json
 import sys
+import blake3
 
 genesis_path, manifest_path = sys.argv[1:3]
 errors = []
@@ -59,6 +60,29 @@ def has_placeholder(value):
 
 def is_hex_hash(value):
     return isinstance(value, str) and len(value) == 64 and all(ch in "0123456789abcdef" for ch in value.lower())
+
+def canonical_json(value):
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, (int, float)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if isinstance(value, list):
+        return "[" + ",".join(canonical_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(
+            f'{json.dumps(key, ensure_ascii=False, separators=(",", ":"))}:{canonical_json(value[key])}'
+            for key in sorted(value.keys())
+        ) + "}"
+    raise TypeError(f"unsupported value type: {type(value)!r}")
+
+def hash_json(value):
+    return blake3.blake3(canonical_json(value).encode("utf-8")).hexdigest()
 
 if genesis.get("schema_version") != "v1":
     errors.append("genesis schema_version must be v1")
@@ -124,6 +148,41 @@ integrity = genesis.get("integrity", {})
 for field in ("genesis_hash", "state_root", "allocation_hash", "validator_hash", "contract_hash"):
     if not is_hex_hash(integrity.get(field)):
         errors.append(f"genesis integrity.{field} must be a 64-character lowercase hex hash")
+
+expected_state_root = hash_json({
+    "accounts": genesis.get("accounts"),
+    "balances": genesis.get("balances"),
+    "allocations": genesis.get("allocations"),
+    "validators": genesis.get("validators"),
+    "contracts": genesis.get("contracts"),
+    "modules": genesis.get("modules"),
+})
+expected_data_root = hash_json({
+    "contracts": genesis.get("contracts"),
+    "modules": genesis.get("modules"),
+    "precompiles": genesis.get("precompiles"),
+})
+expected_allocation_hash = hash_json(genesis.get("allocations"))
+expected_validator_hash = hash_json(genesis.get("validators"))
+expected_contract_hash = hash_json(genesis.get("contracts"))
+genesis_for_hash = json.loads(json.dumps(genesis))
+genesis_for_hash.setdefault("integrity", {})["genesis_hash"] = ""
+expected_genesis_hash = hash_json(genesis_for_hash)
+
+if genesis.get("header", {}).get("state_root") != expected_state_root:
+    errors.append("genesis header.state_root does not match canonical genesis contents")
+if genesis.get("header", {}).get("data_root") != expected_data_root:
+    errors.append("genesis header.data_root does not match canonical genesis contents")
+if integrity.get("state_root") != expected_state_root:
+    errors.append("genesis integrity.state_root does not match canonical genesis contents")
+if integrity.get("allocation_hash") != expected_allocation_hash:
+    errors.append("genesis integrity.allocation_hash does not match canonical genesis contents")
+if integrity.get("validator_hash") != expected_validator_hash:
+    errors.append("genesis integrity.validator_hash does not match canonical genesis contents")
+if integrity.get("contract_hash") != expected_contract_hash:
+    errors.append("genesis integrity.contract_hash does not match canonical genesis contents")
+if integrity.get("genesis_hash") != expected_genesis_hash:
+    errors.append("genesis integrity.genesis_hash does not match canonical genesis contents")
 
 if manifest.get("network_id") != "synergy-testnet-beta":
     errors.append("operational manifest network_id must be synergy-testnet-beta")
