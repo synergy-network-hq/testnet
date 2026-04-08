@@ -14,8 +14,10 @@ use serde::Deserialize;
 use serde_json;
 use socket2::{SockRef, TcpKeepalive};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -299,7 +301,8 @@ fn preferred_connection_direction(
     let local_identity = local_identity.trim();
     let remote_identity = remote_identity.trim();
 
-    if local_identity.is_empty() || remote_identity.is_empty() || local_identity == remote_identity {
+    if local_identity.is_empty() || remote_identity.is_empty() || local_identity == remote_identity
+    {
         return None;
     }
 
@@ -378,9 +381,65 @@ fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
         }
     }
 
+    let self_aliases = self_dial_aliases(config);
+    if !self_aliases.is_empty() {
+        targets.retain(|target| !self_aliases.contains(target));
+    }
+
     let mut ordered = targets.into_iter().collect::<Vec<_>>();
     ordered.sort();
     ordered
+}
+
+fn self_dial_aliases(config: &NodeConfig) -> HashSet<String> {
+    let mut aliases = HashSet::new();
+
+    if let Some(address) = parse_bootnode_dial_address(&config.p2p.public_address) {
+        aliases.insert(address);
+    }
+    if let Some(address) = parse_bootnode_dial_address(&config.p2p.listen_address) {
+        aliases.insert(address);
+    }
+
+    if let Some(slot) = local_validator_slot(config) {
+        aliases.insert(format!(
+            "genesisval{slot}.synergynode.xyz:{}",
+            config.network.p2p_port
+        ));
+    }
+
+    aliases
+}
+
+fn is_self_dial_target(config: &NodeConfig, dial: &str) -> bool {
+    let Some(normalized) = parse_bootnode_dial_address(dial) else {
+        return false;
+    };
+    self_dial_aliases(config).contains(&normalized)
+}
+
+fn local_validator_slot(config: &NodeConfig) -> Option<u64> {
+    let validator_address = announced_validator_address(config)?;
+    let workspace_root = Path::new(&config.storage.path).parent()?;
+    let manifest_path = workspace_root
+        .join("config")
+        .join("operational-manifest.json");
+    let contents = fs::read_to_string(manifest_path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&contents).ok()?;
+
+    value
+        .get("validators")
+        .and_then(serde_json::Value::as_array)?
+        .iter()
+        .find(|entry| {
+            entry
+                .get("address")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .is_some_and(|address| address.eq_ignore_ascii_case(validator_address.as_str()))
+        })
+        .and_then(|entry| entry.get("slot"))
+        .and_then(serde_json::Value::as_u64)
 }
 
 #[cfg(test)]
@@ -1195,9 +1254,7 @@ impl P2PNetwork {
                 // Keep trying bootnodes until at least one peer is connected.
                 for addr in &bootnode_dials {
                     // Avoid self-dial if the config accidentally includes itself.
-                    if addr == &network.config.p2p.public_address
-                        || addr == &network.config.p2p.listen_address
-                    {
+                    if is_self_dial_target(&network.config, addr) {
                         continue;
                     }
                     let already_connected = {
@@ -1592,10 +1649,8 @@ fn handle_messages(
                             .as_ref()
                             .map(|value| value.trim().to_string())
                             .filter(|value| !value.is_empty());
-                        let peer_identity = peer_identity_key(
-                            &node_id,
-                            announced_validator_address.as_deref(),
-                        );
+                        let peer_identity =
+                            peer_identity_key(&node_id, announced_validator_address.as_deref());
                         let local_identity = local_peer_identity(&config);
 
                         info!(
@@ -1617,8 +1672,7 @@ fn handle_messages(
                             let existing_peer_key = peers
                                 .iter()
                                 .find(|(_, peer)| {
-                                    peer_identity_from_connection(peer)
-                                        .as_deref()
+                                    peer_identity_from_connection(peer).as_deref()
                                         == Some(peer_identity.as_str())
                                 })
                                 .map(|(key, _)| key.clone());
@@ -2438,10 +2492,6 @@ fn handle_messages(
 
                         // Attempt to dial new peers (best-effort).
                         let max_peers = config.network.max_peers as usize;
-                        let self_public_address =
-                            parse_bootnode_dial_address(&config.p2p.public_address);
-                        let self_listen_address =
-                            parse_bootnode_dial_address(&config.p2p.listen_address);
                         for addr in peer_addresses {
                             let Some(addr) = parse_bootnode_dial_address(&addr) else {
                                 debug!(
@@ -2452,9 +2502,7 @@ fn handle_messages(
                                 );
                                 continue;
                             };
-                            if self_public_address.as_deref() == Some(addr.as_str())
-                                || self_listen_address.as_deref() == Some(addr.as_str())
-                            {
+                            if is_self_dial_target(&config, &addr) {
                                 continue;
                             }
                             let should_dial = {
@@ -2800,13 +2848,14 @@ mod tests {
         connected_validator_participants, current_bootstrap_refresh_interval, dial_with_timeout,
         hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
-        resolve_duplicate_connection, should_disconnect_for_status_genesis_mismatch,
-        status_ready_validator_participants, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution, PeerConnection,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
+        ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection,
         FAST_BOOTSTRAP_REFRESH_SECS, NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
+    use std::fs;
     use std::net::TcpListener;
     use std::sync::{Arc, Mutex};
     use std::thread;
@@ -3042,7 +3091,10 @@ mod tests {
         assert_eq!(replacement.last_known_height, 9);
         assert_eq!(replacement.genesis_hash, "genesis-hash".to_string());
         assert_eq!(replacement.status_received_at, Some(16));
-        assert_eq!(replacement.public_address, Some("73.79.66.255:5623".to_string()));
+        assert_eq!(
+            replacement.public_address,
+            Some("73.79.66.255:5623".to_string())
+        );
     }
 
     #[test]
@@ -3080,6 +3132,53 @@ mod tests {
         assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
         assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
         assert!(addresses.contains(&"157.245.226.240:5620".to_string()));
+    }
+
+    #[test]
+    fn resolve_bootstrap_dial_targets_excludes_self_genesis_alias_but_keeps_other_validators() {
+        let temp = std::env::temp_dir().join(format!(
+            "synergy-networking-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock should be monotonic")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&temp).expect("temp dir");
+        let workspace = temp.join("validator-workspace");
+        let config_dir = workspace.join("config");
+        let data_dir = workspace.join("data");
+        fs::create_dir_all(&config_dir).expect("config dir");
+        fs::create_dir_all(&data_dir).expect("data dir");
+
+        fs::write(
+            config_dir.join("operational-manifest.json"),
+            serde_json::to_string_pretty(&serde_json::json!({
+                "validators": [
+                    {"address": "synv1validator1", "slot": 1},
+                    {"address": "synv1validator5", "slot": 5}
+                ]
+            }))
+            .expect("manifest should serialize"),
+        )
+        .expect("manifest should write");
+
+        let mut config = NodeConfig::default();
+        config.storage.path = data_dir.to_string_lossy().to_string();
+        config.network.p2p_port = 5622;
+        config.p2p.public_address = "71.86.65.178:5622".to_string();
+        config.p2p.listen_address = "0.0.0.0:5622".to_string();
+        config.node.validator_address = "synv1validator1".to_string();
+        config.network.additional_dial_targets = vec![
+            "genesisval1.synergynode.xyz:5622".to_string(),
+            "genesisval5.synergynode.xyz:5626".to_string(),
+        ];
+
+        let targets = resolve_bootstrap_dial_targets(&config);
+
+        assert!(!targets.contains(&"genesisval1.synergynode.xyz:5622".to_string()));
+        assert!(targets.contains(&"genesisval5.synergynode.xyz:5626".to_string()));
+
+        let _ = fs::remove_dir_all(&temp);
     }
 
     #[test]
