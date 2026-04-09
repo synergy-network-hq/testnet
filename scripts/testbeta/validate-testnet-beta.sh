@@ -28,7 +28,6 @@ with open(manifest_path, encoding="utf-8") as handle:
 
 expected_ports = {
     "bootnode": 5620,
-    "seed": 5621,
     "node_listener_base": 5622,
     "rpc_base": 5640,
     "ws_base": 5660,
@@ -192,8 +191,8 @@ if manifest.get("token", {}).get("symbol") != "SNRG":
     errors.append("operational manifest token.symbol must be SNRG")
 if len(manifest.get("bootstrap", {}).get("bootnodes", [])) != 3:
     errors.append("operational manifest must contain exactly 3 bootnodes")
-if len(manifest.get("bootstrap", {}).get("seed_servers", [])) != 3:
-    errors.append("operational manifest must contain exactly 3 seed servers")
+if len(manifest.get("bootstrap", {}).get("seed_servers", [])) != 0:
+    errors.append("operational manifest seed_servers must be empty while validator peers are hard-coded")
 if len(manifest.get("validators", [])) != 5:
     errors.append("operational manifest must contain exactly 5 validators")
 if manifest.get("ports") != expected_ports:
@@ -220,10 +219,18 @@ failures=0
 
 for bundle in bootnode1 bootnode2 bootnode3; do
   node_config="$BUNDLE_DIR/$bundle/config/node.toml"
+  bundle_genesis="$BUNDLE_DIR/$bundle/config/genesis.json"
   if [[ ! -f "$node_config" ]]; then
     echo "Missing bootnode bundle config: $node_config" >&2
     failures=$((failures + 1))
     continue
+  fi
+  if [[ ! -f "$bundle_genesis" ]]; then
+    echo "Missing bootnode bundle genesis: $bundle_genesis" >&2
+    failures=$((failures + 1))
+  elif ! cmp -s "$GENESIS_FILE" "$bundle_genesis"; then
+    echo "[$bundle] genesis.json does not match canonical config/genesis.json" >&2
+    failures=$((failures + 1))
   fi
 
   if ! rg -q '^p2p_port = 5620$' "$node_config"; then
@@ -244,20 +251,36 @@ for bundle in bootnode1 bootnode2 bootnode3; do
   fi
 done
 
-for bundle in seed1 seed2 seed3; do
-  seed_config="$BUNDLE_DIR/$bundle/config/seed-service.json"
-  if [[ ! -f "$seed_config" ]]; then
-    echo "Missing seed bundle config: $seed_config" >&2
+for bundle in genesisrpc genesisindexer; do
+  node_config="$BUNDLE_DIR/$bundle/config/node.toml"
+  bundle_genesis="$BUNDLE_DIR/$bundle/config/genesis.json"
+  if [[ ! -f "$node_config" ]]; then
+    echo "Missing service bundle config: $node_config" >&2
     failures=$((failures + 1))
     continue
   fi
 
-  if ! rg -q '"listen_port": 5621' "$seed_config"; then
-    echo "[$bundle] listen_port must be 5621" >&2
+  if [[ ! -f "$bundle_genesis" ]]; then
+    echo "Missing service bundle genesis: $bundle_genesis" >&2
+    failures=$((failures + 1))
+  elif ! cmp -s "$GENESIS_FILE" "$bundle_genesis"; then
+    echo "[$bundle] genesis.json does not match canonical config/genesis.json" >&2
     failures=$((failures + 1))
   fi
-  if rg -q '38638|48638|58638|18080|5730|5830|5930' "$seed_config"; then
+
+  if ! rg -q '^seed_servers = \[\]$' "$node_config"; then
+    echo "[$bundle] seed_servers must be empty" >&2
+    failures=$((failures + 1))
+  fi
+  if rg -q '38638|48638|58638|18080|5730|5830|5930' "$node_config"; then
     echo "[$bundle] contains stale closed-testnet ports" >&2
+    failures=$((failures + 1))
+  fi
+done
+
+for stale_dir in seed1 seed2 seed3 bootseed2 rpc-gateway indexer-explorer; do
+  if [[ -d "$BUNDLE_DIR/$stale_dir" ]]; then
+    echo "bootstrap-bundles must not retain stale $stale_dir directory" >&2
     failures=$((failures + 1))
   fi
 done

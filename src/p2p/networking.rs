@@ -780,10 +780,15 @@ fn register_self_with_seed_servers(config: &NodeConfig) {
     if config.node.bootstrap_only || config.network.seed_servers.is_empty() {
         return;
     }
+    let role_id = config.identity.role.trim().to_string();
+    if !role_id.eq_ignore_ascii_case("validator") {
+        return;
+    }
     let public_address = config.p2p.public_address.trim().to_string();
     if public_address.is_empty()
         || public_address.starts_with("127.")
         || public_address.starts_with("0.0.0.0")
+        || !is_assigned_synergy_dial_address(&public_address)
     {
         return;
     }
@@ -795,14 +800,15 @@ fn register_self_with_seed_servers(config: &NodeConfig) {
         Err(_) => return,
     };
     let validator_address = config.node.validator_address.trim().to_string();
+    if validator_address.is_empty() {
+        return;
+    }
     let mut payload = serde_json::json!({
         "node_id": config.p2p.node_name,
-        "role_id": "validator",
+        "role_id": role_id,
         "dial": public_address,
     });
-    if !validator_address.is_empty() {
-        payload["wallet_address"] = serde_json::Value::String(validator_address);
-    }
+    payload["wallet_address"] = serde_json::Value::String(validator_address);
     for seed_server in &config.network.seed_servers {
         let register_url = normalize_seed_server_url(seed_server, "/peers/register");
         if register_url.is_empty() {
@@ -2502,6 +2508,9 @@ fn handle_messages(
                                 );
                                 continue;
                             };
+                            if !is_assigned_synergy_dial_address(&addr) {
+                                continue;
+                            }
                             if is_self_dial_target(&config, &addr) {
                                 continue;
                             }
@@ -2711,18 +2720,25 @@ fn collect_known_peer_addresses(
 ) -> Vec<String> {
     let mut out = HashSet::<String>::new();
 
-    if let Some(address) = parse_bootnode_dial_address(&config.p2p.public_address) {
-        out.insert(address);
+    if is_assigned_synergy_dial_address(&config.p2p.public_address) {
+        if let Some(address) = parse_bootnode_dial_address(&config.p2p.public_address) {
+            out.insert(address);
+        }
     }
 
     for dial in &config.network.additional_dial_targets {
-        if let Some(address) = parse_bootnode_dial_address(dial) {
-            out.insert(address);
+        if is_assigned_synergy_dial_address(dial) {
+            if let Some(address) = parse_bootnode_dial_address(dial) {
+                out.insert(address);
+            }
         }
     }
 
     if let Ok(discovered) = discovered_dial_targets.lock() {
         for dial in discovered.iter() {
+            if !is_assigned_synergy_dial_address(dial) {
+                continue;
+            }
             if let Some(address) = parse_bootnode_dial_address(dial) {
                 out.insert(address);
             }
@@ -2731,13 +2747,25 @@ fn collect_known_peer_addresses(
 
     if let Ok(peers) = connected_peers.lock() {
         for peer in peers.values() {
+            let has_validator_identity = peer
+                .validator_address
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|value| !value.is_empty());
+            if !has_validator_identity {
+                continue;
+            }
             if let Some(pub_addr) = peer.public_address.as_ref() {
-                if let Some(address) = parse_bootnode_dial_address(pub_addr) {
-                    out.insert(address);
-                    continue;
+                if is_assigned_synergy_dial_address(pub_addr) {
+                    if let Some(address) = parse_bootnode_dial_address(pub_addr) {
+                        out.insert(address);
+                        continue;
+                    }
                 }
             }
-            if peer.direction == ConnectionDirection::Outgoing {
+            if peer.direction == ConnectionDirection::Outgoing
+                && is_assigned_synergy_dial_address(&peer.address)
+            {
                 if let Some(address) = parse_bootnode_dial_address(&peer.address) {
                     out.insert(address);
                 }
@@ -2748,6 +2776,21 @@ fn collect_known_peer_addresses(
     let mut ordered = out.into_iter().collect::<Vec<_>>();
     ordered.sort();
     ordered
+}
+
+fn is_assigned_synergy_dial_address(value: &str) -> bool {
+    let Some(normalized) = parse_bootnode_dial_address(value) else {
+        return false;
+    };
+    let Some((host, _port)) = normalized.rsplit_once(':') else {
+        return false;
+    };
+    let host = host
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .to_ascii_lowercase();
+    !host.is_empty() && host.ends_with(".synergynode.xyz")
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
@@ -3118,20 +3161,22 @@ mod tests {
     }
 
     #[test]
-    fn collect_known_peer_addresses_includes_discovered_targets() {
+    fn collect_known_peer_addresses_includes_assigned_synergy_targets() {
         let mut config = NodeConfig::default();
-        config.p2p.public_address = "74.208.227.23:5620".to_string();
-        config.network.additional_dial_targets = vec!["73.79.66.255:5620".to_string()];
+        config.p2p.public_address = "genesisval1.synergynode.xyz:5622".to_string();
+        config.network.additional_dial_targets =
+            vec!["genesisval2.synergynode.xyz:5622".to_string()];
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
-        let discovered_targets: DialTargetsArc =
-            Arc::new(Mutex::new(vec!["157.245.226.240:5620".to_string()]));
+        let discovered_targets: DialTargetsArc = Arc::new(Mutex::new(vec![
+            "genesisval3.synergynode.xyz:5623".to_string(),
+        ]));
 
         let addresses =
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
-        assert!(addresses.contains(&"74.208.227.23:5620".to_string()));
-        assert!(addresses.contains(&"73.79.66.255:5620".to_string()));
-        assert!(addresses.contains(&"157.245.226.240:5620".to_string()));
+        assert!(addresses.contains(&"genesisval1.synergynode.xyz:5622".to_string()));
+        assert!(addresses.contains(&"genesisval2.synergynode.xyz:5622".to_string()));
+        assert!(addresses.contains(&"genesisval3.synergynode.xyz:5623".to_string()));
     }
 
     #[test]
@@ -3170,19 +3215,19 @@ mod tests {
         config.node.validator_address = "synv1validator1".to_string();
         config.network.additional_dial_targets = vec![
             "genesisval1.synergynode.xyz:5622".to_string(),
-            "genesisval5.synergynode.xyz:5626".to_string(),
+            "genesisval5.synergynode.xyz:5622".to_string(),
         ];
 
         let targets = resolve_bootstrap_dial_targets(&config);
 
         assert!(!targets.contains(&"genesisval1.synergynode.xyz:5622".to_string()));
-        assert!(targets.contains(&"genesisval5.synergynode.xyz:5626".to_string()));
+        assert!(targets.contains(&"genesisval5.synergynode.xyz:5622".to_string()));
 
         let _ = fs::remove_dir_all(&temp);
     }
 
     #[test]
-    fn collect_known_peer_addresses_excludes_incoming_ephemeral_ports() {
+    fn collect_known_peer_addresses_excludes_unassigned_outgoing_ip_targets() {
         let config = NodeConfig::default();
         let mut peers = HashMap::new();
         peers.insert(
@@ -3213,7 +3258,7 @@ mod tests {
             PeerConnection {
                 address: "73.79.66.255:5623".to_string(),
                 direction: ConnectionDirection::Outgoing,
-                public_address: None,
+                public_address: Some("genesisval3.synergynode.xyz:5623".to_string()),
                 validator_address: Some("synv1outgoing".to_string()),
                 connected_at: 0,
                 last_seen: 0,
@@ -3238,7 +3283,8 @@ mod tests {
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
         assert!(!addresses.contains(&"73.79.66.255:54792".to_string()));
-        assert!(addresses.contains(&"73.79.66.255:5623".to_string()));
+        assert!(!addresses.contains(&"73.79.66.255:5623".to_string()));
+        assert!(addresses.contains(&"genesisval3.synergynode.xyz:5623".to_string()));
     }
 
     #[test]

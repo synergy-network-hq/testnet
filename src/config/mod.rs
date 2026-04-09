@@ -114,6 +114,10 @@ pub struct RPCConfig {
 pub struct P2PConfig {
     pub listen_address: String,
     pub public_address: String,
+    #[serde(default)]
+    pub discovery_listen_address: String,
+    #[serde(default)]
+    pub discovery_public_address: String,
     pub node_name: String,
     pub enable_discovery: bool,
     pub discovery_port: u16,
@@ -224,6 +228,8 @@ impl Default for NodeConfig {
             p2p: P2PConfig {
                 listen_address: "127.0.0.1:5622".to_string(),
                 public_address: "127.0.0.1:5622".to_string(),
+                discovery_listen_address: "127.0.0.1:5680".to_string(),
+                discovery_public_address: "127.0.0.1:5680".to_string(),
                 node_name: "synergy-node-01".to_string(),
                 enable_discovery: false,
                 discovery_port: 5680,
@@ -365,19 +371,78 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     if let Ok(val) = env::var("SYNERGY_CHAIN_ID") {
         config.blockchain.chain_id = val.parse()?;
     }
-    if let Ok(val) = env::var("SYNERGY_P2P_PORT") {
+    if let Some(val) = first_env_value(&["SYNERGY_P2P_PORT", "P2P_PORT"]) {
         config.network.p2p_port = val.parse()?;
+        config.p2p.listen_address = replace_port_in_address(
+            &config.p2p.listen_address,
+            config.network.p2p_port,
+            "0.0.0.0",
+        );
     }
-    if let Ok(val) = env::var("SYNERGY_RPC_PORT") {
-        config.network.rpc_port = val.parse()?;
-        config.rpc.http_port = val.parse()?;
+    if let Some(val) = first_env_value(&["SYNERGY_RPC_PORT", "RPC_PORT"]) {
+        let rpc_port = val.parse()?;
+        config.network.rpc_port = rpc_port;
+        config.rpc.http_port = rpc_port;
+        config.rpc.bind_address = replace_port_in_address(
+            &config.rpc.bind_address,
+            rpc_port,
+            extract_host_from_address(&config.rpc.bind_address).unwrap_or("0.0.0.0"),
+        );
     }
     if let Ok(val) = env::var("SYNERGY_RPC_BIND_ADDRESS") {
         config.rpc.bind_address = val;
     }
-    if let Ok(val) = env::var("SYNERGY_WS_PORT") {
-        config.network.ws_port = val.parse()?;
-        config.rpc.ws_port = val.parse()?;
+    if let Some(val) = first_env_value(&["SYNERGY_WS_PORT", "WS_PORT"]) {
+        let ws_port = val.parse()?;
+        config.network.ws_port = ws_port;
+        config.rpc.ws_port = ws_port;
+    }
+    if let Some(val) = first_env_value(&["SYNERGY_GRPC_PORT", "GRPC_PORT"]) {
+        config.rpc.grpc_port = val.parse()?;
+    }
+    if let Some(val) = first_env_value(&["SYNERGY_P2P_LISTEN_ADDRESS", "P2P_LISTEN_ADDRESS"]) {
+        config.p2p.listen_address = val.clone();
+        if let Some(port) = parse_port_from_address(&val) {
+            config.network.p2p_port = port;
+        }
+    }
+    if let Some(val) = first_env_value(&[
+        "SYNERGY_P2P_EXTERNAL_ADDRESS",
+        "SYNERGY_P2P_PUBLIC_ADDRESS",
+        "P2P_EXTERNAL_ADDRESS",
+        "P2P_PUBLIC_ADDRESS",
+    ]) {
+        config.p2p.public_address = val;
+    }
+    if let Some(val) = first_env_value(&["SYNERGY_DISCOVERY_PORT", "DISCOVERY_PORT"]) {
+        config.p2p.discovery_port = val.parse()?;
+        config.p2p.discovery_listen_address = replace_port_in_address(
+            &config.p2p.discovery_listen_address,
+            config.p2p.discovery_port,
+            "0.0.0.0",
+        );
+        config.p2p.discovery_public_address = replace_port_in_address(
+            &config.p2p.discovery_public_address,
+            config.p2p.discovery_port,
+            extract_host_from_address(&config.p2p.public_address).unwrap_or("127.0.0.1"),
+        );
+    }
+    if let Some(val) = first_env_value(&[
+        "SYNERGY_DISCOVERY_LISTEN_ADDRESS",
+        "DISCOVERY_LISTEN_ADDRESS",
+    ]) {
+        config.p2p.discovery_listen_address = val.clone();
+        if let Some(port) = parse_port_from_address(&val) {
+            config.p2p.discovery_port = port;
+        }
+    }
+    if let Some(val) = first_env_value(&[
+        "SYNERGY_DISCOVERY_EXTERNAL_ADDRESS",
+        "SYNERGY_DISCOVERY_PUBLIC_ADDRESS",
+        "DISCOVERY_EXTERNAL_ADDRESS",
+        "DISCOVERY_PUBLIC_ADDRESS",
+    ]) {
+        config.p2p.discovery_public_address = val;
     }
     if let Ok(val) = env::var("SYNERGY_BOOTNODES") {
         config.network.bootnodes = val.split(',').map(|s| s.trim().to_string()).collect();
@@ -586,6 +651,8 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
     }
 
     let explicit_public_address = get_string(raw, &["p2p", "public_address"])
+        .or_else(|| get_string(raw, &["p2p", "external_address"]))
+        .or_else(|| get_string(raw, &["p2p", "external_addr"]))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
     if let Some(public_address) = explicit_public_address {
@@ -611,6 +678,37 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
         get_u64(raw, &["p2p", "discovery_port"]).and_then(|value| u16::try_from(value).ok())
     {
         config.p2p.discovery_port = discovery_port;
+    }
+
+    let explicit_discovery_listen_address = get_string(raw, &["p2p", "discovery_listen_address"])
+        .or_else(|| get_string(raw, &["p2p", "discovery_listen_addr"]))
+        .or_else(|| get_string(raw, &["discovery", "listen_address"]))
+        .or_else(|| get_string(raw, &["discovery", "listen_addr"]));
+    if let Some(discovery_listen_address) = explicit_discovery_listen_address {
+        config.p2p.discovery_listen_address = discovery_listen_address.clone();
+        if let Some(port) = parse_port_from_address(&discovery_listen_address) {
+            config.p2p.discovery_port = port;
+        }
+    } else {
+        config.p2p.discovery_listen_address = format!("0.0.0.0:{}", config.p2p.discovery_port);
+    }
+
+    let explicit_discovery_public_address = get_string(raw, &["p2p", "discovery_public_address"])
+        .or_else(|| get_string(raw, &["p2p", "discovery_external_address"]))
+        .or_else(|| get_string(raw, &["p2p", "discovery_external_addr"]))
+        .or_else(|| get_string(raw, &["discovery", "public_address"]))
+        .or_else(|| get_string(raw, &["discovery", "external_address"]))
+        .or_else(|| get_string(raw, &["discovery", "external_addr"]));
+    if let Some(discovery_public_address) = explicit_discovery_public_address {
+        config.p2p.discovery_public_address = discovery_public_address;
+    } else {
+        let discovery_public_host = get_string(raw, &["network", "public_host"]).unwrap_or_else(|| {
+            extract_host_from_address(&config.p2p.public_address)
+                .unwrap_or("127.0.0.1")
+                .to_string()
+        });
+        config.p2p.discovery_public_address =
+            format!("{discovery_public_host}:{}", config.p2p.discovery_port);
     }
 
     if let Some(heartbeat_interval) = get_u64(raw, &["p2p", "heartbeat_interval"]) {
@@ -790,6 +888,26 @@ fn get_string_array(value: &toml::Value, path: &[&str]) -> Option<Vec<String>> {
             .map(ToString::to_string)
             .collect(),
     )
+}
+
+fn first_env_value(keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| env::var(key).ok())
+        .map(|value| value.trim().to_string())
+        .find(|value| !value.is_empty())
+}
+
+fn extract_host_from_address(value: &str) -> Option<&str> {
+    value
+        .trim()
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim())
+        .filter(|host| !host.is_empty())
+}
+
+fn replace_port_in_address(value: &str, port: u16, default_host: &str) -> String {
+    let host = extract_host_from_address(value).unwrap_or(default_host).trim();
+    format!("{host}:{port}")
 }
 
 fn parse_port_from_address(value: &str) -> Option<u16> {
@@ -1071,6 +1189,67 @@ listen_address = "0.0.0.0:5622"
         assert_eq!(
             config.p2p.public_address,
             "genesisval1.synergynode.xyz:5622".to_string()
+        );
+        assert_eq!(
+            config.p2p.discovery_public_address,
+            "genesisval1.synergynode.xyz:5680".to_string()
+        );
+    }
+
+    #[test]
+    fn parses_explicit_discovery_addresses_from_compatibility_blocks() {
+        let content = r#"
+[network]
+chain_name = "synergy-testnet-beta"
+chain_id = 338639
+p2p_port = 5622
+public_host = "genesisval1.synergynode.xyz"
+
+[p2p]
+listen_address = "0.0.0.0:5622"
+external_addr = "genesisval1.synergynode.xyz:5622"
+enable_discovery = true
+discovery_port = 5680
+
+[discovery]
+listen_addr = "0.0.0.0:5680"
+external_addr = "genesisval1.synergynode.xyz:5680"
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
+        assert_eq!(config.p2p.public_address, "genesisval1.synergynode.xyz:5622");
+        assert_eq!(config.p2p.discovery_listen_address, "0.0.0.0:5680");
+        assert_eq!(
+            config.p2p.discovery_public_address,
+            "genesisval1.synergynode.xyz:5680"
+        );
+    }
+
+    #[test]
+    fn apply_env_overrides_sets_explicit_runtime_network_addresses() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
+        let _p2p_listen = EnvVarGuard::set("SYNERGY_P2P_LISTEN_ADDRESS", "0.0.0.0:5622");
+        let _p2p_external = EnvVarGuard::set(
+            "SYNERGY_P2P_EXTERNAL_ADDRESS",
+            "genesisval1.synergynode.xyz:5622",
+        );
+        let _discovery_listen =
+            EnvVarGuard::set("SYNERGY_DISCOVERY_LISTEN_ADDRESS", "0.0.0.0:5680");
+        let _discovery_external = EnvVarGuard::set(
+            "SYNERGY_DISCOVERY_EXTERNAL_ADDRESS",
+            "genesisval1.synergynode.xyz:5680",
+        );
+
+        let config = apply_env_overrides(NodeConfig::default()).expect("env overrides should load");
+
+        assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
+        assert_eq!(config.p2p.public_address, "genesisval1.synergynode.xyz:5622");
+        assert_eq!(config.p2p.discovery_listen_address, "0.0.0.0:5680");
+        assert_eq!(
+            config.p2p.discovery_public_address,
+            "genesisval1.synergynode.xyz:5680"
         );
     }
 

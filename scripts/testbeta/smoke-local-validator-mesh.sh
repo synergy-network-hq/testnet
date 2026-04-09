@@ -19,7 +19,7 @@ VALIDATOR_ADDRESSES=(
 P2P_PORTS=(5722 5723 5724 5725 5726)
 RPC_PORTS=(5740 5741 5742 5743 5744)
 WS_PORTS=(5760 5761 5762 5763 5764)
-START_VALIDATOR_COUNT="${START_VALIDATOR_COUNT:-4}"
+START_VALIDATOR_COUNT="${START_VALIDATOR_COUNT:-5}"
 PIDS=()
 WORKSPACES=()
 
@@ -27,7 +27,7 @@ usage() {
   cat <<USAGE
 Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir]
 
-Starts the first four local validators against the canonical five-validator
+Starts the first five local validators against the canonical five-validator
 genesis and fails unless all active validators advance chain height from
 genesis within the timeout.
 USAGE

@@ -64,6 +64,10 @@ inventory_management_host() {
   awk -F, -v machine="$MACHINE_ID" 'NR>1 && tolower($1)==tolower(machine){print $13; exit}' "$INVENTORY_FILE"
 }
 
+inventory_public_ip() {
+  awk -F, -v machine="$MACHINE_ID" 'NR>1 && tolower($1)==tolower(machine){print $21; exit}' "$INVENTORY_FILE"
+}
+
 resolve_var() {
   local name="$1"
   printf '%s' "${!name:-}"
@@ -83,6 +87,7 @@ MANAGEMENT_HOST="$(resolve_var "$MANAGEMENT_HOST_VAR")"
 if [[ -z "$MANAGEMENT_HOST" ]]; then
   MANAGEMENT_HOST="$(inventory_management_host)"
 fi
+PUBLIC_IP="$(inventory_public_ip)"
 
 SSH_USER="$(resolve_var "$SSH_USER_VAR")"
 if [[ -z "$SSH_USER" ]]; then
@@ -107,6 +112,18 @@ if [[ -z "$HOST" ]]; then
   echo "Unable to resolve host for $MACHINE_ID from hosts.env or inventory." >&2
   exit 1
 fi
+
+append_unique_host_candidate() {
+  local candidate="${1:-}"
+  [[ -n "$candidate" ]] || return 0
+  local existing
+  for existing in "${HOST_CANDIDATES[@]:-}"; do
+    if [[ "$existing" == "$candidate" ]]; then
+      return 0
+    fi
+  done
+  HOST_CANDIDATES+=( "$candidate" )
+}
 
 local_ipv4_list() {
   if command -v ip >/dev/null 2>&1; then
@@ -148,6 +165,11 @@ if is_local_host_token "$HOST" || { [[ -n "$MANAGEMENT_HOST" ]] && is_local_host
   IS_LOCAL_TARGET=1
 fi
 
+HOST_CANDIDATES=()
+append_unique_host_candidate "$HOST"
+append_unique_host_candidate "$MANAGEMENT_HOST"
+append_unique_host_candidate "$PUBLIC_IP"
+
 if [[ "$IS_LOCAL_TARGET" -eq 1 ]]; then
   LOCAL_INSTALLER_DIR="$INSTALLERS_DIR/$MACHINE_ID"
   if [[ ! -d "$REMOTE_NODE_DIR" && -d "$LOCAL_INSTALLER_DIR" ]]; then
@@ -178,14 +200,74 @@ if [[ -n "$SSH_KEY" ]]; then
 fi
 
 REMOTE_TARGET="${SSH_USER}@${HOST}"
+ACTIVE_REMOTE_HOST="$HOST"
 INSTALLER_DIR="$INSTALLERS_DIR/$MACHINE_ID"
+
+ssh_run() {
+  local remote_cmd="$1"
+  local stdin_payload="${2-__NO_STDIN__}"
+  local candidate target
+
+  for candidate in "${HOST_CANDIDATES[@]}"; do
+    target="${SSH_USER}@${candidate}"
+    if [[ "$stdin_payload" == "__NO_STDIN__" ]]; then
+      if ssh "${SSH_ARGS[@]}" "$target" "$remote_cmd"; then
+        ACTIVE_REMOTE_HOST="$candidate"
+        REMOTE_TARGET="$target"
+        return 0
+      fi
+    else
+      if ssh "${SSH_ARGS[@]}" "$target" "$remote_cmd" <<<"$stdin_payload"; then
+        ACTIVE_REMOTE_HOST="$candidate"
+        REMOTE_TARGET="$target"
+        return 0
+      fi
+    fi
+  done
+
+  return 1
+}
+
+scp_to_remote() {
+  local local_path="$1"
+  local remote_path="$2"
+  local candidate target
+
+  for candidate in "${HOST_CANDIDATES[@]}"; do
+    target="${SSH_USER}@${candidate}"
+    if scp "${SCP_ARGS[@]}" "$local_path" "${target}:$remote_path"; then
+      ACTIVE_REMOTE_HOST="$candidate"
+      REMOTE_TARGET="$target"
+      return 0
+    fi
+  done
+
+  return 1
+}
+
+scp_from_remote() {
+  local remote_path="$1"
+  local local_path="$2"
+  local candidate target
+
+  for candidate in "${HOST_CANDIDATES[@]}"; do
+    target="${SSH_USER}@${candidate}"
+    if scp "${SCP_ARGS[@]}" "${target}:$remote_path" "$local_path"; then
+      ACTIVE_REMOTE_HOST="$candidate"
+      REMOTE_TARGET="$target"
+      return 0
+    fi
+  done
+
+  return 1
+}
 
 remote_run_script() {
   local script="$1"
   if [[ "$IS_LOCAL_TARGET" -eq 1 ]]; then
     bash -s <<<"$script"
   else
-    ssh "${SSH_ARGS[@]}" "$REMOTE_TARGET" "bash -s" <<<"$script"
+    ssh_run "bash -s" "$script"
   fi
 }
 
@@ -196,7 +278,7 @@ copy_to_remote() {
     mkdir -p "$(dirname "$remote_path")"
     cp "$local_path" "$remote_path"
   else
-    scp "${SCP_ARGS[@]}" "$local_path" "${REMOTE_TARGET}:$remote_path"
+    scp_to_remote "$local_path" "$remote_path"
   fi
 }
 
@@ -207,7 +289,7 @@ copy_from_remote() {
     mkdir -p "$(dirname "$local_path")"
     cp "$remote_path" "$local_path"
   else
-    scp "${SCP_ARGS[@]}" "${REMOTE_TARGET}:$remote_path" "$local_path"
+    scp_from_remote "$remote_path" "$local_path"
   fi
 }
 
@@ -338,10 +420,12 @@ show_info() {
 Machine:            $MACHINE_ID
 Host:               $HOST
 Management Host:             ${MANAGEMENT_HOST:-unknown}
+SSH candidates:     ${HOST_CANDIDATES[*]}
 Execution mode:     $([[ "$IS_LOCAL_TARGET" -eq 1 ]] && echo "local" || echo "ssh")
 SSH user:           $SSH_USER
 SSH port:           $SSH_PORT
 SSH key:            ${SSH_KEY:-default-agent}
+Active remote host: ${ACTIVE_REMOTE_HOST:-n/a}
 Remote node dir:    $REMOTE_NODE_DIR
 Installer source:   $INSTALLER_DIR
 INFO

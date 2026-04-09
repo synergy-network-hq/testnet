@@ -488,7 +488,9 @@ impl DualQuorumConsensus {
     }
 
     fn required_validator_votes(&self, total_validators: usize) -> usize {
-        self.validator_vote_threshold.max(1).min(total_validators.max(1))
+        self.validator_vote_threshold
+            .max(1)
+            .min(total_validators.max(1))
     }
 
     fn has_commit_quorum(&self, live_validators: &[Validator], votes: &[Vote]) -> bool {
