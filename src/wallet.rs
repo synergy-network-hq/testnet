@@ -6,6 +6,7 @@ use base64::{engine::general_purpose, Engine as _};
 use hex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Wallet {
@@ -25,6 +26,20 @@ pub struct WalletManager {
     wallets: HashMap<String, Wallet>,
     keypairs: HashMap<String, (String, String)>, // address -> (public_key, private_key)
     kem_keypairs: HashMap<String, (String, String)>, // address -> (kem_public, kem_private)
+}
+
+#[derive(Debug, Deserialize)]
+struct TestnetBetaProfileWalletRecord {
+    address: String,
+    public_key_path: String,
+    private_key_path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestnetBetaProfileWallets {
+    treasury_wallet: TestnetBetaProfileWalletRecord,
+    faucet_wallet: TestnetBetaProfileWalletRecord,
+    stake_vault_wallet: TestnetBetaProfileWalletRecord,
 }
 
 impl Wallet {
@@ -538,79 +553,118 @@ lazy_static::lazy_static! {
 /// This enables signing test transactions and validating known genesis identities.
 pub fn init_testbeta_wallets() {
     let config_path = "config/testbeta_wallets.json";
-    let cfg = match std::fs::read_to_string(config_path) {
-        Ok(c) => c,
-        Err(_) => return, // optional
-    };
-
-    let json = match serde_json::from_str::<serde_json::Value>(&cfg) {
-        Ok(v) => v,
-        Err(e) => {
-            warn!("wallet", "Failed to parse testbeta_wallets.json", "error" => e.to_string());
-            return;
-        }
-    };
-
-    let mut identities: Vec<&serde_json::Value> = Vec::new();
-    if let Some(faucet) = json.get("faucet") {
-        identities.push(faucet);
-    }
-    if let Some(treasury) = json.get("treasury") {
-        identities.push(treasury);
-    }
-    if let Some(bootnodes) = json.get("bootnodes").and_then(|v| v.as_array()) {
-        for b in bootnodes {
-            identities.push(b);
-        }
-    }
-
     let mut imported = 0u64;
-    for entry in identities {
-        let keys_location = entry.get("keys_location").and_then(|v| v.as_str());
-        if keys_location.is_none() {
-            continue;
-        }
-        let keys_location = keys_location.unwrap();
-        let identity_str = match std::fs::read_to_string(keys_location) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!("wallet", "Failed to read identity file", "path" => keys_location.to_string(), "error" => e.to_string());
-                continue;
-            }
-        };
 
-        let identity = match serde_json::from_str::<serde_json::Value>(&identity_str) {
+    if let Ok(cfg) = std::fs::read_to_string(config_path) {
+        let json = match serde_json::from_str::<serde_json::Value>(&cfg) {
             Ok(v) => v,
             Err(e) => {
-                warn!("wallet", "Failed to parse identity file", "path" => keys_location.to_string(), "error" => e.to_string());
+                warn!("wallet", "Failed to parse testbeta_wallets.json", "error" => e.to_string());
+                serde_json::Value::Null
+            }
+        };
+
+        let mut identities: Vec<&serde_json::Value> = Vec::new();
+        if let Some(faucet) = json.get("faucet") {
+            identities.push(faucet);
+        }
+        if let Some(treasury) = json.get("treasury") {
+            identities.push(treasury);
+        }
+        if let Some(bootnodes) = json.get("bootnodes").and_then(|v| v.as_array()) {
+            for b in bootnodes {
+                identities.push(b);
+            }
+        }
+
+        for entry in identities {
+            let keys_location = entry.get("keys_location").and_then(|v| v.as_str());
+            if keys_location.is_none() {
+                continue;
+            }
+            let keys_location = keys_location.unwrap();
+            let identity_str = match std::fs::read_to_string(keys_location) {
+                Ok(s) => s,
+                Err(e) => {
+                    warn!("wallet", "Failed to read identity file", "path" => keys_location.to_string(), "error" => e.to_string());
+                    continue;
+                }
+            };
+
+            let identity = match serde_json::from_str::<serde_json::Value>(&identity_str) {
+                Ok(v) => v,
+                Err(e) => {
+                    warn!("wallet", "Failed to parse identity file", "path" => keys_location.to_string(), "error" => e.to_string());
+                    continue;
+                }
+            };
+
+            let address = identity
+                .get("address")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let public_key = identity
+                .get("public_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let private_key = identity
+                .get("private_key")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+
+            if address.is_empty() || public_key.is_empty() || private_key.is_empty() {
+                continue;
+            }
+
+            if let Ok(mut wm) = WALLET_MANAGER.lock() {
+                // Import wallet under the explicit address from the identity file.
+                if wm
+                    .import_wallet(address.clone(), public_key, private_key)
+                    .is_ok()
+                {
+                    imported += 1;
+                }
+            }
+        }
+    }
+
+    for wallet_record in load_testbeta_profile_wallet_records() {
+        let public_key = match std::fs::read_to_string(&wallet_record.public_key_path) {
+            Ok(contents) => contents.trim().to_string(),
+            Err(error) => {
+                warn!(
+                    "wallet",
+                    "Failed to read Testnet-Beta wallet public key",
+                    "path" => wallet_record.public_key_path.clone(),
+                    "error" => error.to_string()
+                );
+                continue;
+            }
+        };
+        let private_key = match std::fs::read_to_string(&wallet_record.private_key_path) {
+            Ok(contents) => contents.trim().to_string(),
+            Err(error) => {
+                warn!(
+                    "wallet",
+                    "Failed to read Testnet-Beta wallet private key",
+                    "path" => wallet_record.private_key_path.clone(),
+                    "error" => error.to_string()
+                );
                 continue;
             }
         };
 
-        let address = identity
-            .get("address")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let public_key = identity
-            .get("public_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-        let private_key = identity
-            .get("private_key")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
-
-        if address.is_empty() || public_key.is_empty() || private_key.is_empty() {
+        if public_key.is_empty() || private_key.is_empty() || wallet_record.address.trim().is_empty()
+        {
             continue;
         }
 
         if let Ok(mut wm) = WALLET_MANAGER.lock() {
-            // Import wallet under the explicit address from the identity file.
             if wm
-                .import_wallet(address.clone(), public_key, private_key)
+                .import_wallet(wallet_record.address.clone(), public_key, private_key)
                 .is_ok()
             {
                 imported += 1;
@@ -621,6 +675,49 @@ pub fn init_testbeta_wallets() {
     if imported > 0 {
         info!("wallet", "Imported testnet beta identities", "count" => imported);
     }
+}
+
+fn load_testbeta_profile_wallet_records() -> Vec<TestnetBetaProfileWalletRecord> {
+    for path in candidate_testbeta_profile_paths() {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(profile) = serde_json::from_str::<TestnetBetaProfileWallets>(&contents) else {
+            continue;
+        };
+        return vec![
+            profile.treasury_wallet,
+            profile.faucet_wallet,
+            profile.stake_vault_wallet,
+        ];
+    }
+
+    Vec::new()
+}
+
+fn candidate_testbeta_profile_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
+        let root = PathBuf::from(project_root);
+        candidates.push(root.join("network").join("profile.json"));
+        if let Some(testnet_root) = root.parent().and_then(|parent| parent.parent()) {
+            candidates.push(testnet_root.join("network").join("profile.json"));
+        }
+    }
+
+    candidates.push(PathBuf::from("network/profile.json"));
+    candidates.push(PathBuf::from("../../network/profile.json"));
+    candidates.push(PathBuf::from("../../../network/profile.json"));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped
 }
 
 fn decode_key_material(s: &str) -> Result<Vec<u8>, String> {

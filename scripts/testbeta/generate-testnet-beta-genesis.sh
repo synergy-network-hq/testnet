@@ -204,8 +204,8 @@ genesis = {
     },
     "network": {
         "chain_id": chain_id,
-        "rpc_endpoint": "https://testbeta-core-rpc.synergy-network.io",
-        "websocket_endpoint": "wss://testbeta-core-ws.synergy-network.io",
+        "rpc_endpoint": "https://testbeta-core-rpc.synergynode.xyz",
+        "websocket_endpoint": "wss://testbeta-core-ws.synergynode.xyz",
         "api_endpoint": "https://testbeta-api.synergy-network.io",
         "explorer_endpoint": "https://testbeta-explorer.synergy-network.io",
         "rpc_port": 5640,

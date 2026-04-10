@@ -13,8 +13,8 @@ bootnodes = [
 
 [rpc]
 bind_address = "0.0.0.0:5640"
-external_http = "https://testbeta-core-rpc.synergy-network.io"
-external_ws = "wss://testbeta-core-ws.synergy-network.io"
+external_http = "https://testbeta-core-rpc.synergynode.xyz"
+external_ws = "wss://testbeta-core-ws.synergynode.xyz"
 
 [network.listen]
 p2p = "0.0.0.0:5620"

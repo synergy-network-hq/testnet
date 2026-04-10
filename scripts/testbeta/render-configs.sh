@@ -348,7 +348,7 @@ public_address = "${public_address}"
 node_name = "${node_id}"
 enable_discovery = false
 discovery_port = ${discovery_port}
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"

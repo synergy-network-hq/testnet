@@ -53,7 +53,7 @@ function main() {
       epochId: 1,
       quorumThreshold: sourceDeployment.config?.initialThreshold ?? 2,
       signerKeysEnv: "RELAYER_PRIVATE_KEYS",
-      testbetaRpcGateway: "https://testbeta-core-rpc.synergy-network.io",
+      testbetaRpcGateway: "https://testbeta-core-rpc.synergynode.xyz",
       recommendedNodes: ["machine-06", "machine-07", "machine-08", "machine-09"],
     },
     rpcMethodsRequiredOnTestbeta: [

@@ -233,7 +233,7 @@ impl Default for NodeConfig {
                 node_name: "synergy-node-01".to_string(),
                 enable_discovery: false,
                 discovery_port: 5680,
-                heartbeat_interval: 30,
+                heartbeat_interval: 10,
             },
             storage: StorageConfig {
                 database: "rocksdb".to_string(),
@@ -1088,7 +1088,7 @@ public_address = "127.0.0.1:5622"
 node_name = "node-01"
 enable_discovery = true
 discovery_port = 5680
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"
@@ -1340,7 +1340,7 @@ public_address = "71.86.65.178:5622"
 node_name = "tbeta-test"
 enable_discovery = true
 discovery_port = 5680
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"

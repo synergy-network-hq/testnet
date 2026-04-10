@@ -5,6 +5,7 @@ use hex;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +52,17 @@ pub struct StakingInfo {
     pub stake_end: Option<u64>,
     pub rewards_earned: u64,
     pub is_active: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestnetBetaProfileMint {
+    wallet_address: String,
+    amount_nwei: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TestnetBetaTokenProfile {
+    genesis_mints: Vec<TestnetBetaProfileMint>,
 }
 
 #[derive(Debug)]
@@ -129,6 +141,7 @@ impl TokenManager {
         let genesis_token = canonical_genesis()
             .ok()
             .map(|genesis| genesis.token().clone());
+        let minimum_supply_cap = required_testbeta_supply_cap_floor();
         let snrg_token = Token::new(
             "SNRG".to_string(),
             genesis_token
@@ -143,7 +156,8 @@ impl TokenManager {
             genesis_token
                 .as_ref()
                 .map(|token| token.total_supply_cap_nwei)
-                .or(Some(1_150_000u128 * 10u128.pow(9))),
+                .map(|value| value.max(minimum_supply_cap))
+                .or(Some((1_150_000u128 * 10u128.pow(9)).max(minimum_supply_cap))),
             true, // mintable during bootstrap
             true, // burnable
             "genesis".to_string(),
@@ -159,6 +173,7 @@ impl TokenManager {
 
         // Distribute initial supply to genesis accounts
         self.distribute_genesis_supply();
+        self.apply_testbeta_profile_allocations();
 
         // Testnet-Beta SNRG supply is fixed after genesis bootstrap.
         if let Ok(mut tokens) = self.tokens.lock() {
@@ -230,6 +245,30 @@ impl TokenManager {
                 println!(
                     "✅ Fallback genesis allocation: {} SNRG to {}",
                     amount, address
+                );
+            }
+        }
+    }
+
+    fn apply_testbeta_profile_allocations(&self) {
+        for (address, amount) in load_testbeta_profile_allocations() {
+            if amount == 0 || address.trim().is_empty() {
+                continue;
+            }
+
+            let current_balance = self.get_balance(&address, "SNRG");
+            if current_balance >= amount {
+                continue;
+            }
+
+            let missing_amount = amount.saturating_sub(current_balance);
+            if let Err(error) = self.mint_tokens(&address, "SNRG", missing_amount) {
+                warn!(
+                    "token",
+                    "Failed to apply Testnet-Beta profile allocation",
+                    "address" => address,
+                    "amount" => missing_amount,
+                    "error" => error
                 );
             }
         }
@@ -1133,8 +1172,133 @@ impl TokenManager {
             }
         }
 
+        self.reconcile_testbeta_profile_allocations();
+
         Ok(())
     }
+
+    fn reconcile_testbeta_profile_allocations(&self) {
+        let allocations = load_testbeta_profile_allocations();
+        if allocations.is_empty() {
+            return;
+        }
+
+        let mut missing_total = 0u128;
+        for (address, amount) in &allocations {
+            let current_balance = self.get_balance(address, "SNRG");
+            if current_balance < *amount {
+                missing_total = missing_total.saturating_add((*amount - current_balance) as u128);
+            }
+        }
+
+        if missing_total == 0 {
+            return;
+        }
+
+        let mut updated_supply = None;
+        if let Ok(mut supply) = self.total_supply.lock() {
+            let total = supply.entry("SNRG".to_string()).or_insert(0);
+            *total = total.saturating_add(missing_total);
+            updated_supply = Some(*total);
+        }
+
+        if let Ok(mut tokens) = self.tokens.lock() {
+            if let Some(token) = tokens.get_mut("SNRG") {
+                let current_max = token
+                    .max_supply
+                    .as_deref()
+                    .and_then(|value| value.parse::<u128>().ok())
+                    .unwrap_or(0);
+                let required_max = current_max
+                    .max(updated_supply.unwrap_or(0))
+                    .max(required_testbeta_supply_cap_floor());
+                token.max_supply = Some(required_max.to_string());
+            }
+        }
+
+        if let Some(total_supply) = updated_supply {
+            self.update_token_supply_snapshot("SNRG", total_supply);
+        }
+
+        if let Ok(mut balances) = self.balances.lock() {
+            for (address, amount) in allocations {
+                let address_balances = balances.entry(address).or_insert_with(HashMap::new);
+                let current_balance = address_balances.get("SNRG").copied().unwrap_or(0);
+                if current_balance < amount {
+                    address_balances.insert("SNRG".to_string(), amount);
+                }
+            }
+        }
+    }
+}
+
+fn load_testbeta_profile_allocations() -> Vec<(String, u64)> {
+    for path in candidate_testbeta_profile_paths() {
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(profile) = serde_json::from_str::<TestnetBetaTokenProfile>(&contents) else {
+            continue;
+        };
+        return profile
+            .genesis_mints
+            .into_iter()
+            .filter_map(|mint| {
+                mint.amount_nwei
+                    .trim()
+                    .parse::<u64>()
+                    .ok()
+                    .map(|amount| (mint.wallet_address, amount))
+            })
+            .collect();
+    }
+
+    Vec::new()
+}
+
+fn required_testbeta_supply_cap_floor() -> u128 {
+    let canonical_total = canonical_genesis()
+        .ok()
+        .map(|genesis| {
+            genesis
+                .balances()
+                .iter()
+                .map(|balance| balance.balance_nwei as u128)
+                .sum::<u128>()
+        })
+        .unwrap_or(0);
+
+    let profile_total = load_testbeta_profile_allocations()
+        .into_iter()
+        .map(|(_, amount)| amount as u128)
+        .sum::<u128>();
+
+    canonical_total.saturating_add(profile_total)
+}
+
+fn candidate_testbeta_profile_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
+        let root = PathBuf::from(project_root);
+        candidates.push(root.join("network").join("profile.json"));
+        if let Some(testnet_root) = root.parent().and_then(|parent| parent.parent()) {
+            candidates.push(testnet_root.join("network").join("profile.json"));
+        }
+    }
+
+    candidates.push(PathBuf::from("network/profile.json"));
+    candidates.push(PathBuf::from("../../network/profile.json"));
+    candidates.push(PathBuf::from("../../../network/profile.json"));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped
 }
 
 #[derive(Serialize, Deserialize)]

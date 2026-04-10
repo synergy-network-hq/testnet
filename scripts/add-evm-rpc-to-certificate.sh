@@ -54,8 +54,8 @@ echo ""
 # We need to include all existing domains plus the new one
 ALL_DOMAINS=(
     "synergy-network.io"
-    "testbeta-core-rpc.synergy-network.io"
-    "testbeta-core-ws.synergy-network.io"
+    "testbeta-core-rpc.synergynode.xyz"
+    "testbeta-core-ws.synergynode.xyz"
     "testbeta-evm-rpc.synergy-network.io"
     "testbeta-evm-ws.synergy-network.io"
     "testbeta-api.synergy-network.io"
@@ -90,7 +90,7 @@ eval $CERTBOT_CMD || {
     echo "Or manually expand with:"
     echo "  sudo certbot certonly --webroot -w /var/www/letsencrypt --expand \\"
     echo "    -d synergy-network.io \\"
-    echo "    -d testbeta-core-rpc.synergy-network.io \\"
+    echo "    -d testbeta-core-rpc.synergynode.xyz \\"
     echo "    -d testbeta-evm-rpc.synergy-network.io \\"
     echo "    [add all other domains]"
     exit 1

@@ -72,7 +72,7 @@ public_address = "127.0.0.1:$p2p_port"
 node_name = "$node_name"
 enable_discovery = true
 discovery_port = $discovery_port
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"

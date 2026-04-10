@@ -1,6 +1,7 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
+use crate::genesis::canonical_genesis;
 use crate::p2p::messages::NetworkMessage;
 use crate::rpc::rpc_server::TX_POOL;
 use crate::token::TOKEN_MANAGER;
@@ -29,17 +30,28 @@ type BlockchainArc = Arc<Mutex<BlockChain>>;
 type PeersArc = Arc<Mutex<PeerMap>>;
 type DialTargetsArc = Arc<Mutex<Vec<String>>>;
 type PeerStateCacheArc = Arc<Mutex<HashMap<String, CachedPeerState>>>;
+type DialRegistryArc = Arc<Mutex<HashMap<String, DialReservation>>>;
 
 const FAST_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
-const TCP_KEEPALIVE_IDLE_SECS: u64 = 15;
-const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 5;
+const TCP_KEEPALIVE_IDLE_SECS: u64 = 300;
+const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
 const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 500;
+const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
+const MAX_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
+const VALIDATOR_P2P_PORT: u16 = 5622;
+const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
     Incoming,
     Outgoing,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DialReservation {
+    in_flight: bool,
+    last_attempt_at: Instant,
 }
 
 lazy_static! {
@@ -52,6 +64,7 @@ pub struct P2PNetwork {
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     discovered_dial_targets: DialTargetsArc,
+    outbound_dial_registry: DialRegistryArc,
     is_running: Arc<Mutex<bool>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     message_receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
@@ -98,6 +111,10 @@ fn should_disconnect_for_status_genesis_mismatch(
     remote_genesis_hash: &str,
     peer_validator_address: Option<&str>,
 ) -> bool {
+    if local_genesis_hash.trim().is_empty() {
+        return false;
+    }
+
     let peer_is_validator = peer_validator_address
         .map(|value| !value.trim().is_empty())
         .unwrap_or(false);
@@ -107,6 +124,29 @@ fn should_disconnect_for_status_genesis_mismatch(
     }
 
     remote_genesis_hash != local_genesis_hash
+}
+
+fn canonical_genesis_hash() -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.hash().to_string())
+        .unwrap_or_default()
+}
+
+fn resolve_local_genesis_hash(blockchain: &BlockchainArc) -> String {
+    blockchain
+        .lock()
+        .ok()
+        .and_then(|chain| chain.get_genesis_hash())
+        .filter(|hash| !hash.trim().is_empty())
+        .unwrap_or_else(canonical_genesis_hash)
+}
+
+fn validator_status_genesis_grace_remaining_secs(connected_at: u64, now: u64) -> u64 {
+    VALIDATOR_STATUS_GENESIS_GRACE_SECS.saturating_sub(now.saturating_sub(connected_at))
+}
+
+fn validator_status_genesis_within_grace_window(connected_at: u64, now: u64) -> bool {
+    now.saturating_sub(connected_at) < VALIDATOR_STATUS_GENESIS_GRACE_SECS
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,6 +334,70 @@ fn merge_peer_state_from_existing(existing: &PeerConnection, replacement: &mut P
     );
 }
 
+fn apply_status_to_peer(
+    peer: &mut PeerConnection,
+    block_height: u64,
+    best_block_hash: &str,
+    genesis_hash: &str,
+    status_received_at: u64,
+) {
+    if block_height >= peer.last_known_height {
+        peer.last_known_height = block_height;
+        if !best_block_hash.trim().is_empty() {
+            peer.best_block_hash = best_block_hash.to_string();
+        }
+    }
+
+    if !genesis_hash.trim().is_empty() {
+        peer.genesis_hash = genesis_hash.to_string();
+    }
+
+    peer.status_received_at = Some(status_received_at);
+}
+
+fn propagate_status_to_matching_peers(
+    peers: &mut PeerMap,
+    peer_state_cache: &PeerStateCacheArc,
+    peer_address: &str,
+    block_height: u64,
+    best_block_hash: &str,
+    genesis_hash: &str,
+) {
+    let identity = peers
+        .get(peer_address)
+        .and_then(peer_identity_from_connection);
+    let mut target_keys = identity
+        .as_deref()
+        .map(|peer_identity| {
+            peers
+                .iter()
+                .filter_map(|(address, peer)| {
+                    (peer_identity_from_connection(peer).as_deref() == Some(peer_identity))
+                        .then(|| address.clone())
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+
+    if target_keys.is_empty() {
+        target_keys.push(peer_address.to_string());
+    }
+
+    let status_received_at = current_timestamp();
+    for target_key in target_keys {
+        if let Some(peer) = peers.get_mut(&target_key) {
+            apply_status_to_peer(
+                peer,
+                block_height,
+                best_block_hash,
+                genesis_hash,
+                status_received_at,
+            );
+            cache_peer_state(peer_state_cache, peer);
+        }
+    }
+}
+
 fn preferred_connection_direction(
     local_identity: &str,
     remote_identity: &str,
@@ -338,12 +442,145 @@ fn resolve_duplicate_connection(
     }
 }
 
-fn disconnect_peer_entry(peers: &mut PeerMap, peer_key: &str) {
+fn disconnect_peer_entry(peer_state_cache: &PeerStateCacheArc, peers: &mut PeerMap, peer_key: &str) {
     if let Some(mut peer) = peers.remove(peer_key) {
+        cache_peer_state(peer_state_cache, &peer);
         if let Some(stream) = peer.stream.take() {
             let _ = stream.shutdown(Shutdown::Both);
         }
     }
+}
+
+fn spawn_named_thread<F>(name: &str, task: F) -> bool
+where
+    F: FnOnce() + Send + 'static,
+{
+    match thread::Builder::new().name(name.to_string()).spawn(task) {
+        Ok(_) => true,
+        Err(error) => {
+            error!(
+                "p2p",
+                "Failed to spawn thread",
+                "thread" => name.to_string(),
+                "error" => error.to_string()
+            );
+            false
+        }
+    }
+}
+
+fn reserve_outbound_dial(
+    dial_registry: &DialRegistryArc,
+    connected_peers: &PeersArc,
+    target: &str,
+    max_peers: usize,
+) -> bool {
+    let target = target.trim();
+    if target.is_empty() {
+        return false;
+    }
+
+    {
+        let peers = connected_peers.lock().unwrap();
+        if peers.len() >= max_peers {
+            return false;
+        }
+        if peers.contains_key(target)
+            || peers.values().any(|peer| {
+                peer.address == target || peer.public_address.as_deref() == Some(target)
+            })
+        {
+            return false;
+        }
+    }
+
+    let now = Instant::now();
+    let mut registry = dial_registry.lock().unwrap();
+    match registry.get_mut(target) {
+        Some(state) => {
+            if state.in_flight {
+                return false;
+            }
+            if now.duration_since(state.last_attempt_at)
+                < Duration::from_secs(OUTBOUND_DIAL_COOLDOWN_SECS)
+            {
+                return false;
+            }
+            state.in_flight = true;
+            state.last_attempt_at = now;
+        }
+        None => {
+            registry.insert(
+                target.to_string(),
+                DialReservation {
+                    in_flight: true,
+                    last_attempt_at: now,
+                },
+            );
+        }
+    }
+
+    true
+}
+
+fn release_outbound_dial(dial_registry: &DialRegistryArc, target: &str) {
+    let now = Instant::now();
+    let mut registry = dial_registry.lock().unwrap();
+    match registry.get_mut(target) {
+        Some(state) => {
+            state.in_flight = false;
+            state.last_attempt_at = now;
+        }
+        None => {
+            registry.insert(
+                target.to_string(),
+                DialReservation {
+                    in_flight: false,
+                    last_attempt_at: now,
+                },
+            );
+        }
+    }
+    registry.retain(|_, state| {
+        state.in_flight || now.duration_since(state.last_attempt_at) < Duration::from_secs(300)
+    });
+}
+
+fn peer_socket_host(address: &str) -> String {
+    let raw = address.trim();
+    if let Some(stripped) = raw.strip_prefix('[') {
+        if let Some((host, _)) = stripped.rsplit_once("]:") {
+            return host.to_string();
+        }
+    }
+    raw.rsplit_once(':')
+        .map(|(host, _)| host.trim().to_string())
+        .unwrap_or_else(|| raw.to_string())
+}
+
+fn dial_target_host(dial: &str) -> Option<String> {
+    let normalized = parse_bootnode_dial_address(dial)?;
+    if let Some(stripped) = normalized.strip_prefix('[') {
+        return stripped.rsplit_once("]:").map(|(host, _)| host.to_string());
+    }
+    normalized
+        .rsplit_once(':')
+        .map(|(host, _)| host.trim().to_string())
+}
+
+fn canonical_validator_public_address(
+    peer_address: &str,
+    announced_public_address: Option<&str>,
+) -> Option<String> {
+    let announced_host = announced_public_address
+        .and_then(dial_target_host)
+        .filter(|host| host.ends_with(".synergynode.xyz"));
+    if let Some(host) = announced_host {
+        return Some(format!("{host}:{VALIDATOR_P2P_PORT}"));
+    }
+
+    let peer_host = dial_target_host(peer_address)?;
+    Some(format!("{peer_host}:{VALIDATOR_P2P_PORT}"))
 }
 
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
@@ -895,6 +1132,7 @@ impl P2PNetwork {
             connected_peers: Arc::new(Mutex::new(HashMap::new())),
             peer_state_cache: Arc::new(Mutex::new(HashMap::new())),
             discovered_dial_targets: Arc::new(Mutex::new(Vec::new())),
+            outbound_dial_registry: Arc::new(Mutex::new(HashMap::new())),
             is_running: Arc::new(Mutex::new(false)),
             message_sender: sender,
             message_receiver: Arc::new(Mutex::new(receiver)),
@@ -914,7 +1152,7 @@ impl P2PNetwork {
         *is_running.lock().unwrap() = true;
 
         // Start listener thread
-        thread::spawn(move || {
+        let _ = spawn_named_thread("p2p-listener", move || {
             if let Err(e) = start_listener(
                 &addr_string,
                 blockchain,
@@ -932,16 +1170,18 @@ impl P2PNetwork {
         let peers_handler = Arc::clone(&self.connected_peers);
         let peer_state_cache_handler = Arc::clone(&self.peer_state_cache);
         let discovered_targets_handler = Arc::clone(&self.discovered_dial_targets);
+        let dial_registry_handler = Arc::clone(&self.outbound_dial_registry);
         let receiver = Arc::clone(&self.message_receiver);
         let handler_config = self.config.clone();
         let handler_sender = self.message_sender.clone();
 
-        thread::spawn(move || {
+        let _ = spawn_named_thread("p2p-message-handler", move || {
             handle_messages(
                 blockchain_handler,
                 peers_handler,
                 peer_state_cache_handler,
                 discovered_targets_handler,
+                dial_registry_handler,
                 receiver,
                 handler_sender,
                 handler_config,
@@ -959,14 +1199,24 @@ impl P2PNetwork {
 
     pub fn connect_to_peer(&self, address: &str) -> Result<(), Box<dyn std::error::Error>> {
         let peer_address = address.to_string();
+        if !reserve_outbound_dial(
+            &self.outbound_dial_registry,
+            &self.connected_peers,
+            &peer_address,
+            self.config.network.max_peers as usize,
+        ) {
+            return Ok(());
+        }
 
         let blockchain = Arc::clone(&self.blockchain);
         let connected_peers = Arc::clone(&self.connected_peers);
         let peer_state_cache = Arc::clone(&self.peer_state_cache);
+        let dial_registry = Arc::clone(&self.outbound_dial_registry);
         let message_sender = self.message_sender.clone();
         let config = self.config.clone();
+        let cleanup_address = peer_address.clone();
 
-        thread::spawn(move || {
+        let spawned = spawn_named_thread("p2p-connect-peer", move || {
             match dial_with_timeout(&peer_address, std::time::Duration::from_secs(5)) {
                 Ok(stream) => {
                     if let Err(e) = handle_outgoing_connection(
@@ -985,7 +1235,11 @@ impl P2PNetwork {
                     warn!("p2p", "Failed to dial peer", "peer" => peer_address, "error" => e.to_string());
                 }
             }
+            release_outbound_dial(&dial_registry, &cleanup_address);
         });
+        if !spawned {
+            release_outbound_dial(&self.outbound_dial_registry, address);
+        }
 
         Ok(())
     }
@@ -1218,7 +1472,7 @@ impl P2PNetwork {
     /// - pings peers
     pub fn start_bootstrap(self: &Arc<Self>) {
         let network = Arc::clone(self);
-        thread::spawn(move || {
+        let _ = spawn_named_thread("p2p-bootstrap", move || {
             let heartbeat =
                 std::time::Duration::from_secs(network.config.p2p.heartbeat_interval.max(5));
             let mut bootnode_dials = Vec::<String>::new();
@@ -1352,6 +1606,28 @@ fn start_listener(
         match stream {
             Ok(stream) => {
                 let peer_address = stream.peer_addr()?.to_string();
+                let peer_host = peer_socket_host(&peer_address);
+                let existing_incoming_from_host = {
+                    let peers = connected_peers.lock().unwrap();
+                    peers
+                        .values()
+                        .filter(|peer| {
+                            peer.direction == ConnectionDirection::Incoming
+                                && peer_socket_host(&peer.address) == peer_host
+                        })
+                        .count()
+                };
+                if existing_incoming_from_host >= MAX_INCOMING_CONNECTIONS_PER_HOST {
+                    warn!(
+                        "p2p",
+                        "Rejecting excess incoming connections from host",
+                        "peer" => peer_address.clone(),
+                        "host" => peer_host,
+                        "active_incoming_connections" => existing_incoming_from_host as u64
+                    );
+                    let _ = stream.shutdown(Shutdown::Both);
+                    continue;
+                }
                 info!("p2p", "Incoming peer connection", "peer" => peer_address.clone());
 
                 let blockchain_clone = Arc::clone(&blockchain);
@@ -1360,7 +1636,7 @@ fn start_listener(
                 let sender_clone = message_sender.clone();
                 let config_clone = config.clone();
 
-                thread::spawn(move || {
+                let _ = spawn_named_thread("p2p-accept-peer", move || {
                     if let Err(e) = handle_incoming_connection(
                         stream,
                         peer_address,
@@ -1502,10 +1778,7 @@ fn handle_incoming_connection(
     // Remove peer from connected peers
     {
         let mut peers = connected_peers.lock().unwrap();
-        if let Some(peer) = peers.get(&peer_address) {
-            cache_peer_state(&peer_state_cache, peer);
-        }
-        peers.remove(&peer_address);
+        disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
     }
 
     info!("p2p", "Peer disconnected", "peer" => peer_address);
@@ -1594,10 +1867,7 @@ fn handle_outgoing_connection(
     // Remove peer from connected peers
     {
         let mut peers = connected_peers.lock().unwrap();
-        if let Some(peer) = peers.get(&peer_address) {
-            cache_peer_state(&peer_state_cache, peer);
-        }
-        peers.remove(&peer_address);
+        disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
     }
 
     info!("p2p", "Peer disconnected", "peer" => peer_address);
@@ -1609,6 +1879,7 @@ fn handle_messages(
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     discovered_dial_targets: DialTargetsArc,
+    dial_registry: DialRegistryArc,
     receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
@@ -1635,7 +1906,7 @@ fn handle_messages(
                                 "peer" => peer_address.clone()
                             );
                             let mut peers = connected_peers.lock().unwrap();
-                            disconnect_peer_entry(&mut peers, &peer_address);
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
                             continue;
                         }
 
@@ -1647,7 +1918,7 @@ fn handle_messages(
                                 "node_id" => node_id.clone()
                             );
                             let mut peers = connected_peers.lock().unwrap();
-                            disconnect_peer_entry(&mut peers, &peer_address);
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
                             continue;
                         }
 
@@ -1655,6 +1926,28 @@ fn handle_messages(
                             .as_ref()
                             .map(|value| value.trim().to_string())
                             .filter(|value| !value.is_empty());
+                        let normalized_public_address = if announced_validator_address.is_some() {
+                            canonical_validator_public_address(
+                                &peer_address,
+                                public_address.as_deref(),
+                            )
+                        } else {
+                            public_address
+                                .as_deref()
+                                .and_then(parse_bootnode_dial_address)
+                                .or_else(|| public_address.clone())
+                        };
+                        if announced_validator_address.is_some()
+                            && normalized_public_address != public_address
+                        {
+                            warn!(
+                                "p2p",
+                                "Normalized validator public address to canonical port",
+                                "peer" => peer_address.clone(),
+                                "advertised_public_address" => public_address.clone().unwrap_or_default(),
+                                "normalized_public_address" => normalized_public_address.clone().unwrap_or_default()
+                            );
+                        }
                         let peer_identity =
                             peer_identity_key(&node_id, announced_validator_address.as_deref());
                         let local_identity = local_peer_identity(&config);
@@ -1666,7 +1959,7 @@ fn handle_messages(
                             "node_id" => node_id.clone(),
                             "validator_address" => announced_validator_address.clone().unwrap_or_default(),
                             "version" => version.clone(),
-                            "public_address" => public_address.clone().unwrap_or_default()
+                            "public_address" => normalized_public_address.clone().unwrap_or_default()
                         );
 
                         // Update peer info and deduplicate by stable peer identity.
@@ -1723,14 +2016,14 @@ fn handle_messages(
                                                     peer.node_id = Some(node_id.clone());
                                                     peer.version = Some(version.clone());
                                                     peer.capabilities = capabilities.clone();
-                                                    if public_address
+                                                    if normalized_public_address
                                                         .as_deref()
                                                         .map(str::trim)
                                                         .filter(|value| !value.is_empty())
                                                         .is_some()
                                                     {
                                                         peer.public_address =
-                                                            public_address.clone();
+                                                            normalized_public_address.clone();
                                                     }
                                                     if announced_validator_address.is_some() {
                                                         peer.validator_address =
@@ -1764,7 +2057,11 @@ fn handle_messages(
                                                     ),
                                                     "kept_public_address" => existing_public_address.unwrap_or_default()
                                                 );
-                                                disconnect_peer_entry(&mut peers, &peer_address);
+                                                disconnect_peer_entry(
+                                                    &peer_state_cache,
+                                                    &mut peers,
+                                                    &peer_address,
+                                                );
                                                 continue;
                                             }
                                             DuplicateResolution::ReplaceExisting => {
@@ -1828,7 +2125,11 @@ fn handle_messages(
                                                         )
                                                     )
                                                 );
-                                                disconnect_peer_entry(&mut peers, &existing_key);
+                                                disconnect_peer_entry(
+                                                    &peer_state_cache,
+                                                    &mut peers,
+                                                    &existing_key,
+                                                );
                                             }
                                         }
                                     }
@@ -1840,7 +2141,7 @@ fn handle_messages(
                                 peer.node_id = Some(node_id.clone());
                                 peer.version = Some(version.clone());
                                 peer.capabilities = capabilities.clone();
-                                peer.public_address = public_address.clone();
+                                peer.public_address = normalized_public_address.clone();
                                 peer.validator_address = announced_validator_address.clone();
                                 hydrate_peer_from_cache(&peer_state_cache, &peer_identity, peer);
                                 cache_peer_state(&peer_state_cache, peer);
@@ -2240,7 +2541,10 @@ fn handle_messages(
                                 } else {
                                     chain.last().map(|b| b.hash.clone()).unwrap_or_default()
                                 },
-                                chain.get_genesis_hash().unwrap_or_default(),
+                                chain
+                                    .get_genesis_hash()
+                                    .filter(|hash| !hash.trim().is_empty())
+                                    .unwrap_or_else(canonical_genesis_hash),
                             )
                         };
 
@@ -2274,16 +2578,46 @@ fn handle_messages(
                             continue;
                         }
 
-                        let local_genesis_hash = {
-                            let chain = blockchain.lock().unwrap();
-                            chain.get_genesis_hash().unwrap_or_default()
-                        };
-                        let peer_validator_address = {
+                        let local_genesis_hash = resolve_local_genesis_hash(&blockchain);
+                        let (peer_validator_address, peer_connected_at) = {
                             let peers = connected_peers.lock().unwrap();
                             peers
                                 .get(&peer_address)
-                                .and_then(|peer| peer.validator_address.clone())
+                                .map(|peer| (peer.validator_address.clone(), peer.connected_at))
+                                .unwrap_or((None, current_timestamp()))
                         };
+                        let now = current_timestamp();
+                        let validator_genesis_pending = genesis_hash.is_empty()
+                            && peer_validator_address
+                                .as_deref()
+                                .map(|value| !value.trim().is_empty())
+                                .unwrap_or(false)
+                            && validator_status_genesis_within_grace_window(
+                                peer_connected_at,
+                                now,
+                            );
+                        if validator_genesis_pending {
+                            let mut peers = connected_peers.lock().unwrap();
+                            propagate_status_to_matching_peers(
+                                &mut peers,
+                                &peer_state_cache,
+                                &peer_address,
+                                block_height,
+                                &best_block_hash,
+                                &genesis_hash,
+                            );
+                            request_status_from_connected_peer(&mut peers, &peer_address);
+                            info!(
+                                "p2p",
+                                "Validator status pending canonical genesis sync",
+                                "peer" => peer_address.clone(),
+                                "validator_address" => peer_validator_address.clone().unwrap_or_default(),
+                                "connected_secs" => now.saturating_sub(peer_connected_at),
+                                "grace_remaining_secs" => validator_status_genesis_grace_remaining_secs(peer_connected_at, now),
+                                "reported_height" => block_height
+                            );
+                            continue;
+                        }
                         if should_disconnect_for_status_genesis_mismatch(
                             &local_genesis_hash,
                             &genesis_hash,
@@ -2297,7 +2631,7 @@ fn handle_messages(
                                 "remote_genesis_hash" => genesis_hash.clone()
                             );
                             let mut peers = connected_peers.lock().unwrap();
-                            disconnect_peer_entry(&mut peers, &peer_address);
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
                             continue;
                         }
                         if genesis_hash.is_empty() {
@@ -2309,13 +2643,14 @@ fn handle_messages(
                         }
 
                         let mut peers = connected_peers.lock().unwrap();
-                        if let Some(peer) = peers.get_mut(&peer_address) {
-                            peer.last_known_height = block_height;
-                            peer.best_block_hash = best_block_hash.clone();
-                            peer.genesis_hash = genesis_hash.clone();
-                            peer.status_received_at = Some(current_timestamp());
-                            cache_peer_state(&peer_state_cache, peer);
-                        }
+                        propagate_status_to_matching_peers(
+                            &mut peers,
+                            &peer_state_cache,
+                            &peer_address,
+                            block_height,
+                            &best_block_hash,
+                            &genesis_hash,
+                        );
                         info!("p2p", "Received status", "peer" => peer_address.clone(), "height" => block_height);
 
                         let local_height = {
@@ -2539,6 +2874,7 @@ fn handle_messages(
                                     Arc::clone(&blockchain),
                                     Arc::clone(&connected_peers),
                                     Arc::clone(&peer_state_cache),
+                                    Arc::clone(&dial_registry),
                                     message_sender.clone(),
                                     config.clone(),
                                 );
@@ -2858,10 +3194,23 @@ fn dial_peer_async(
     blockchain: BlockchainArc,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
+    dial_registry: DialRegistryArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
     config: NodeConfig,
 ) -> Result<(), ()> {
-    thread::spawn(move || {
+    if !reserve_outbound_dial(
+        &dial_registry,
+        &connected_peers,
+        &peer_address,
+        config.network.max_peers as usize,
+    ) {
+        return Ok(());
+    }
+
+    let cleanup_address = peer_address.clone();
+    let cleanup_address_for_thread = cleanup_address.clone();
+    let dial_registry_for_thread = Arc::clone(&dial_registry);
+    let spawned = spawn_named_thread("p2p-discovery-dial", move || {
         match dial_with_timeout(&peer_address, std::time::Duration::from_secs(5)) {
             Ok(stream) => {
                 if let Err(e) = handle_outgoing_connection(
@@ -2880,7 +3229,11 @@ fn dial_peer_async(
                 debug!("p2p", "Discovered peer dial error", "error" => e.to_string());
             }
         }
+        release_outbound_dial(&dial_registry_for_thread, &cleanup_address_for_thread);
     });
+    if !spawned {
+        release_outbound_dial(&dial_registry, &cleanup_address);
+    }
     Ok(())
 }
 
@@ -2893,8 +3246,10 @@ mod tests {
         parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
-        ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection,
-        FAST_BOOTSTRAP_REFRESH_SECS, NORMAL_BOOTSTRAP_REFRESH_SECS,
+        validator_status_genesis_grace_remaining_secs,
+        validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
+        DuplicateResolution, PeerConnection, FAST_BOOTSTRAP_REFRESH_SECS,
+        NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
     use crate::config::NodeConfig;
     use std::collections::HashMap;
@@ -3321,6 +3676,23 @@ mod tests {
             "local-hash",
             Some("synv1validator"),
         ));
+    }
+
+    #[test]
+    fn empty_local_genesis_hash_does_not_force_disconnect() {
+        assert!(!should_disconnect_for_status_genesis_mismatch(
+            "",
+            "remote-hash",
+            Some("synv1validator"),
+        ));
+    }
+
+    #[test]
+    fn validator_status_genesis_grace_window_expires_after_threshold() {
+        assert!(validator_status_genesis_within_grace_window(100, 120));
+        assert_eq!(validator_status_genesis_grace_remaining_secs(100, 120), 10);
+        assert!(!validator_status_genesis_within_grace_window(100, 130));
+        assert_eq!(validator_status_genesis_grace_remaining_secs(100, 130), 0);
     }
 
     #[test]

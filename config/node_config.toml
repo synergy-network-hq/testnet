@@ -31,8 +31,8 @@ enable_console = true
 http_port = 5640
 ws_port = 5660
 enable_cors = true
-external_http = "https://testbeta-core-rpc.synergy-network.io"
-external_ws = "wss://testbeta-core-ws.synergy-network.io"
+external_http = "https://testbeta-core-rpc.synergynode.xyz"
+external_ws = "wss://testbeta-core-ws.synergynode.xyz"
 
 [node]
 role = "validator"

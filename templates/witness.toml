@@ -53,7 +53,7 @@ public_address = "127.0.0.1:5622"
 node_name = "witness-node-01"
 enable_discovery = true
 discovery_port = 5680
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"

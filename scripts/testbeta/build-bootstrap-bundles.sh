@@ -272,7 +272,7 @@ enable_discovery = true
 discovery_port = ${discovery_port}
 discovery_listen_address = "0.0.0.0:${discovery_port}"
 discovery_public_address = "${hostname}:${discovery_port}"
-heartbeat_interval = 30
+heartbeat_interval = 10
 
 [storage]
 database = "rocksdb"
@@ -1567,11 +1567,11 @@ ${bootstrap_rows}${service_rows}
 | --- | --- |
 | Bootnode listener | Per bootnode \`P2P_PORT\` /tcp |
 | Bootnode discovery | Per bootnode \`DISCOVERY_PORT\` /tcp,udp |
-| Sequential node listener base | 5622 + node assignment |
-| Slotted node RPC base | 5640 + node assignment |
-| Slotted node WS base | 5660 + node assignment |
-| Slotted node discovery base | 5680 + node assignment |
-| Slotted node metrics base | 6030 + port_slot |
+| Validator P2P listener | 5622 |
+| Validator RPC | 5640 |
+| Validator WS | 5660 |
+| Validator discovery | 5680 |
+| Validator metrics | 6030 |
 
 ## Bootnode Deployment
 
