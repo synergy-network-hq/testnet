@@ -69,7 +69,7 @@ pub struct ConsensusConfig {
 }
 
 fn default_min_validators() -> usize {
-    4
+    3
 }
 
 fn default_validator_vote_threshold() -> usize {

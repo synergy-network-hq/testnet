@@ -9,8 +9,8 @@ testbeta_env_dir() {
   local candidate
   for candidate in \
     "${SYNERGY_TESTBETA_ENV_DIR:-}" \
-    "$HOME/Downloads/synergy-env-files" \
-    "${TESTBETA_ENV_DIR_DEFAULT:-}"
+    "${TESTBETA_ENV_DIR_DEFAULT:-}" \
+    "$HOME/Downloads/synergy-env-files"
   do
     if [[ -n "${candidate:-}" && -d "$candidate" ]]; then
       TESTBETA_ENV_DIR_RESOLVED="$candidate"

@@ -35,6 +35,7 @@ fn get_chain_path() -> String {
 const VALIDATOR_REGISTRY_PATH: &str = "data/validator_registry.json";
 const VERBOSE_CONSENSUS_LOGS: bool = false;
 const VALIDATOR_MESH_SETTLE_SECS: u64 = 3;
+const GENESIS_STATUS_SYNC_GRACE_SECS: u64 = 15;
 
 macro_rules! consensus_log {
     ($($arg:tt)*) => {
@@ -203,7 +204,7 @@ impl ProofOfSynergy {
             .ok()
             .and_then(|v| v.parse::<usize>().ok())
             .or_else(|| consensus_cfg.as_ref().map(|c| c.min_validators))
-            .unwrap_or(5)
+            .unwrap_or(3)
             .max(1);
 
         let validator_vote_threshold = std::env::var("SYNERGY_CONSENSUS_VALIDATOR_VOTE_THRESHOLD")
@@ -342,6 +343,8 @@ impl ProofOfSynergy {
             // When we first started waiting for the leader at the current height.
             let mut block_wait_start: Option<SystemTime> = None;
             let mut mesh_ready_since: Option<Instant> = None;
+            let mut status_sync_grace_since: Option<Instant> = None;
+            let mut genesis_status_gate_bypassed = false;
             // The chain height at which view_offset was last reset.
             let mut last_committed_height: u64 = 0;
             // How long to wait for a leader proposal before rotating to the next candidate.
@@ -405,6 +408,8 @@ impl ProofOfSynergy {
 
                         if live_active_validators.len() < min_validators {
                             mesh_ready_since = None;
+                            status_sync_grace_since = None;
+                            genesis_status_gate_bypassed = false;
                             println!(
                                 "⏳ Insufficient live validators for block production: {} live, {} registry-active, {} required.",
                                 live_active_validators.len(),
@@ -418,21 +423,66 @@ impl ProofOfSynergy {
                         if let Some(network) = crate::p2p::get_p2p_network() {
                             let status_ready_validators =
                                 network.get_status_ready_validator_count();
-                            if status_ready_validators < min_validators {
-                                mesh_ready_since = None;
-                                info!(
-                                    "consensus",
-                                    "Waiting for validator mesh status sync before block production",
-                                    "status_ready_validators" => status_ready_validators as u64,
-                                    "required_validators" => min_validators as u64
-                                );
-                                thread::sleep(Duration::from_secs(1));
-                                continue;
+                            let is_genesis_height = latest_block.block_index == 0;
+                            if !is_genesis_height {
+                                genesis_status_gate_bypassed = false;
+                            }
+                            if status_ready_validators < min_validators
+                                && !(is_genesis_height && genesis_status_gate_bypassed)
+                            {
+                                match status_sync_grace_since {
+                                    Some(grace_since)
+                                        if is_genesis_height
+                                            && grace_since.elapsed()
+                                                >= Duration::from_secs(
+                                                    GENESIS_STATUS_SYNC_GRACE_SECS,
+                                                ) =>
+                                    {
+                                        genesis_status_gate_bypassed = true;
+                                        warn!(
+                                            "consensus",
+                                            "Bypassing validator mesh status gate at genesis after grace window",
+                                            "live_validators" => live_active_validators.len() as u64,
+                                            "status_ready_validators" => status_ready_validators as u64,
+                                            "required_validators" => min_validators as u64,
+                                            "grace_secs" => GENESIS_STATUS_SYNC_GRACE_SECS
+                                        );
+                                        status_sync_grace_since = Some(grace_since);
+                                    }
+                                    Some(_) => {
+                                        mesh_ready_since = None;
+                                        info!(
+                                            "consensus",
+                                            "Waiting for validator mesh status sync before block production",
+                                            "status_ready_validators" => status_ready_validators as u64,
+                                            "required_validators" => min_validators as u64,
+                                            "grace_secs" => GENESIS_STATUS_SYNC_GRACE_SECS
+                                        );
+                                        thread::sleep(Duration::from_secs(1));
+                                        continue;
+                                    }
+                                    None => {
+                                        status_sync_grace_since = Some(Instant::now());
+                                        mesh_ready_since = None;
+                                        info!(
+                                            "consensus",
+                                            "Waiting for validator mesh status sync before block production",
+                                            "status_ready_validators" => status_ready_validators as u64,
+                                            "required_validators" => min_validators as u64,
+                                            "grace_secs" => GENESIS_STATUS_SYNC_GRACE_SECS
+                                        );
+                                        thread::sleep(Duration::from_secs(1));
+                                        continue;
+                                    }
+                                }
+                            } else {
+                                status_sync_grace_since = None;
                             }
 
                             let best_validator_height = network.get_best_validator_peer_height();
                             if best_validator_height > latest_block.block_index {
                                 mesh_ready_since = None;
+                                status_sync_grace_since = None;
                                 info!(
                                     "consensus",
                                     "Waiting to sync to best validator height before block production",
@@ -469,6 +519,7 @@ impl ProofOfSynergy {
                             }
                         } else {
                             mesh_ready_since = None;
+                            status_sync_grace_since = None;
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }
