@@ -72,6 +72,32 @@ fi
 
 clear_quarantine_if_needed
 chmod +x "$BIN_SELECTED"
+bind_ip="${BIND_IP:-0.0.0.0}"
+public_host="${NODE_PUBLIC_HOST:-${HOSTNAME:-${HOST:-}}}"
+p2p_port_value="${P2P_PORT:-}"
+public_p2p_port="${PUBLIC_P2P_PORT:-${P2P_PORT_EXTERNAL:-${p2p_port_value:-}}}"
+discovery_port_value="${DISCOVERY_PORT:-}"
+discovery_public_port="${DISCOVERY_PORT_EXTERNAL:-${discovery_port_value:-}}"
+if [[ -n "$p2p_port_value" ]]; then
+  p2p_listen_address="${bind_ip}:${p2p_port_value}"
+else
+  p2p_listen_address="${P2P_LISTEN_ADDRESS:-}"
+fi
+if [[ -n "$public_host" && -n "$public_p2p_port" ]]; then
+  p2p_external_address="${public_host}:${public_p2p_port}"
+else
+  p2p_external_address="${P2P_EXTERNAL_ADDRESS:-${P2P_PUBLIC_ADDRESS:-}}"
+fi
+if [[ -n "$discovery_port_value" ]]; then
+  discovery_listen_address="${bind_ip}:${discovery_port_value}"
+else
+  discovery_listen_address="${DISCOVERY_LISTEN_ADDRESS:-}"
+fi
+if [[ -n "$public_host" && -n "$discovery_public_port" ]]; then
+  discovery_external_address="${public_host}:${discovery_public_port}"
+else
+  discovery_external_address="${DISCOVERY_EXTERNAL_ADDRESS:-${DISCOVERY_PUBLIC_ADDRESS:-}}"
+fi
 (
   cd "$BASE_DIR"
   nohup env \
@@ -80,13 +106,14 @@ chmod +x "$BIN_SELECTED"
     SYNERGY_GENESIS_FILE="$GENESIS_FILE" \
     SYNERGY_BOOTSTRAP_ONLY=true \
     SYNERGY_AUTO_REGISTER_VALIDATOR=false \
-    SYNERGY_P2P_LISTEN_ADDRESS="${P2P_LISTEN_ADDRESS:-}" \
-    SYNERGY_P2P_EXTERNAL_ADDRESS="${P2P_EXTERNAL_ADDRESS:-${P2P_PUBLIC_ADDRESS:-}}" \
-    SYNERGY_P2P_PUBLIC_ADDRESS="${P2P_PUBLIC_ADDRESS:-${P2P_EXTERNAL_ADDRESS:-}}" \
-    SYNERGY_DISCOVERY_PORT="${DISCOVERY_PORT:-}" \
-    SYNERGY_DISCOVERY_LISTEN_ADDRESS="${DISCOVERY_LISTEN_ADDRESS:-}" \
-    SYNERGY_DISCOVERY_EXTERNAL_ADDRESS="${DISCOVERY_EXTERNAL_ADDRESS:-${DISCOVERY_PUBLIC_ADDRESS:-}}" \
-    SYNERGY_DISCOVERY_PUBLIC_ADDRESS="${DISCOVERY_PUBLIC_ADDRESS:-${DISCOVERY_EXTERNAL_ADDRESS:-}}" \
+    SYNERGY_P2P_PORT="${p2p_port_value:-}" \
+    SYNERGY_P2P_LISTEN_ADDRESS="${p2p_listen_address:-}" \
+    SYNERGY_P2P_EXTERNAL_ADDRESS="${p2p_external_address:-}" \
+    SYNERGY_P2P_PUBLIC_ADDRESS="${p2p_external_address:-}" \
+    SYNERGY_DISCOVERY_PORT="${discovery_port_value:-}" \
+    SYNERGY_DISCOVERY_LISTEN_ADDRESS="${discovery_listen_address:-}" \
+    SYNERGY_DISCOVERY_EXTERNAL_ADDRESS="${discovery_external_address:-}" \
+    SYNERGY_DISCOVERY_PUBLIC_ADDRESS="${discovery_external_address:-}" \
     "$BIN_SELECTED" start --config "$BASE_DIR/config/node.toml" >"$OUT_FILE" 2>&1 &
   echo $! > "$PID_FILE"
 )

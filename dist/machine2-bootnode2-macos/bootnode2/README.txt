@@ -6,7 +6,7 @@ Purpose
 - Discovery only: no validator self-registration, no consensus engine, no public RPC services.
 
 Endpoint
-- Hostname: bootnode2.synergyvps.xyz
+- Hostname: bootnode2.synergynode.xyz
 - IP: 146.190.210.121
 - P2P Port: 5620
 - Discovery Port: 5680
@@ -21,6 +21,6 @@ Control
 
 Notes
 - Open TCP 5620 and TCP/UDP 5680 on the target host firewall.
-- Publish A record bootnode2.synergyvps.xyz -> 146.190.210.121
+- Publish A record bootnode2.synergynode.xyz -> 146.190.210.121
 - Publish _dnsaddr.bootstrap TXT records from the root DNS_RECORDS.txt file in /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/bootstrap-bundles
 - The bundle ships the canonical genesis file and resets stale local chain state on start.

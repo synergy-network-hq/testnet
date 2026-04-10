@@ -614,6 +614,7 @@ fn handle_json_rpc(
                 params.get(2).and_then(|v| v.as_str()),
                 params.get(3).and_then(|v| v.as_u64()),
             ) {
+                let memo = params.get(4).and_then(|v| v.as_str());
                 // Convert SNRG amount to nWei (per SNTS-04: 1 SNRG = 1,000,000,000 nWei)
                 // The RPC accepts amounts in SNRG for user-friendliness, but internally stores as nWei
                 use crate::gas::constants::NWEI_PER_SNRG;
@@ -626,6 +627,7 @@ fn handle_json_rpc(
                         to,
                         token_symbol,
                         amount_nwei,
+                        memo,
                         &token_manager,
                     ) {
                         Ok(transaction) => {

@@ -226,6 +226,12 @@ collect_static_validator_mesh_peers() {
   echo "[${joined}]"
 }
 
+render_bootnode_list() {
+  local joined
+  joined="$(IFS=,; echo "$*")"
+  echo "[${joined}]"
+}
+
 BOOTNODE1_HOST=""
 BOOTNODE1_PORT=""
 BOOTNODE2_HOST=""
@@ -256,6 +262,8 @@ fi
 
 BOOTNODE1="snr://bootstrap@${BOOTNODE1_HOST}:${BOOTNODE1_PORT}"
 BOOTNODE2="snr://bootstrap@${BOOTNODE2_HOST}:${BOOTNODE2_PORT}"
+BOOTNODE3="snr://bootstrap@bootnode3.synergynode.xyz:5620"
+CANONICAL_BOOTNODES="$(render_bootnode_list "\"$BOOTNODE1\"" "\"$BOOTNODE2\"" "\"$BOOTNODE3\"")"
 ALLOWED_VALIDATOR_ADDRESSES="$(collect_allowed_validator_addresses)"
 
 while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_port ws_port grpc_port discovery_port host management_host auto_register enable_pruning vrf_enabled || [[ -n "${machine_id:-}" ]]; do
@@ -272,8 +280,10 @@ while IFS=, read -r machine_id node_id role_group role node_type _ p2p_port rpc_
   fi
 
   bootnodes='[]'
+  additional_dial_targets='[]'
   if [[ "$role" == "validator" || "$node_type" == "validator" ]]; then
-    bootnodes="$(collect_static_validator_mesh_peers "$validator_address")"
+    bootnodes="$CANONICAL_BOOTNODES"
+    additional_dial_targets="$(collect_static_validator_mesh_peers "$validator_address")"
   elif [[ "$machine_id" == "machine-02" ]]; then
     bootnodes="[\"$BOOTNODE1\"]"
   elif [[ "$machine_id" != "machine-01" ]]; then
@@ -299,6 +309,9 @@ rpc_port = ${rpc_port}
 ws_port = ${ws_port}
 max_peers = 100
 bootnodes = ${bootnodes}
+seed_servers = []
+bootstrap_dns_records = []
+additional_dial_targets = ${additional_dial_targets}
 
 [blockchain]
 block_time = ${TESTBETA_BLOCK_TIME_SECS}

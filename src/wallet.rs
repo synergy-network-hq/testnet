@@ -270,6 +270,7 @@ impl WalletManager {
         to: &str,
         token_symbol: &str,
         amount: u64,
+        memo: Option<&str>,
         token_manager: &crate::token::TokenManager,
     ) -> Result<Transaction, String> {
         // Check balance
@@ -288,8 +289,11 @@ impl WalletManager {
             1000,   // gas_price
             21000,  // gas_limit
             Some(format!(
-                "token_transfer:{{\"to\":\"{}\",\"token\":\"{}\",\"amount\":{}}}",
-                to, token_symbol, amount
+                "token_transfer:{{\"to\":\"{}\",\"token\":\"{}\",\"amount\":{},\"memo\":{}}}",
+                to,
+                token_symbol,
+                amount,
+                serde_json::to_string(&memo.unwrap_or_default()).unwrap_or_else(|_| "\"\"".to_string())
             )),
             "fndsa".to_string(), // signature algorithm
         );
