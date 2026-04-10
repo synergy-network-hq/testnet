@@ -266,15 +266,15 @@ kill $(cat ~/synergy-testbeta/data/node.pid)
 
 ### Port Reference
 
-| Purpose | Slot 0 | Slot 1 | Slot 2 |
-|---------|--------|--------|--------|
-| Bootnode P2P | 5620 | 5620 | 5620 |
-| Seed HTTP | 5621 | 5621 | 5621 |
-| Validator P2P | 5622 | 5631 | 5632 |
-| RPC (HTTP) | 5640 | 5731 | 5732 |
-| WebSocket | 5660 | 5831 | 5832 |
-| Discovery | 5680 | 5931 | 5932 |
-| Metrics | 6030 | 6031 | 6032 |
+| Purpose | Canonical Port |
+|---------|----------------|
+| Bootnode P2P | 5620 |
+| Seed HTTP | 5621 |
+| Validator P2P | 5622 |
+| RPC (HTTP) | 5640 |
+| WebSocket | 5660 |
+| Discovery | 5680 |
+| Metrics | 6030 |
 
 ### Check Listening Ports
 ```bash

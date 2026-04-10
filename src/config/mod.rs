@@ -978,7 +978,7 @@ p2p_listen = "0.0.0.0:5622"
 bootnodes = ["bootnode1.synergynode.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
-additional_dial_targets = ["24.181.87.76:5623"]
+additional_dial_targets = ["24.181.87.76:5622"]
 max_peers = 128
 
 [role]
@@ -1014,7 +1014,7 @@ log_level = "debug"
         );
         assert_eq!(
             config.network.additional_dial_targets,
-            vec!["24.181.87.76:5623".to_string()]
+            vec!["24.181.87.76:5622".to_string()]
         );
         assert_eq!(config.logging.log_level, "debug");
     }
@@ -1159,7 +1159,7 @@ public_host = "genesisval3.synergynode.xyz"
 
 [p2p]
 listen_address = "0.0.0.0:5622"
-public_address = "genesisval3.synergynode.xyz:5623"
+public_address = "genesisval3.synergynode.xyz:5622"
 "#;
 
         let config = parse_node_config_content(content, None).expect("config should parse");
@@ -1167,7 +1167,7 @@ public_address = "genesisval3.synergynode.xyz:5623"
         assert_eq!(config.network.p2p_port, 5622);
         assert_eq!(
             config.p2p.public_address,
-            "genesisval3.synergynode.xyz:5623".to_string()
+            "genesisval3.synergynode.xyz:5622".to_string()
         );
     }
 
