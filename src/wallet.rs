@@ -293,7 +293,8 @@ impl WalletManager {
                 to,
                 token_symbol,
                 amount,
-                serde_json::to_string(&memo.unwrap_or_default()).unwrap_or_else(|_| "\"\"".to_string())
+                serde_json::to_string(&memo.unwrap_or_default())
+                    .unwrap_or_else(|_| "\"\"".to_string())
             )),
             "fndsa".to_string(), // signature algorithm
         );
@@ -661,7 +662,9 @@ pub fn init_testbeta_wallets() {
             }
         };
 
-        if public_key.is_empty() || private_key.is_empty() || wallet_record.address.trim().is_empty()
+        if public_key.is_empty()
+            || private_key.is_empty()
+            || wallet_record.address.trim().is_empty()
         {
             continue;
         }

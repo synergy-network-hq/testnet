@@ -157,7 +157,9 @@ impl TokenManager {
                 .as_ref()
                 .map(|token| token.total_supply_cap_nwei)
                 .map(|value| value.max(minimum_supply_cap))
-                .or(Some((1_150_000u128 * 10u128.pow(9)).max(minimum_supply_cap))),
+                .or(Some(
+                    (1_150_000u128 * 10u128.pow(9)).max(minimum_supply_cap),
+                )),
             true, // mintable during bootstrap
             true, // burnable
             "genesis".to_string(),

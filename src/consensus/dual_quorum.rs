@@ -95,6 +95,8 @@ impl DualQuorumConsensus {
         pqc_manager: Arc<Mutex<PQCManager>>,
         minimum_validator_count: usize,
         validator_vote_threshold: usize,
+        vote_timeout_secs: u64,
+        block_timeout_secs: u64,
     ) -> Self {
         DualQuorumConsensus {
             validator_manager,
@@ -103,8 +105,8 @@ impl DualQuorumConsensus {
             validator_vote_threshold: validator_vote_threshold.max(1),
             validation_quorum_threshold: 0.67,
             cooperation_quorum_threshold: 0.51,
-            vote_timeout: 8,
-            block_timeout: 5,
+            vote_timeout: vote_timeout_secs.max(1),
+            block_timeout: block_timeout_secs.max(1),
             current_epoch: 0,
             current_round_by_height: HashMap::new(),
             votes: HashMap::new(),
@@ -1114,6 +1116,8 @@ mod tests {
             Arc::clone(&pqc_manager),
             1,
             1,
+            8,
+            5,
         );
 
         let first_block = signed_block(7, 1, "validator1");
@@ -1179,6 +1183,8 @@ mod tests {
             Arc::clone(&pqc_manager),
             1,
             1,
+            8,
+            5,
         );
 
         assert_eq!(consensus.allocate_round_number(4, 3), 3);
@@ -1198,6 +1204,8 @@ mod tests {
             Arc::clone(&pqc_manager),
             1,
             1,
+            8,
+            5,
         );
 
         let first_block = signed_block(11, 1, "validator1");

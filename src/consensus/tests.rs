@@ -88,6 +88,8 @@ fn test_dual_quorum_consensus() {
         Arc::clone(&pqc_manager),
         1,
         1,
+        8,
+        5,
     );
 
     // Create test block
@@ -155,6 +157,8 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
         Arc::clone(&pqc_manager),
         5,
         3,
+        8,
+        5,
     );
 
     let mut test_block = Block::new(

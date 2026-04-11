@@ -442,7 +442,11 @@ fn resolve_duplicate_connection(
     }
 }
 
-fn disconnect_peer_entry(peer_state_cache: &PeerStateCacheArc, peers: &mut PeerMap, peer_key: &str) {
+fn disconnect_peer_entry(
+    peer_state_cache: &PeerStateCacheArc,
+    peers: &mut PeerMap,
+    peer_key: &str,
+) {
     if let Some(mut peer) = peers.remove(peer_key) {
         cache_peer_state(peer_state_cache, &peer);
         if let Some(stream) = peer.stream.take() {
@@ -612,7 +616,12 @@ fn resolve_bootstrap_dial_targets(config: &NodeConfig) -> Vec<String> {
         targets.insert(dial);
     }
 
-    for dial in &config.network.additional_dial_targets {
+    for dial in config
+        .network
+        .persistent_peers
+        .iter()
+        .chain(config.network.additional_dial_targets.iter())
+    {
         if let Some(parsed) = parse_bootnode_dial_address(dial) {
             targets.insert(parsed);
         }
@@ -2592,10 +2601,7 @@ fn handle_messages(
                                 .as_deref()
                                 .map(|value| !value.trim().is_empty())
                                 .unwrap_or(false)
-                            && validator_status_genesis_within_grace_window(
-                                peer_connected_at,
-                                now,
-                            );
+                            && validator_status_genesis_within_grace_window(peer_connected_at, now);
                         if validator_genesis_pending {
                             let mut peers = connected_peers.lock().unwrap();
                             propagate_status_to_matching_peers(
@@ -3062,7 +3068,12 @@ fn collect_known_peer_addresses(
         }
     }
 
-    for dial in &config.network.additional_dial_targets {
+    for dial in config
+        .network
+        .persistent_peers
+        .iter()
+        .chain(config.network.additional_dial_targets.iter())
+    {
         if is_assigned_synergy_dial_address(dial) {
             if let Some(address) = parse_bootnode_dial_address(dial) {
                 out.insert(address);
@@ -3532,6 +3543,23 @@ mod tests {
         assert!(addresses.contains(&"genesisval1.synergynode.xyz:5622".to_string()));
         assert!(addresses.contains(&"genesisval2.synergynode.xyz:5622".to_string()));
         assert!(addresses.contains(&"genesisval3.synergynode.xyz:5622".to_string()));
+    }
+
+    #[test]
+    fn resolve_bootstrap_dial_targets_includes_persistent_peers() {
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1validator1".to_string();
+        config.p2p.public_address = "genesisval1.synergynode.xyz:5622".to_string();
+        config.p2p.listen_address = "0.0.0.0:5622".to_string();
+        config.network.persistent_peers = vec![
+            "genesisval2.synergynode.xyz:5622".to_string(),
+            "73.79.66.255:5622".to_string(),
+        ];
+
+        let targets = resolve_bootstrap_dial_targets(&config);
+
+        assert!(targets.contains(&"genesisval2.synergynode.xyz:5622".to_string()));
+        assert!(targets.contains(&"73.79.66.255:5622".to_string()));
     }
 
     #[test]

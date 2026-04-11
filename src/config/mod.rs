@@ -38,6 +38,8 @@ pub struct NetworkConfig {
     #[serde(default)]
     pub bootstrap_dns_records: Vec<String>,
     #[serde(default)]
+    pub persistent_peers: Vec<String>,
+    #[serde(default)]
     pub additional_dial_targets: Vec<String>,
 }
 
@@ -60,6 +62,22 @@ pub struct ConsensusConfig {
     pub validator_vote_threshold: usize,
     #[serde(default = "default_max_validators")]
     pub max_validators: usize,
+    #[serde(default = "default_status_ready_gate_enabled")]
+    pub status_ready_gate_enabled: bool,
+    #[serde(default)]
+    pub status_ready_min_validators: usize,
+    #[serde(default = "default_status_ready_genesis_grace_secs")]
+    pub status_ready_genesis_grace_secs: u64,
+    #[serde(default = "default_allow_genesis_status_bypass")]
+    pub allow_genesis_status_bypass: bool,
+    #[serde(default = "default_mesh_settle_secs")]
+    pub mesh_settle_secs: u64,
+    #[serde(default)]
+    pub leader_timeout_secs: u64,
+    #[serde(default = "default_vote_timeout_secs")]
+    pub vote_timeout_secs: u64,
+    #[serde(default = "default_block_timeout_secs")]
+    pub block_timeout_secs: u64,
     pub synergy_score_decay_rate: f64,
     pub vrf_enabled: bool,
     pub vrf_seed_epoch_interval: u64,
@@ -78,6 +96,30 @@ fn default_validator_vote_threshold() -> usize {
 
 fn default_max_validators() -> usize {
     100
+}
+
+fn default_status_ready_gate_enabled() -> bool {
+    true
+}
+
+fn default_status_ready_genesis_grace_secs() -> u64 {
+    15
+}
+
+fn default_allow_genesis_status_bypass() -> bool {
+    true
+}
+
+fn default_mesh_settle_secs() -> u64 {
+    3
+}
+
+fn default_vote_timeout_secs() -> u64 {
+    8
+}
+
+fn default_block_timeout_secs() -> u64 {
+    5
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -181,6 +223,7 @@ impl Default for NodeConfig {
                 bootnodes: vec![],
                 seed_servers: vec![],
                 bootstrap_dns_records: vec![],
+                persistent_peers: vec![],
                 additional_dial_targets: vec![],
             },
             blockchain: BlockchainConfig {
@@ -196,6 +239,14 @@ impl Default for NodeConfig {
                 validator_cluster_size: 5,
                 validator_vote_threshold: default_validator_vote_threshold(),
                 max_validators: default_max_validators(),
+                status_ready_gate_enabled: default_status_ready_gate_enabled(),
+                status_ready_min_validators: 0,
+                status_ready_genesis_grace_secs: default_status_ready_genesis_grace_secs(),
+                allow_genesis_status_bypass: default_allow_genesis_status_bypass(),
+                mesh_settle_secs: default_mesh_settle_secs(),
+                leader_timeout_secs: 0,
+                vote_timeout_secs: default_vote_timeout_secs(),
+                block_timeout_secs: default_block_timeout_secs(),
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
                 vrf_seed_epoch_interval: 1000,
@@ -463,6 +514,14 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
             .map(ToString::to_string)
             .collect();
     }
+    if let Ok(val) = env::var("SYNERGY_PERSISTENT_PEERS") {
+        config.network.persistent_peers = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
     if let Ok(val) = env::var("SYNERGY_ADDITIONAL_DIAL_TARGETS") {
         config.network.additional_dial_targets = val
             .split(',')
@@ -474,6 +533,34 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
 
     if let Ok(val) = env::var("SYNERGY_CONSENSUS_MIN_VALIDATORS") {
         config.consensus.min_validators = val.parse::<usize>()?.max(1);
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_STATUS_READY_MIN_VALIDATORS") {
+        config.consensus.status_ready_min_validators = val.parse::<usize>()?;
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_STATUS_READY_GENESIS_GRACE_SECS") {
+        config.consensus.status_ready_genesis_grace_secs = val.parse::<u64>()?;
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_MESH_SETTLE_SECS") {
+        config.consensus.mesh_settle_secs = val.parse::<u64>()?;
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_LEADER_TIMEOUT_SECS") {
+        config.consensus.leader_timeout_secs = val.parse::<u64>()?;
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_VOTE_TIMEOUT_SECS") {
+        config.consensus.vote_timeout_secs = val.parse::<u64>()?.max(1);
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_BLOCK_TIMEOUT_SECS") {
+        config.consensus.block_timeout_secs = val.parse::<u64>()?.max(1);
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_STATUS_READY_GATE_ENABLED") {
+        if let Some(enabled) = parse_env_bool(&val) {
+            config.consensus.status_ready_gate_enabled = enabled;
+        }
+    }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_ALLOW_GENESIS_STATUS_BYPASS") {
+        if let Some(enabled) = parse_env_bool(&val) {
+            config.consensus.allow_genesis_status_bypass = enabled;
+        }
     }
 
     // Logging overrides
@@ -702,11 +789,12 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
     if let Some(discovery_public_address) = explicit_discovery_public_address {
         config.p2p.discovery_public_address = discovery_public_address;
     } else {
-        let discovery_public_host = get_string(raw, &["network", "public_host"]).unwrap_or_else(|| {
-            extract_host_from_address(&config.p2p.public_address)
-                .unwrap_or("127.0.0.1")
-                .to_string()
-        });
+        let discovery_public_host =
+            get_string(raw, &["network", "public_host"]).unwrap_or_else(|| {
+                extract_host_from_address(&config.p2p.public_address)
+                    .unwrap_or("127.0.0.1")
+                    .to_string()
+            });
         config.p2p.discovery_public_address =
             format!("{discovery_public_host}:{}", config.p2p.discovery_port);
     }
@@ -745,6 +833,10 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
 
     if let Some(dns_records) = get_string_array(raw, &["network", "bootstrap_dns_records"]) {
         merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
+    }
+
+    if let Some(persistent_peers) = get_string_array(raw, &["network", "persistent_peers"]) {
+        merge_unique_strings(&mut config.network.persistent_peers, persistent_peers);
     }
 
     if let Some(additional_targets) = get_string_array(raw, &["network", "additional_dial_targets"])
@@ -834,6 +926,10 @@ fn merge_companion_peers_file(
         merge_unique_strings(&mut config.network.bootstrap_dns_records, dns_records);
     }
 
+    if let Some(persistent_peers) = get_string_array(&raw, &["global", "persistent_peers"]) {
+        merge_unique_strings(&mut config.network.persistent_peers, persistent_peers);
+    }
+
     if let Some(additional_targets) = get_string_array(&raw, &["global", "additional_dial_targets"])
     {
         merge_unique_strings(
@@ -897,6 +993,14 @@ fn first_env_value(keys: &[&str]) -> Option<String> {
         .find(|value| !value.is_empty())
 }
 
+fn parse_env_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
+}
+
 fn extract_host_from_address(value: &str) -> Option<&str> {
     value
         .trim()
@@ -906,7 +1010,9 @@ fn extract_host_from_address(value: &str) -> Option<&str> {
 }
 
 fn replace_port_in_address(value: &str, port: u16, default_host: &str) -> String {
-    let host = extract_host_from_address(value).unwrap_or(default_host).trim();
+    let host = extract_host_from_address(value)
+        .unwrap_or(default_host)
+        .trim();
     format!("{host}:{port}")
 }
 
@@ -978,6 +1084,7 @@ p2p_listen = "0.0.0.0:5622"
 bootnodes = ["bootnode1.synergynode.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+persistent_peers = ["genesisval2.synergynode.xyz:5622"]
 additional_dial_targets = ["24.181.87.76:5622"]
 max_peers = 128
 
@@ -1011,6 +1118,10 @@ log_level = "debug"
         assert_eq!(
             config.network.bootstrap_dns_records,
             vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+        assert_eq!(
+            config.network.persistent_peers,
+            vec!["genesisval2.synergynode.xyz:5622".to_string()]
         );
         assert_eq!(
             config.network.additional_dial_targets,
@@ -1106,6 +1217,7 @@ pruning_interval = 86400
 bootnodes = ["bootnode2.synergynode.xyz:5620"]
 seed_servers = ["http://seed2.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
+persistent_peers = ["genesisval2.synergynode.xyz:5622"]
 additional_dial_targets = ["73.79.66.255:39638"]
 "#,
         )
@@ -1131,6 +1243,10 @@ additional_dial_targets = ["73.79.66.255:39638"]
         assert_eq!(
             config.network.bootstrap_dns_records,
             vec!["_dnsaddr.bootstrap.synergynode.xyz".to_string()]
+        );
+        assert_eq!(
+            config.network.persistent_peers,
+            vec!["genesisval2.synergynode.xyz:5622".to_string()]
         );
         assert_eq!(
             config.network.additional_dial_targets,
@@ -1219,7 +1335,10 @@ external_addr = "genesisval1.synergynode.xyz:5680"
         let config = parse_node_config_content(content, None).expect("config should parse");
 
         assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
-        assert_eq!(config.p2p.public_address, "genesisval1.synergynode.xyz:5622");
+        assert_eq!(
+            config.p2p.public_address,
+            "genesisval1.synergynode.xyz:5622"
+        );
         assert_eq!(config.p2p.discovery_listen_address, "0.0.0.0:5680");
         assert_eq!(
             config.p2p.discovery_public_address,
@@ -1245,12 +1364,47 @@ external_addr = "genesisval1.synergynode.xyz:5680"
         let config = apply_env_overrides(NodeConfig::default()).expect("env overrides should load");
 
         assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
-        assert_eq!(config.p2p.public_address, "genesisval1.synergynode.xyz:5622");
+        assert_eq!(
+            config.p2p.public_address,
+            "genesisval1.synergynode.xyz:5622"
+        );
         assert_eq!(config.p2p.discovery_listen_address, "0.0.0.0:5680");
         assert_eq!(
             config.p2p.discovery_public_address,
             "genesisval1.synergynode.xyz:5680"
         );
+    }
+
+    #[test]
+    fn apply_env_overrides_accepts_mesh_stability_controls() {
+        let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
+        let _persistent_peers = EnvVarGuard::set(
+            "SYNERGY_PERSISTENT_PEERS",
+            "genesisval2.synergynode.xyz:5622,73.79.66.255:5622",
+        );
+        let _status_gate = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_GATE_ENABLED", "false");
+        let _status_min = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_MIN_VALIDATORS", "3");
+        let _status_grace =
+            EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_GENESIS_GRACE_SECS", "25");
+        let _leader_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_LEADER_TIMEOUT_SECS", "21");
+        let _vote_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_VOTE_TIMEOUT_SECS", "11");
+        let _block_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_BLOCK_TIMEOUT_SECS", "9");
+
+        let config = apply_env_overrides(NodeConfig::default()).expect("env overrides should load");
+
+        assert_eq!(
+            config.network.persistent_peers,
+            vec![
+                "genesisval2.synergynode.xyz:5622".to_string(),
+                "73.79.66.255:5622".to_string()
+            ]
+        );
+        assert!(!config.consensus.status_ready_gate_enabled);
+        assert_eq!(config.consensus.status_ready_min_validators, 3);
+        assert_eq!(config.consensus.status_ready_genesis_grace_secs, 25);
+        assert_eq!(config.consensus.leader_timeout_secs, 21);
+        assert_eq!(config.consensus.vote_timeout_secs, 11);
+        assert_eq!(config.consensus.block_timeout_secs, 9);
     }
 
     #[test]
