@@ -32,13 +32,14 @@ type DialTargetsArc = Arc<Mutex<Vec<String>>>;
 type PeerStateCacheArc = Arc<Mutex<HashMap<String, CachedPeerState>>>;
 type DialRegistryArc = Arc<Mutex<HashMap<String, DialReservation>>>;
 
-const FAST_BOOTSTRAP_REFRESH_SECS: u64 = 10;
+#[cfg(test)]
+const DEFAULT_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
 const TCP_KEEPALIVE_IDLE_SECS: u64 = 300;
 const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
 const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 500;
 const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
-const MAX_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
+const MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
 const VALIDATOR_P2P_PORT: u16 = 5622;
 const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
 
@@ -229,6 +230,37 @@ fn peer_identity_from_connection(peer: &PeerConnection) -> Option<String> {
 
 fn peer_has_remote_status(peer: &PeerConnection) -> bool {
     peer.status_received_at.is_some() && !peer.genesis_hash.trim().is_empty()
+}
+
+fn peer_has_identifying_metadata(peer: &PeerConnection) -> bool {
+    peer.node_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+        || peer
+            .validator_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+        || peer
+            .public_address
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_some()
+}
+
+fn pending_incoming_connections_from_host(peers: &PeerMap, host: &str) -> usize {
+    peers
+        .values()
+        .filter(|peer| {
+            peer.direction == ConnectionDirection::Incoming
+                && peer_socket_host(&peer.address) == host
+                && !peer_has_identifying_metadata(peer)
+        })
+        .count()
 }
 
 fn build_cached_peer_state(peer: &PeerConnection) -> Option<(String, CachedPeerState)> {
@@ -888,9 +920,10 @@ fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
 fn current_bootstrap_refresh_interval(config: &NodeConfig, connected_peers: &PeersArc) -> Duration {
     let required_validators = config.consensus.min_validators.max(1);
     let discovered_validators = status_ready_validator_participants(config, connected_peers);
+    let bootstrap_refresh_secs = config.p2p.bootstrap_refresh_secs.max(1);
 
     if discovered_validators < required_validators {
-        Duration::from_secs(FAST_BOOTSTRAP_REFRESH_SECS)
+        Duration::from_secs(bootstrap_refresh_secs)
     } else {
         Duration::from_secs(NORMAL_BOOTSTRAP_REFRESH_SECS)
     }
@@ -1747,23 +1780,17 @@ fn start_listener(
             Ok(stream) => {
                 let peer_address = stream.peer_addr()?.to_string();
                 let peer_host = peer_socket_host(&peer_address);
-                let existing_incoming_from_host = {
+                let pending_incoming_from_host = {
                     let peers = connected_peers.lock().unwrap();
-                    peers
-                        .values()
-                        .filter(|peer| {
-                            peer.direction == ConnectionDirection::Incoming
-                                && peer_socket_host(&peer.address) == peer_host
-                        })
-                        .count()
+                    pending_incoming_connections_from_host(&peers, &peer_host)
                 };
-                if existing_incoming_from_host >= MAX_INCOMING_CONNECTIONS_PER_HOST {
+                if pending_incoming_from_host >= MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST {
                     warn!(
                         "p2p",
-                        "Rejecting excess incoming connections from host",
+                        "Rejecting excess pending incoming connections from host",
                         "peer" => peer_address.clone(),
                         "host" => peer_host,
-                        "active_incoming_connections" => existing_incoming_from_host as u64
+                        "active_pending_incoming_connections" => pending_incoming_from_host as u64
                     );
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
@@ -3293,12 +3320,13 @@ mod tests {
         collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, dial_with_timeout, handle_status_message,
         hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
-        parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
-        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
+        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
         status_sync_batch, validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution, PeerConnection, FAST_BOOTSTRAP_REFRESH_SECS,
+        DuplicateResolution, PeerConnection, DEFAULT_BOOTSTRAP_REFRESH_SECS,
         IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
     use crate::block::BlockChain;
@@ -3712,6 +3740,132 @@ mod tests {
     }
 
     #[test]
+    fn peer_has_identifying_metadata_requires_announced_identity_fields() {
+        let unidentified = PeerConnection {
+            address: "62.146.182.208:54001".to_string(),
+            direction: ConnectionDirection::Incoming,
+            public_address: None,
+            validator_address: None,
+            connected_at: 0,
+            last_seen: 0,
+            blocks_sent: 0,
+            blocks_received: 0,
+            txs_sent: 0,
+            txs_received: 0,
+            stream: None,
+            node_id: None,
+            version: None,
+            capabilities: Vec::new(),
+            last_known_height: 0,
+            best_block_hash: String::new(),
+            genesis_hash: String::new(),
+            status_received_at: None,
+        };
+        let identified = PeerConnection {
+            address: "62.146.182.208:5622".to_string(),
+            direction: ConnectionDirection::Incoming,
+            public_address: Some("genesisval2.synergynode.xyz:5622".to_string()),
+            validator_address: Some("synv1peer-a".to_string()),
+            connected_at: 0,
+            last_seen: 0,
+            blocks_sent: 0,
+            blocks_received: 0,
+            txs_sent: 0,
+            txs_received: 0,
+            stream: None,
+            node_id: Some("tbeta-peer-a".to_string()),
+            version: None,
+            capabilities: Vec::new(),
+            last_known_height: 0,
+            best_block_hash: String::new(),
+            genesis_hash: String::new(),
+            status_received_at: None,
+        };
+
+        assert!(!peer_has_identifying_metadata(&unidentified));
+        assert!(peer_has_identifying_metadata(&identified));
+    }
+
+    #[test]
+    fn pending_incoming_connection_limit_ignores_identified_peers_from_same_host() {
+        let mut peers = HashMap::new();
+        peers.insert(
+            "bootnode2".to_string(),
+            PeerConnection {
+                address: "62.146.182.208:5620".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: Some("bootnode2.synergynode.xyz:5620".to_string()),
+                validator_address: None,
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("bootnode2".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+        peers.insert(
+            "validator2-stable".to_string(),
+            PeerConnection {
+                address: "62.146.182.208:5622".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: Some("genesisval2.synergynode.xyz:5622".to_string()),
+                validator_address: Some("synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("genesisval2".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+        peers.insert(
+            "validator2-reconnect".to_string(),
+            PeerConnection {
+                address: "62.146.182.208:54001".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: None,
+                validator_address: None,
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+
+        assert_eq!(
+            pending_incoming_connections_from_host(&peers, "62.146.182.208"),
+            1
+        );
+    }
+
+    #[test]
     fn empty_remote_genesis_hash_is_allowed_for_discovery_peer() {
         assert!(!should_disconnect_for_status_genesis_mismatch(
             "local-hash",
@@ -3865,18 +4019,30 @@ mod tests {
     }
 
     #[test]
-    fn bootstrap_refresh_stays_fast_until_validator_mesh_is_complete() {
+    fn bootstrap_refresh_uses_configured_fast_interval_until_validator_mesh_is_complete() {
+        let mut config = NodeConfig::default();
+        config.consensus.min_validators = 4;
+        config.node.validator_address = "synv1local".to_string();
+        config.p2p.bootstrap_refresh_secs = 61;
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+
+        let interval = current_bootstrap_refresh_interval(&config, &connected_peers);
+        assert_eq!(interval, Duration::from_secs(61));
+        assert_eq!(
+            connected_validator_participants(&config, &connected_peers),
+            1
+        );
+    }
+
+    #[test]
+    fn bootstrap_refresh_defaults_to_legacy_fast_interval() {
         let mut config = NodeConfig::default();
         config.consensus.min_validators = 4;
         config.node.validator_address = "synv1local".to_string();
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
 
         let interval = current_bootstrap_refresh_interval(&config, &connected_peers);
-        assert_eq!(interval, Duration::from_secs(FAST_BOOTSTRAP_REFRESH_SECS));
-        assert_eq!(
-            connected_validator_participants(&config, &connected_peers),
-            1
-        );
+        assert_eq!(interval, Duration::from_secs(DEFAULT_BOOTSTRAP_REFRESH_SECS));
     }
 
     #[test]

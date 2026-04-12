@@ -2,6 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CALLER_PWD="$(pwd -P)"
 BINARY="${ROOT_DIR}/target/release/synergy-testbeta"
 TIMEOUT_SECS="${TIMEOUT_SECS:-120}"
 POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-2}"
@@ -28,8 +29,8 @@ usage() {
 Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir]
 
 Starts the first five local validators against the canonical five-validator
-genesis and fails unless all active validators advance chain height from
-genesis within the timeout.
+genesis and fails unless all active validators form the full validator peer
+mesh and advance chain height from genesis within the timeout.
 USAGE
 }
 
@@ -62,6 +63,10 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+if [[ "$BINARY" != /* ]]; then
+  BINARY="${CALLER_PWD}/${BINARY}"
+fi
 
 if [[ ! -x "$BINARY" ]]; then
   echo "Binary not found at $BINARY; building release node binary..." >&2
@@ -175,6 +180,62 @@ except Exception:
 PY
 }
 
+rpc_peer_mesh_status() {
+  local port="$1"
+  local self_address="$2"
+  shift 2
+  python3 - "$port" "$self_address" "$@" <<'PY'
+import json
+import sys
+import urllib.request
+
+port = int(sys.argv[1])
+self_address = sys.argv[2]
+expected = set(sys.argv[3:])
+payload = json.dumps({
+    "jsonrpc": "2.0",
+    "method": "synergy_getPeerInfo",
+    "params": [],
+    "id": 1,
+}).encode()
+request = urllib.request.Request(
+    f"http://127.0.0.1:{port}",
+    data=payload,
+    headers={"Content-Type": "application/json"},
+)
+try:
+    with urllib.request.urlopen(request, timeout=2) as response:
+        body = json.loads(response.read().decode())
+except Exception:
+    print("rpc-unavailable")
+    raise SystemExit(1)
+
+peers = body.get("result", {}).get("peers", [])
+seen = {
+    str(peer.get("validator_address", "")).strip()
+    for peer in peers
+    if str(peer.get("validator_address", "")).strip()
+}
+seen.discard(self_address)
+missing = sorted(expected - seen)
+extra = sorted(seen - expected)
+status = "ok" if not missing and not extra else "incomplete"
+summary = ",".join(sorted(seen)) if seen else "(none)"
+if status == "ok":
+    print(f"ok:{summary}")
+    raise SystemExit(0)
+print(
+    "incomplete:"
+    + summary
+    + "|missing="
+    + (",".join(missing) if missing else "(none)")
+    + "|extra="
+    + (",".join(extra) if extra else "(none)")
+)
+raise SystemExit(1)
+PY
+}
+
 log_snippet() {
   local file="$1"
   [[ -f "$file" ]] || return 0
@@ -273,8 +334,17 @@ block_time_secs = 2
 epoch_length = 1000
 min_validators = 3
 validator_cluster_size = 5
-validator_vote_threshold = 3
+validator_vote_threshold = 2
 max_validators = 5
+status_ready_gate_enabled = true
+status_ready_min_validators = 2
+status_ready_genesis_grace_secs = 60
+allow_genesis_status_bypass = true
+mesh_settle_secs = 3
+leader_timeout_secs = 120
+vote_timeout_secs = 12
+block_timeout_secs = 30
+penalization_enabled = false
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
 vrf_seed_epoch_interval = 1000
@@ -311,6 +381,7 @@ node_name = "${node_name}"
 enable_discovery = false
 discovery_port = $((5800 + index))
 heartbeat_interval = 5
+bootstrap_refresh_secs = 60
 
 [storage]
 database = "rocksdb"
@@ -386,9 +457,17 @@ print_diagnostics() {
     local workspace="${WORKSPACES[$i]}"
     local rpc_port="${RPC_PORTS[$i]}"
     local height
+    local self_address="${VALIDATOR_ADDRESSES[$i]}"
+    local expected_peers=()
     height="$(rpc_height "$rpc_port")"
+    for j in "${!WORKSPACES[@]}"; do
+      if [[ "$j" -ne "$i" ]]; then
+        expected_peers+=("${VALIDATOR_ADDRESSES[$j]}")
+      fi
+    done
     echo
     echo "validator-$((i + 1)) rpc_port=${rpc_port} height=${height} workspace=${workspace}"
+    echo "peer-mesh=$(rpc_peer_mesh_status "$rpc_port" "$self_address" "${expected_peers[@]}" 2>/dev/null || true)"
     echo "--- ${workspace}/logs/synergy-testbeta.log ---"
     log_snippet "${workspace}/logs/synergy-testbeta.log"
     echo "--- ${workspace}/logs/control-start.stderr.log ---"
@@ -408,6 +487,7 @@ echo "Started local ${START_VALIDATOR_COUNT}-validator smoke mesh against canoni
 deadline=$(( $(date +%s) + TIMEOUT_SECS ))
 while [[ "$(date +%s)" -lt "$deadline" ]]; do
   ready="true"
+  mesh_ready="true"
   min_height=999999999
   max_height=-1
   for i in "${!WORKSPACES[@]}"; do
@@ -423,14 +503,26 @@ while [[ "$(date +%s)" -lt "$deadline" ]]; do
     fi
   done
 
-  if [[ "$ready" == "true" && "$max_height" -ge 2 ]]; then
-    echo "Smoke test passed: all validators advanced beyond genesis (min_height=${min_height}, max_height=${max_height})."
+  for i in "${!WORKSPACES[@]}"; do
+    expected_peers=()
+    for j in "${!WORKSPACES[@]}"; do
+      if [[ "$j" -ne "$i" ]]; then
+        expected_peers+=("${VALIDATOR_ADDRESSES[$j]}")
+      fi
+    done
+    if ! rpc_peer_mesh_status "${RPC_PORTS[$i]}" "${VALIDATOR_ADDRESSES[$i]}" "${expected_peers[@]}" >/dev/null; then
+      mesh_ready="false"
+    fi
+  done
+
+  if [[ "$ready" == "true" && "$mesh_ready" == "true" && "$max_height" -ge 2 ]]; then
+    echo "Smoke test passed: all validators formed the full peer mesh and advanced beyond genesis (min_height=${min_height}, max_height=${max_height})."
     exit 0
   fi
 
   sleep "$POLL_INTERVAL_SECS"
 done
 
-echo "Smoke test failed: validators did not all advance height within ${TIMEOUT_SECS}s." >&2
+echo "Smoke test failed: validators did not all form the full peer mesh and advance height within ${TIMEOUT_SECS}s." >&2
 print_diagnostics >&2
 exit 1

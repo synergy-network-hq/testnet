@@ -66,6 +66,7 @@ pub struct ProofOfSynergy {
     pub leader_timeout_secs: u64,
     pub vote_timeout_secs: u64,
     pub block_timeout_secs: u64,
+    pub penalization_enabled: bool,
     pub vrf_enabled: bool,
     pub vrf_seed_interval: u64,
     pub max_synergy_points: u64,
@@ -254,6 +255,10 @@ impl ProofOfSynergy {
             .map(|c| c.block_timeout_secs)
             .unwrap_or(5)
             .max(1);
+        let penalization_enabled = consensus_cfg
+            .as_ref()
+            .map(|c| c.penalization_enabled)
+            .unwrap_or(true);
 
         // Initialize dual quorum consensus after loading the minimum validator requirement.
         let dual_quorum_consensus = Arc::new(Mutex::new(DualQuorumConsensus::new(
@@ -320,6 +325,7 @@ impl ProofOfSynergy {
             leader_timeout_secs,
             vote_timeout_secs,
             block_timeout_secs,
+            penalization_enabled,
             vrf_enabled,
             vrf_seed_interval,
             max_synergy_points,
@@ -383,6 +389,10 @@ impl ProofOfSynergy {
             self.vote_timeout_secs,
             self.block_timeout_secs
         );
+        println!(
+            "🔧 Validator penalization enabled: {}",
+            self.penalization_enabled
+        );
     }
 
     pub fn execute(&mut self) {
@@ -409,6 +419,7 @@ impl ProofOfSynergy {
         let status_ready_genesis_grace_secs = self.status_ready_genesis_grace_secs;
         let allow_genesis_status_bypass = self.allow_genesis_status_bypass;
         let mesh_settle_secs = self.mesh_settle_secs;
+        let penalization_enabled = self.penalization_enabled;
         let leader_timeout_secs = if self.leader_timeout_secs == 0 {
             (block_time_secs * 3).max(15)
         } else {
@@ -655,7 +666,8 @@ impl ProofOfSynergy {
                                 // Penalise the timed-out leader's synergy score so that
                                 // chronically offline validators sink in the epoch ranking
                                 // and are naturally displaced from the top-K rotation.
-                                Self::apply_leader_timeout_penalty(
+                                Self::maybe_apply_leader_timeout_penalty(
+                                    penalization_enabled,
                                     &validator_manager,
                                     &selected_validator.address,
                                     next_block_index,
@@ -1088,7 +1100,8 @@ impl ProofOfSynergy {
                                 consecutive_failures += 1;
 
                                 // Apply penalty to proposer for failed block
-                                Self::apply_proposer_penalty(
+                                Self::maybe_apply_proposer_penalty(
+                                    penalization_enabled,
                                     &validator_manager,
                                     &selected_validator.address,
                                 );
@@ -1686,6 +1699,17 @@ impl ProofOfSynergy {
         }
     }
 
+    fn maybe_apply_proposer_penalty(
+        penalization_enabled: bool,
+        validator_manager: &Arc<ValidatorManager>,
+        validator_address: &str,
+    ) {
+        if !penalization_enabled {
+            return;
+        }
+        Self::apply_proposer_penalty(validator_manager, validator_address);
+    }
+
     fn apply_proposer_penalty(validator_manager: &Arc<ValidatorManager>, validator_address: &str) {
         // Must mutate through the registry lock so the change is actually persisted.
         if let Ok(mut registry) = validator_manager.registry.lock() {
@@ -1704,6 +1728,24 @@ impl ProofOfSynergy {
     /// broadcast a block proposal within the timeout window.  Uses the existing
     /// `record_missed_block` path so that uptime, accuracy, reputation, and slashing
     /// penalty are all updated consistently with the rest of the PoSy rules.
+    fn maybe_apply_leader_timeout_penalty(
+        penalization_enabled: bool,
+        validator_manager: &Arc<ValidatorManager>,
+        validator_address: &str,
+        block_height: u64,
+        view_offset: usize,
+    ) {
+        if !penalization_enabled {
+            return;
+        }
+        Self::apply_leader_timeout_penalty(
+            validator_manager,
+            validator_address,
+            block_height,
+            view_offset,
+        );
+    }
+
     fn apply_leader_timeout_penalty(
         validator_manager: &Arc<ValidatorManager>,
         validator_address: &str,
@@ -1826,5 +1868,70 @@ impl ProofOfSynergy {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::validator::ValidatorStatus;
+
+    fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {
+        let manager = Arc::new(ValidatorManager::new());
+        let mut validator = Validator::new(
+            address.to_string(),
+            format!("{address}-pubkey"),
+            "Validator".to_string(),
+            1_000,
+        );
+        validator.status = ValidatorStatus::Active;
+        manager
+            .registry
+            .lock()
+            .expect("registry lock should succeed")
+            .validators
+            .insert(address.to_string(), validator);
+        manager
+    }
+
+    #[test]
+    fn proposer_penalty_is_skipped_when_penalization_is_disabled() {
+        let validator_address = "synv1proposer";
+        let manager = active_validator_manager(validator_address);
+        let before = manager
+            .get_validator(validator_address)
+            .expect("validator should exist");
+
+        ProofOfSynergy::maybe_apply_proposer_penalty(false, &manager, validator_address);
+
+        let after = manager
+            .get_validator(validator_address)
+            .expect("validator should exist");
+        assert_eq!(after.reputation_score, before.reputation_score);
+        assert_eq!(after.synergy_score, before.synergy_score);
+    }
+
+    #[test]
+    fn leader_timeout_penalty_is_skipped_when_penalization_is_disabled() {
+        let validator_address = "synv1leader";
+        let manager = active_validator_manager(validator_address);
+        let before = manager
+            .get_validator(validator_address)
+            .expect("validator should exist");
+
+        ProofOfSynergy::maybe_apply_leader_timeout_penalty(
+            false,
+            &manager,
+            validator_address,
+            7,
+            1,
+        );
+
+        let after = manager
+            .get_validator(validator_address)
+            .expect("validator should exist");
+        assert_eq!(after.missed_blocks, before.missed_blocks);
+        assert_eq!(after.missed_vote_window, before.missed_vote_window);
+        assert_eq!(after.uptime_percentage, before.uptime_percentage);
     }
 }

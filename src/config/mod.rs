@@ -78,6 +78,8 @@ pub struct ConsensusConfig {
     pub vote_timeout_secs: u64,
     #[serde(default = "default_block_timeout_secs")]
     pub block_timeout_secs: u64,
+    #[serde(default = "default_penalization_enabled")]
+    pub penalization_enabled: bool,
     pub synergy_score_decay_rate: f64,
     pub vrf_enabled: bool,
     pub vrf_seed_epoch_interval: u64,
@@ -122,6 +124,10 @@ fn default_block_timeout_secs() -> u64 {
     5
 }
 
+fn default_penalization_enabled() -> bool {
+    true
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct RewardWeighting {
     pub task_accuracy: f64,
@@ -164,6 +170,12 @@ pub struct P2PConfig {
     pub enable_discovery: bool,
     pub discovery_port: u16,
     pub heartbeat_interval: u64,
+    #[serde(default = "default_bootstrap_refresh_secs")]
+    pub bootstrap_refresh_secs: u64,
+}
+
+fn default_bootstrap_refresh_secs() -> u64 {
+    10
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -247,6 +259,7 @@ impl Default for NodeConfig {
                 leader_timeout_secs: 0,
                 vote_timeout_secs: default_vote_timeout_secs(),
                 block_timeout_secs: default_block_timeout_secs(),
+                penalization_enabled: default_penalization_enabled(),
                 synergy_score_decay_rate: 0.05,
                 vrf_enabled: true,
                 vrf_seed_epoch_interval: 1000,
@@ -285,6 +298,7 @@ impl Default for NodeConfig {
                 enable_discovery: false,
                 discovery_port: 5680,
                 heartbeat_interval: 10,
+                bootstrap_refresh_secs: default_bootstrap_refresh_secs(),
             },
             storage: StorageConfig {
                 database: "rocksdb".to_string(),
@@ -552,10 +566,18 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     if let Ok(val) = env::var("SYNERGY_CONSENSUS_BLOCK_TIMEOUT_SECS") {
         config.consensus.block_timeout_secs = val.parse::<u64>()?.max(1);
     }
+    if let Ok(val) = env::var("SYNERGY_CONSENSUS_PENALIZATION_ENABLED") {
+        if let Some(enabled) = parse_env_bool(&val) {
+            config.consensus.penalization_enabled = enabled;
+        }
+    }
     if let Ok(val) = env::var("SYNERGY_CONSENSUS_STATUS_READY_GATE_ENABLED") {
         if let Some(enabled) = parse_env_bool(&val) {
             config.consensus.status_ready_gate_enabled = enabled;
         }
+    }
+    if let Ok(val) = env::var("SYNERGY_P2P_BOOTSTRAP_REFRESH_SECS") {
+        config.p2p.bootstrap_refresh_secs = val.parse::<u64>()?.max(1);
     }
     if let Ok(val) = env::var("SYNERGY_CONSENSUS_ALLOW_GENESIS_STATUS_BYPASS") {
         if let Some(enabled) = parse_env_bool(&val) {
@@ -1389,6 +1411,8 @@ external_addr = "genesisval1.synergynode.xyz:5680"
         let _leader_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_LEADER_TIMEOUT_SECS", "21");
         let _vote_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_VOTE_TIMEOUT_SECS", "11");
         let _block_timeout = EnvVarGuard::set("SYNERGY_CONSENSUS_BLOCK_TIMEOUT_SECS", "9");
+        let _penalization = EnvVarGuard::set("SYNERGY_CONSENSUS_PENALIZATION_ENABLED", "false");
+        let _bootstrap_refresh = EnvVarGuard::set("SYNERGY_P2P_BOOTSTRAP_REFRESH_SECS", "61");
 
         let config = apply_env_overrides(NodeConfig::default()).expect("env overrides should load");
 
@@ -1405,6 +1429,8 @@ external_addr = "genesisval1.synergynode.xyz:5680"
         assert_eq!(config.consensus.leader_timeout_secs, 21);
         assert_eq!(config.consensus.vote_timeout_secs, 11);
         assert_eq!(config.consensus.block_timeout_secs, 9);
+        assert!(!config.consensus.penalization_enabled);
+        assert_eq!(config.p2p.bootstrap_refresh_secs, 61);
     }
 
     #[test]
