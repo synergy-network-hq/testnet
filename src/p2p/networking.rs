@@ -398,6 +398,137 @@ fn propagate_status_to_matching_peers(
     }
 }
 
+fn status_sync_batch(block_height: u64, local_height: u64) -> Option<u32> {
+    if block_height <= local_height {
+        return None;
+    }
+
+    let behind = block_height.saturating_sub(local_height);
+    Some(if behind > 5000 {
+        2000
+    } else if behind > 1000 {
+        1000
+    } else {
+        IMMEDIATE_STATUS_SYNC_BATCH
+    })
+}
+
+fn handle_status_message(
+    blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    block_height: u64,
+    best_block_hash: &str,
+    genesis_hash: &str,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node ignoring remote chain status",
+            "peer" => peer_address.to_string(),
+            "height" => block_height
+        );
+        return;
+    }
+
+    let local_genesis_hash = resolve_local_genesis_hash(blockchain);
+    let (peer_validator_address, peer_connected_at) = {
+        let peers = connected_peers.lock().unwrap();
+        peers
+            .get(peer_address)
+            .map(|peer| (peer.validator_address.clone(), peer.connected_at))
+            .unwrap_or((None, current_timestamp()))
+    };
+    let now = current_timestamp();
+    let validator_genesis_pending = genesis_hash.is_empty()
+        && peer_validator_address
+            .as_deref()
+            .map(|value| !value.trim().is_empty())
+            .unwrap_or(false)
+        && validator_status_genesis_within_grace_window(peer_connected_at, now);
+    if validator_genesis_pending {
+        let mut peers = connected_peers.lock().unwrap();
+        propagate_status_to_matching_peers(
+            &mut peers,
+            peer_state_cache,
+            peer_address,
+            block_height,
+            best_block_hash,
+            genesis_hash,
+        );
+        request_status_from_connected_peer(&mut peers, peer_address);
+        info!(
+            "p2p",
+            "Validator status pending canonical genesis sync",
+            "peer" => peer_address.to_string(),
+            "validator_address" => peer_validator_address.clone().unwrap_or_default(),
+            "connected_secs" => now.saturating_sub(peer_connected_at),
+            "grace_remaining_secs" => validator_status_genesis_grace_remaining_secs(peer_connected_at, now),
+            "reported_height" => block_height
+        );
+        return;
+    }
+
+    if should_disconnect_for_status_genesis_mismatch(
+        &local_genesis_hash,
+        genesis_hash,
+        peer_validator_address.as_deref(),
+    ) {
+        warn!(
+            "p2p",
+            "Disconnecting peer with mismatched genesis hash",
+            "peer" => peer_address.to_string(),
+            "local_genesis_hash" => local_genesis_hash,
+            "remote_genesis_hash" => genesis_hash.to_string()
+        );
+        let mut peers = connected_peers.lock().unwrap();
+        disconnect_peer_entry(peer_state_cache, &mut peers, peer_address);
+        return;
+    }
+
+    if genesis_hash.is_empty() {
+        debug!(
+            "p2p",
+            "Keeping discovery peer without genesis hash",
+            "peer" => peer_address.to_string()
+        );
+    }
+
+    {
+        let mut peers = connected_peers.lock().unwrap();
+        propagate_status_to_matching_peers(
+            &mut peers,
+            peer_state_cache,
+            peer_address,
+            block_height,
+            best_block_hash,
+            genesis_hash,
+        );
+    }
+    info!(
+        "p2p",
+        "Received status",
+        "peer" => peer_address.to_string(),
+        "height" => block_height
+    );
+
+    let local_height = {
+        let chain = blockchain.lock().unwrap();
+        chain.last().map(|block| block.block_index).unwrap_or(0)
+    };
+    if let Some(batch) = status_sync_batch(block_height, local_height) {
+        let mut peers = connected_peers.lock().unwrap();
+        request_blocks_from_connected_peer(
+            &mut peers,
+            peer_address,
+            local_height.saturating_add(1),
+            batch,
+        );
+    }
+}
+
 fn preferred_connection_direction(
     local_identity: &str,
     remote_identity: &str,
@@ -2577,109 +2708,16 @@ fn handle_messages(
                         best_block_hash,
                         genesis_hash,
                     } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node ignoring remote chain status",
-                                "peer" => peer_address.clone(),
-                                "height" => block_height
-                            );
-                            continue;
-                        }
-
-                        let local_genesis_hash = resolve_local_genesis_hash(&blockchain);
-                        let (peer_validator_address, peer_connected_at) = {
-                            let peers = connected_peers.lock().unwrap();
-                            peers
-                                .get(&peer_address)
-                                .map(|peer| (peer.validator_address.clone(), peer.connected_at))
-                                .unwrap_or((None, current_timestamp()))
-                        };
-                        let now = current_timestamp();
-                        let validator_genesis_pending = genesis_hash.is_empty()
-                            && peer_validator_address
-                                .as_deref()
-                                .map(|value| !value.trim().is_empty())
-                                .unwrap_or(false)
-                            && validator_status_genesis_within_grace_window(peer_connected_at, now);
-                        if validator_genesis_pending {
-                            let mut peers = connected_peers.lock().unwrap();
-                            propagate_status_to_matching_peers(
-                                &mut peers,
-                                &peer_state_cache,
-                                &peer_address,
-                                block_height,
-                                &best_block_hash,
-                                &genesis_hash,
-                            );
-                            request_status_from_connected_peer(&mut peers, &peer_address);
-                            info!(
-                                "p2p",
-                                "Validator status pending canonical genesis sync",
-                                "peer" => peer_address.clone(),
-                                "validator_address" => peer_validator_address.clone().unwrap_or_default(),
-                                "connected_secs" => now.saturating_sub(peer_connected_at),
-                                "grace_remaining_secs" => validator_status_genesis_grace_remaining_secs(peer_connected_at, now),
-                                "reported_height" => block_height
-                            );
-                            continue;
-                        }
-                        if should_disconnect_for_status_genesis_mismatch(
-                            &local_genesis_hash,
-                            &genesis_hash,
-                            peer_validator_address.as_deref(),
-                        ) {
-                            warn!(
-                                "p2p",
-                                "Disconnecting peer with mismatched genesis hash",
-                                "peer" => peer_address.clone(),
-                                "local_genesis_hash" => local_genesis_hash.clone(),
-                                "remote_genesis_hash" => genesis_hash.clone()
-                            );
-                            let mut peers = connected_peers.lock().unwrap();
-                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
-                            continue;
-                        }
-                        if genesis_hash.is_empty() {
-                            debug!(
-                                "p2p",
-                                "Keeping discovery peer without genesis hash",
-                                "peer" => peer_address.clone()
-                            );
-                        }
-
-                        let mut peers = connected_peers.lock().unwrap();
-                        propagate_status_to_matching_peers(
-                            &mut peers,
+                        handle_status_message(
+                            &blockchain,
+                            &connected_peers,
                             &peer_state_cache,
+                            &config,
                             &peer_address,
                             block_height,
                             &best_block_hash,
                             &genesis_hash,
                         );
-                        info!("p2p", "Received status", "peer" => peer_address.clone(), "height" => block_height);
-
-                        let local_height = {
-                            let chain = blockchain.lock().unwrap();
-                            chain.last().map(|b| b.block_index).unwrap_or(0)
-                        };
-                        if block_height > local_height {
-                            let behind = block_height.saturating_sub(local_height);
-                            let batch = if behind > 5000 {
-                                2000
-                            } else if behind > 1000 {
-                                1000
-                            } else {
-                                IMMEDIATE_STATUS_SYNC_BATCH
-                            };
-                            let mut peers = connected_peers.lock().unwrap();
-                            request_blocks_from_connected_peer(
-                                &mut peers,
-                                &peer_address,
-                                local_height.saturating_add(1),
-                                batch,
-                            );
-                        }
                     }
                     NetworkMessage::GetBlockHeaders {
                         start_height,
@@ -3251,22 +3289,25 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        best_connected_validator_height, cache_peer_state, collect_known_peer_addresses,
-        connected_validator_participants, current_bootstrap_refresh_interval, dial_with_timeout,
+        best_connected_validator_height, cache_peer_state, canonical_genesis_hash,
+        collect_known_peer_addresses, connected_validator_participants,
+        current_bootstrap_refresh_interval, dial_with_timeout, handle_status_message,
         hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_identity_key, preferred_connection_direction,
-        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
-        validator_status_genesis_grace_remaining_secs,
+        status_sync_batch, validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
         DuplicateResolution, PeerConnection, FAST_BOOTSTRAP_REFRESH_SECS,
-        NORMAL_BOOTSTRAP_REFRESH_SECS,
+        IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS,
     };
+    use crate::block::BlockChain;
     use crate::config::NodeConfig;
+    use crate::p2p::messages::NetworkMessage;
     use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
-    use std::sync::{Arc, Mutex};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::Duration;
 
@@ -3713,6 +3754,106 @@ mod tests {
             "remote-hash",
             Some("synv1validator"),
         ));
+    }
+
+    #[test]
+    fn status_sync_batch_only_requests_blocks_for_ahead_peer() {
+        assert_eq!(status_sync_batch(10, 10), None);
+        assert_eq!(status_sync_batch(11, 10), Some(IMMEDIATE_STATUS_SYNC_BATCH));
+        assert_eq!(status_sync_batch(2_500, 1_000), Some(1_000));
+        assert_eq!(status_sync_batch(7_000, 1_000), Some(2_000));
+    }
+
+    #[test]
+    fn status_handler_records_genesis_hash_and_requests_blocks_without_deadlocking() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().expect("listener address");
+        let client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (mut server, _) = listener.accept().expect("accept peer stream");
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .expect("set read timeout");
+
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1local".to_string();
+
+        connected_peers.lock().unwrap().insert(
+            "peer-a".to_string(),
+            PeerConnection {
+                address: "peer-a".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: Some("genesisval2.synergynode.xyz:5622".to_string()),
+                validator_address: Some("synv1peer-a".to_string()),
+                connected_at: 100,
+                last_seen: 100,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: Some(client),
+                node_id: Some("tbeta-peer-a".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: vec!["blocks".to_string()],
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+
+        let genesis_hash = canonical_genesis_hash();
+        let (done_tx, done_rx) = mpsc::channel();
+        let blockchain_for_thread = Arc::clone(&blockchain);
+        let connected_peers_for_thread = Arc::clone(&connected_peers);
+        let peer_state_cache_for_thread = Arc::clone(&peer_state_cache);
+        let config_for_thread = config.clone();
+        let genesis_hash_for_thread = genesis_hash.clone();
+
+        thread::spawn(move || {
+            handle_status_message(
+                &blockchain_for_thread,
+                &connected_peers_for_thread,
+                &peer_state_cache_for_thread,
+                &config_for_thread,
+                "peer-a",
+                12,
+                "best-hash",
+                &genesis_hash_for_thread,
+            );
+            let _ = done_tx.send(());
+        });
+
+        done_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("status handler should complete without deadlocking");
+
+        {
+            let peers = connected_peers.lock().unwrap();
+            let peer = peers.get("peer-a").expect("peer should remain connected");
+            assert_eq!(peer.last_known_height, 12);
+            assert_eq!(peer.best_block_hash, "best-hash".to_string());
+            assert_eq!(peer.genesis_hash, genesis_hash);
+            assert!(peer.status_received_at.is_some());
+        }
+
+        match receive_message(&mut server).expect("status handling should request blocks") {
+            NetworkMessage::GetBlocks { from_height, count } => {
+                assert_eq!(from_height, 1);
+                assert_eq!(count, IMMEDIATE_STATUS_SYNC_BATCH);
+            }
+            other => panic!("expected GetBlocks request, got {other:?}"),
+        }
     }
 
     #[test]
