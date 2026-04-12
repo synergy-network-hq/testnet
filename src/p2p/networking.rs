@@ -3401,9 +3401,9 @@ mod tests {
     fn reconnect_hydration_preserves_remote_status_for_same_validator_identity() {
         let cache = Arc::new(Mutex::new(HashMap::new()));
         let existing = PeerConnection {
-            address: "73.79.66.255:5622".to_string(),
+            address: "62.146.182.208:5622".to_string(),
             direction: ConnectionDirection::Outgoing,
-            public_address: Some("73.79.66.255:5622".to_string()),
+            public_address: Some("62.146.182.208:5622".to_string()),
             validator_address: Some("synv1peer-b".to_string()),
             connected_at: 10,
             last_seen: 20,
@@ -3423,9 +3423,9 @@ mod tests {
         cache_peer_state(&cache, &existing);
 
         let mut replacement = PeerConnection {
-            address: "73.79.66.255:64347".to_string(),
+            address: "62.146.182.208:64347".to_string(),
             direction: ConnectionDirection::Incoming,
-            public_address: Some("73.79.66.255:5622".to_string()),
+            public_address: Some("62.146.182.208:5622".to_string()),
             validator_address: Some("synv1peer-b".to_string()),
             connected_at: 30,
             last_seen: 30,
@@ -3455,9 +3455,9 @@ mod tests {
     #[test]
     fn replacement_session_inherits_existing_remote_status() {
         let existing = PeerConnection {
-            address: "73.79.66.255:5622".to_string(),
+            address: "62.146.182.208:5622".to_string(),
             direction: ConnectionDirection::Outgoing,
-            public_address: Some("73.79.66.255:5622".to_string()),
+            public_address: Some("62.146.182.208:5622".to_string()),
             validator_address: Some("synv1peer-a".to_string()),
             connected_at: 10,
             last_seen: 15,
@@ -3475,7 +3475,7 @@ mod tests {
             status_received_at: Some(16),
         };
         let mut replacement = PeerConnection {
-            address: "73.79.66.255:56733".to_string(),
+            address: "62.146.182.208:56733".to_string(),
             direction: ConnectionDirection::Incoming,
             public_address: None,
             validator_address: Some("synv1peer-a".to_string()),
@@ -3502,7 +3502,7 @@ mod tests {
         assert_eq!(replacement.status_received_at, Some(16));
         assert_eq!(
             replacement.public_address,
-            Some("73.79.66.255:5622".to_string())
+            Some("62.146.182.208:5622".to_string())
         );
     }
 
@@ -3553,13 +3553,13 @@ mod tests {
         config.p2p.listen_address = "0.0.0.0:5622".to_string();
         config.network.persistent_peers = vec![
             "genesisval2.synergynode.xyz:5622".to_string(),
-            "73.79.66.255:5622".to_string(),
+            "62.146.182.208:5622".to_string(),
         ];
 
         let targets = resolve_bootstrap_dial_targets(&config);
 
         assert!(targets.contains(&"genesisval2.synergynode.xyz:5622".to_string()));
-        assert!(targets.contains(&"73.79.66.255:5622".to_string()));
+        assert!(targets.contains(&"62.146.182.208:5622".to_string()));
     }
 
     #[test]
@@ -3593,7 +3593,7 @@ mod tests {
         let mut config = NodeConfig::default();
         config.storage.path = data_dir.to_string_lossy().to_string();
         config.network.p2p_port = 5622;
-        config.p2p.public_address = "71.86.65.178:5622".to_string();
+        config.p2p.public_address = "62.146.182.207:5622".to_string();
         config.p2p.listen_address = "0.0.0.0:5622".to_string();
         config.node.validator_address = "synv1validator1".to_string();
         config.network.additional_dial_targets = vec![
@@ -3616,7 +3616,7 @@ mod tests {
         peers.insert(
             "incoming".to_string(),
             PeerConnection {
-                address: "73.79.66.255:54792".to_string(),
+                address: "62.146.182.209:54792".to_string(),
                 direction: ConnectionDirection::Incoming,
                 public_address: None,
                 validator_address: Some("synv1incoming".to_string()),
@@ -3639,7 +3639,7 @@ mod tests {
         peers.insert(
             "outgoing".to_string(),
             PeerConnection {
-                address: "73.79.66.255:5622".to_string(),
+                address: "62.146.182.209:5622".to_string(),
                 direction: ConnectionDirection::Outgoing,
                 public_address: Some("genesisval3.synergynode.xyz:5622".to_string()),
                 validator_address: Some("synv1outgoing".to_string()),
@@ -3665,8 +3665,8 @@ mod tests {
         let addresses =
             collect_known_peer_addresses(&connected_peers, &discovered_targets, &config);
 
-        assert!(!addresses.contains(&"73.79.66.255:54792".to_string()));
-        assert!(!addresses.contains(&"73.79.66.255:5622".to_string()));
+        assert!(!addresses.contains(&"62.146.182.209:54792".to_string()));
+        assert!(!addresses.contains(&"62.146.182.209:5622".to_string()));
         assert!(addresses.contains(&"genesisval3.synergynode.xyz:5622".to_string()));
     }
 

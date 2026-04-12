@@ -1218,7 +1218,7 @@ bootnodes = ["bootnode2.synergynode.xyz:5620"]
 seed_servers = ["http://seed2.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 persistent_peers = ["genesisval2.synergynode.xyz:5622"]
-additional_dial_targets = ["73.79.66.255:39638"]
+additional_dial_targets = ["62.146.182.208:39638"]
 "#,
         )
         .expect("peers.toml should be written");
@@ -1250,7 +1250,7 @@ additional_dial_targets = ["73.79.66.255:39638"]
         );
         assert_eq!(
             config.network.additional_dial_targets,
-            vec!["73.79.66.255:39638".to_string()]
+            vec!["62.146.182.208:39638".to_string()]
         );
 
         fs::remove_file(&node_path).ok();
@@ -1380,7 +1380,7 @@ external_addr = "genesisval1.synergynode.xyz:5680"
         let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
         let _persistent_peers = EnvVarGuard::set(
             "SYNERGY_PERSISTENT_PEERS",
-            "genesisval2.synergynode.xyz:5622,73.79.66.255:5622",
+            "genesisval2.synergynode.xyz:5622,62.146.182.208:5622",
         );
         let _status_gate = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_GATE_ENABLED", "false");
         let _status_min = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_MIN_VALIDATORS", "3");
@@ -1396,7 +1396,7 @@ external_addr = "genesisval1.synergynode.xyz:5680"
             config.network.persistent_peers,
             vec![
                 "genesisval2.synergynode.xyz:5622".to_string(),
-                "73.79.66.255:5622".to_string()
+                "62.146.182.208:5622".to_string()
             ]
         );
         assert!(!config.consensus.status_ready_gate_enabled);
@@ -1490,7 +1490,7 @@ cors_origins = []
 
 [p2p]
 listen_address = "0.0.0.0:5622"
-public_address = "71.86.65.178:5622"
+public_address = "62.146.182.207:5622"
 node_name = "tbeta-test"
 enable_discovery = true
 discovery_port = 5680
