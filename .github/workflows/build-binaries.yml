@@ -2,12 +2,13 @@ name: Build Testbeta Binaries
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
-  pull_request:
   workflow_dispatch:
+
+concurrency:
+  group: build-testbeta-binaries-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: write
