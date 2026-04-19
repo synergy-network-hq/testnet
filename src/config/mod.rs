@@ -21,6 +21,8 @@ pub struct NodeConfig {
     pub identity: IdentityConfig,
     #[serde(default)]
     pub role: RoleConfig,
+    #[serde(default)]
+    pub telemetry: TelemetryConfig,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -222,6 +224,37 @@ pub struct RoleConfig {
     pub services: Vec<String>,
 }
 
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TelemetryConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_metrics_bind")]
+    pub metrics_bind: String,
+    #[serde(default)]
+    pub structured_logs: bool,
+    #[serde(default = "default_telemetry_log_level")]
+    pub log_level: String,
+}
+
+fn default_metrics_bind() -> String {
+    "127.0.0.1:6030".to_string()
+}
+
+fn default_telemetry_log_level() -> String {
+    "info".to_string()
+}
+
+impl Default for TelemetryConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            metrics_bind: default_metrics_bind(),
+            structured_logs: false,
+            log_level: default_telemetry_log_level(),
+        }
+    }
+}
+
 impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
@@ -309,6 +342,7 @@ impl Default for NodeConfig {
             node: NodeSettings::default(),
             identity: IdentityConfig::default(),
             role: RoleConfig::default(),
+            telemetry: TelemetryConfig::default(),
         }
     }
 }
@@ -424,6 +458,7 @@ fn merge_configs(mut base: NodeConfig, override_config: NodeConfig) -> NodeConfi
     base.node = override_config.node;
     base.identity = override_config.identity;
     base.role = override_config.role;
+    base.telemetry = override_config.telemetry;
     base
 }
 
@@ -591,6 +626,18 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     }
     if let Ok(val) = env::var("SYNERGY_LOG_FILE") {
         config.logging.log_file = val;
+    }
+    if let Ok(val) = env::var("SYNERGY_ENABLE_METRICS") {
+        if let Some(enabled) = parse_env_bool(&val) {
+            config.telemetry.enabled = enabled;
+        }
+    }
+    if let Ok(val) = env::var("SYNERGY_METRICS_BIND") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            config.telemetry.enabled = true;
+            config.telemetry.metrics_bind = trimmed.to_string();
+        }
     }
 
     // Storage overrides
@@ -827,6 +874,39 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
 
     if let Some(path) = get_string(raw, &["storage", "path"]) {
         config.storage.path = path;
+    }
+
+    let telemetry_enabled_override = get_bool(raw, &["telemetry", "enabled"])
+        .or_else(|| get_bool(raw, &["node", "enable_metrics"]));
+    if let Some(enabled) = telemetry_enabled_override {
+        config.telemetry.enabled = enabled;
+    }
+
+    let mut telemetry_bind_configured = false;
+    if let Some(metrics_bind) = get_string(raw, &["telemetry", "metrics_bind"]) {
+        config.telemetry.metrics_bind = metrics_bind;
+        telemetry_bind_configured = true;
+    } else if let Some(metrics_port) = get_u64(raw, &["telemetry", "metrics_port"])
+        .or_else(|| get_u64(raw, &["node", "metrics_port"]))
+        .or_else(|| get_u64(raw, &["network", "metrics_port"]))
+        .and_then(|value| u16::try_from(value).ok())
+    {
+        let default_host =
+            extract_host_from_address(&config.telemetry.metrics_bind).unwrap_or("127.0.0.1");
+        config.telemetry.metrics_bind =
+            replace_port_in_address(&config.telemetry.metrics_bind, metrics_port, default_host);
+        telemetry_bind_configured = true;
+    }
+    if telemetry_bind_configured && telemetry_enabled_override.is_none() {
+        config.telemetry.enabled = true;
+    }
+
+    if let Some(structured_logs) = get_bool(raw, &["telemetry", "structured_logs"]) {
+        config.telemetry.structured_logs = structured_logs;
+    }
+
+    if let Some(log_level) = get_string(raw, &["telemetry", "log_level"]) {
+        config.telemetry.log_level = log_level;
     }
 
     if let Some(database) = get_string(raw, &["storage", "engine"]) {
@@ -1150,6 +1230,62 @@ log_level = "debug"
             vec!["24.181.87.76:5622".to_string()]
         );
         assert_eq!(config.logging.log_level, "debug");
+        assert!(!config.telemetry.enabled);
+    }
+
+    #[test]
+    fn parses_metrics_bind_from_telemetry_section() {
+        let content = r#"
+[telemetry]
+metrics_bind = "0.0.0.0:6030"
+structured_logs = true
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.metrics_bind, "0.0.0.0:6030");
+        assert!(config.telemetry.structured_logs);
+    }
+
+    #[test]
+    fn maps_legacy_metrics_port_into_metrics_bind() {
+        let content = r#"
+[node]
+enable_metrics = true
+metrics_port = 6060
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.metrics_bind, "127.0.0.1:6060");
+    }
+
+    #[test]
+    fn load_node_config_preserves_telemetry_when_merging_file_config() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let temp_dir = std::env::temp_dir().join(format!("synergy-telemetry-merge-test-{unique}"));
+        fs::create_dir_all(&temp_dir).expect("temp dir should be created");
+
+        let node_path = temp_dir.join("node.toml");
+        fs::write(
+            &node_path,
+            r#"
+[telemetry]
+metrics_bind = "0.0.0.0:6030"
+"#,
+        )
+        .expect("config should write");
+
+        let config = load_node_config(Some(node_path.to_str().expect("path should be valid")))
+            .expect("config should load");
+
+        assert!(config.telemetry.enabled);
+        assert_eq!(config.telemetry.metrics_bind, "0.0.0.0:6030");
     }
 
     #[test]

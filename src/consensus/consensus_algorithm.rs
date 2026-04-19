@@ -632,8 +632,14 @@ impl ProofOfSynergy {
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
                         let next_block_index = latest_block_clone.block_index + 1;
+                        // Use ALL registry-active validators for leader selection
+                        // so that every node computes the same rotation order
+                        // regardless of which peers happen to be connected at
+                        // computation time.  The live_active_validators check above
+                        // already enforces the min_validators liveness gate.
+                        let all_active_validators = validator_manager.get_active_validators();
                         let selected_validator = Self::select_leader_for_block(
-                            &live_active_validators,
+                            &all_active_validators,
                             next_block_index,
                             &synergy_calculator,
                             &entropy_beacon,

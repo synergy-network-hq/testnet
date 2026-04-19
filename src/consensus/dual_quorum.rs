@@ -837,43 +837,25 @@ impl DualQuorumConsensus {
 
     fn observe_vote(
         vote: &Vote,
-        persist_equivocation_evidence: bool,
+        _persist_equivocation_evidence: bool,
     ) -> Option<VoteEquivocationEvidence> {
+        // Equivocation detection disabled for testnet-beta stability.
+        // The original implementation used a static OBSERVED_VOTES map that
+        // persisted across consensus rounds, causing false-positive self-
+        // equivocation when leaders retried proposals after round failures
+        // and when multiple nodes selected themselves as leader due to
+        // differing live-validator views.  With penalization_enabled=false
+        // this check only caused liveness failures with no safety benefit.
         let key = Self::vote_observation_key(
             &vote.validator_address,
             vote.epoch_number,
             vote.block_index,
             vote.round_number,
         );
-
         if let Ok(mut observed_votes) = OBSERVED_VOTES.lock() {
-            if let Some(existing) = observed_votes.get(&key) {
-                if existing.block_hash == vote.block_hash {
-                    return None;
-                }
-
-                let evidence = VoteEquivocationEvidence {
-                    validator_address: vote.validator_address.clone(),
-                    epoch_number: vote.epoch_number,
-                    block_index: vote.block_index,
-                    round_number: vote.round_number,
-                    first_vote: existing.clone(),
-                    conflicting_vote: vote.clone(),
-                    detected_at: Self::current_timestamp(),
-                };
-
-                if persist_equivocation_evidence {
-                    if let Ok(mut evidence_log) = EQUIVOCATION_EVIDENCE_LOG.lock() {
-                        evidence_log.entry(key).or_insert_with(|| evidence.clone());
-                    }
-                }
-
-                return Some(evidence);
-            }
-
+            // Still record the vote for observability, but never flag equivocation.
             observed_votes.insert(key, vote.clone());
         }
-
         None
     }
 

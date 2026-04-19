@@ -26,6 +26,7 @@ use crate::rpc;
 use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER};
 use crate::sxcp;
 use crate::sync::SyncManager;
+use crate::telemetry;
 use crate::token::TOKEN_MANAGER;
 use crate::utils;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
@@ -76,7 +77,7 @@ fn resolve_local_validator_address(config: &NodeConfig) -> String {
     config.p2p.node_name.clone()
 }
 
-fn normalize_rpc_socket_address(bind_address: &str, default_port: u16) -> String {
+fn normalize_socket_address(bind_address: &str, default_port: u16) -> String {
     let trimmed = bind_address.trim();
     let host = trimmed
         .strip_prefix("http://")
@@ -99,8 +100,8 @@ fn normalize_rpc_socket_address(bind_address: &str, default_port: u16) -> String
     }
 }
 
-fn normalize_rpc_client_address(bind_address: &str, default_port: u16) -> String {
-    let normalized = normalize_rpc_socket_address(bind_address, default_port);
+fn normalize_client_address(bind_address: &str, default_port: u16) -> String {
+    let normalized = normalize_socket_address(bind_address, default_port);
 
     if let Some(port) = normalized.strip_prefix("0.0.0.0:") {
         return format!("127.0.0.1:{port}");
@@ -111,6 +112,14 @@ fn normalize_rpc_client_address(bind_address: &str, default_port: u16) -> String
     }
 
     normalized
+}
+
+fn normalize_rpc_socket_address(bind_address: &str, default_port: u16) -> String {
+    normalize_socket_address(bind_address, default_port)
+}
+
+fn normalize_rpc_client_address(bind_address: &str, default_port: u16) -> String {
+    normalize_client_address(bind_address, default_port)
 }
 
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
@@ -166,6 +175,10 @@ fn should_start_rpc(config: &NodeConfig, profile: Option<&RoleProfile>) -> bool 
         Some(profile) => role_profile_exposes_rpc(profile),
         None => true,
     }
+}
+
+fn should_start_metrics(config: &NodeConfig) -> bool {
+    config.telemetry.enabled && !config.telemetry.metrics_bind.trim().is_empty()
 }
 
 fn should_start_sync(config: &NodeConfig, profile: Option<&RoleProfile>) -> bool {
@@ -923,6 +936,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 eprintln!("Warning: Failed to write PID file: {}", e);
             }
 
+            let process_start_time = SystemTime::now();
             let blockchain = Arc::clone(&SHARED_CHAIN);
 
             let p2p_enabled = should_start_p2p(&config, role_profile);
@@ -993,6 +1007,45 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 );
             }
 
+            let metrics_enabled = should_start_metrics(&config);
+            if metrics_enabled {
+                let metrics_bind_address =
+                    normalize_socket_address(&config.telemetry.metrics_bind, 6030);
+                let metrics_ready_addr =
+                    normalize_client_address(&config.telemetry.metrics_bind, 6030);
+                let metrics_config = config.clone();
+                let _metrics_handle = std::thread::spawn(move || {
+                    telemetry::start_metrics_server(
+                        &metrics_bind_address,
+                        metrics_config,
+                        process_start_time,
+                    );
+                });
+
+                let metrics_ready_deadline = std::time::Instant::now() + Duration::from_secs(5);
+                loop {
+                    if std::net::TcpStream::connect(&metrics_ready_addr).is_ok() {
+                        info!("main", "Metrics server ready", "bind_address" => metrics_ready_addr.clone());
+                        break;
+                    }
+                    if std::time::Instant::now() >= metrics_ready_deadline {
+                        eprintln!(
+                            "Warning: metrics server did not become ready within 5 s on {}; proceeding anyway",
+                            metrics_ready_addr
+                        );
+                        break;
+                    }
+                    thread::sleep(Duration::from_millis(50));
+                }
+            } else {
+                info!(
+                    "main",
+                    "Metrics server disabled",
+                    "enabled" => config.telemetry.enabled,
+                    "metrics_bind" => config.telemetry.metrics_bind.clone()
+                );
+            }
+
             let consensus_enabled = should_start_consensus(&config, role_profile);
             info!(
                 "main",
@@ -1000,7 +1053,9 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 "bootstrap_only" => config.node.bootstrap_only,
                 "rpc_enabled" => rpc_enabled,
                 "p2p_enabled" => p2p_enabled,
+                "metrics_enabled" => metrics_enabled,
                 "rpc_port" => config.rpc.http_port,
+                "metrics_bind" => config.telemetry.metrics_bind.clone(),
                 "p2p_address" => config.p2p.listen_address.clone(),
                 "consensus" => config.consensus.algorithm.clone()
             );
@@ -1734,6 +1789,7 @@ mod tests {
             normalize_rpc_socket_address("127.0.0.1", 5640),
             "127.0.0.1:5640"
         );
+        assert_eq!(normalize_socket_address("0.0.0.0", 6030), "0.0.0.0:6030");
     }
 
     #[test]
@@ -1743,5 +1799,13 @@ mod tests {
         config.rpc.http_port = 5647;
 
         assert_eq!(rpc_bind_url(&config), "http://127.0.0.1:5647");
+    }
+
+    #[test]
+    fn client_address_uses_loopback_for_wildcard_metrics_bind() {
+        assert_eq!(
+            normalize_client_address("0.0.0.0:6030", 6030),
+            "127.0.0.1:6030"
+        );
     }
 }

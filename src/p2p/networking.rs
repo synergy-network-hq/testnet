@@ -1499,7 +1499,20 @@ impl P2PNetwork {
     }
 
     pub fn get_peer_count(&self) -> usize {
-        self.connected_peers.lock().unwrap().len()
+        // Return only peers that have completed handshake and identified as
+        // validators, matching the count shown by get_connected_validator_addresses().
+        // Previously this returned ALL entries (including bootnodes and
+        // pre-handshake connections), inflating the dashboard peer count.
+        let peers = self.connected_peers.lock().unwrap();
+        peers
+            .values()
+            .filter(|peer| {
+                peer.validator_address
+                    .as_ref()
+                    .map(|a| !a.trim().is_empty())
+                    .unwrap_or(false)
+            })
+            .count()
     }
 
     pub fn get_peer_info(&self) -> Vec<serde_json::Value> {
@@ -4042,7 +4055,10 @@ mod tests {
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
 
         let interval = current_bootstrap_refresh_interval(&config, &connected_peers);
-        assert_eq!(interval, Duration::from_secs(DEFAULT_BOOTSTRAP_REFRESH_SECS));
+        assert_eq!(
+            interval,
+            Duration::from_secs(DEFAULT_BOOTSTRAP_REFRESH_SECS)
+        );
     }
 
     #[test]
