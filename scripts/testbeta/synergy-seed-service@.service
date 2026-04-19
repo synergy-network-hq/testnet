@@ -1,0 +1,15 @@
+[Unit]
+Description=Synergy Testnet-Beta Seed Service (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/synergy/testbeta
+ExecStart=/usr/bin/python3 /opt/synergy/testbeta/seed_service.py --config /opt/synergy/testbeta/seed-services/%i.json
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

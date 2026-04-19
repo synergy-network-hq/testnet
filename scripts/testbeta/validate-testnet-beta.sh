@@ -191,8 +191,12 @@ if manifest.get("token", {}).get("symbol") != "SNRG":
     errors.append("operational manifest token.symbol must be SNRG")
 if len(manifest.get("bootstrap", {}).get("bootnodes", [])) != 3:
     errors.append("operational manifest must contain exactly 3 bootnodes")
-if len(manifest.get("bootstrap", {}).get("seed_servers", [])) != 0:
-    errors.append("operational manifest seed_servers must be empty while validator peers are hard-coded")
+if len(manifest.get("bootstrap", {}).get("seed_servers", [])) != 3:
+    errors.append("operational manifest must contain exactly 3 seed servers")
+if manifest.get("bootstrap", {}).get("routing", {}).get("bootnodes") != ["sentry1"]:
+    errors.append("operational manifest bootnode routing must pin to sentry1")
+if manifest.get("bootstrap", {}).get("routing", {}).get("seed_servers") != ["sentry2"]:
+    errors.append("operational manifest seed server routing must pin to sentry2")
 if len(manifest.get("validators", [])) != 5:
     errors.append("operational manifest must contain exactly 5 validators")
 if manifest.get("ports") != expected_ports:
@@ -200,8 +204,8 @@ if manifest.get("ports") != expected_ports:
 
 public_endpoints = manifest.get("public_endpoints", {})
 expected_urls = {
-    "core_rpc": "https://testbeta-core-rpc.synergynode.xyz",
-    "core_ws": "wss://testbeta-core-ws.synergynode.xyz",
+    "core_rpc": "https://testbeta-core-rpc.synergy-network.io",
+    "core_ws": "wss://testbeta-core-ws.synergy-network.io",
     "api": "https://testbeta-api.synergy-network.io",
 }
 for key, expected in expected_urls.items():

@@ -1,26 +1,26 @@
 [identity]
-node_id = "data-availability-01"
-role = "data_availability"
-role_display = "data-availability"
+node_id = "bootnode2"
+role = ""
+role_display = "bootnode"
 address = ""
-label = "data-availability-01"
+label = "bootnode2"
 
 [role]
-compiled_profile = "data_availability_node"
+compiled_profile = ""
 services = []
 
 [network]
 id = 338639
 name = "synergy-testnet-beta"
-p2p_port = 5622
+p2p_port = 5620
 rpc_port = 5640
 ws_port = 5660
-max_peers = 100
-bootnodes = ["snr://bootstrap@bootnode1.synergyvps.xyz:5620", "snr://bootstrap@bootnode2.synergyvps.xyz:5620", "snr://bootstrap@bootnode3.synergyvps.xyz:5620"]
-seed_servers = ["http://seed1.synergyvps.xyz:5621", "http://seed2.synergyvps.xyz:5621", "http://seed3.synergyvps.xyz:5621"]
-bootstrap_dns_records = ["_dnsaddr.bootstrap.synergyvps.xyz"]
-additional_dial_targets = []
-persistent_peers = []
+max_peers = 128
+bootnodes = []
+seed_servers = []
+bootstrap_dns_records = []
+additional_dial_targets = ["relay1.synergynode.xyz:5622"]
+persistent_peers = ["relay1.synergynode.xyz:5622"]
 
 [blockchain]
 block_time = 2
@@ -57,7 +57,7 @@ collaboration = 0.2
 
 [logging]
 log_level = "debug"
-log_file = "data/logs/data-availability.log"
+log_file = "data/logs/bootnode2.log"
 enable_console = true
 max_file_size = 10485760
 max_files = 5
@@ -74,24 +74,24 @@ cors_enabled = false
 cors_origins = []
 
 [p2p]
-listen_address = "0.0.0.0:5622"
-public_address = "replace-with-public-host:5622"
-node_name = "data-availability-01"
+listen_address = "0.0.0.0:5620"
+public_address = "bootnode2.synergyvps.xyz:5620"
+discovery_listen_address = "0.0.0.0:5680"
+discovery_public_address = "bootnode2.synergyvps.xyz:5680"
+node_name = "bootnode2"
 enable_discovery = true
 discovery_port = 5680
-discovery_listen_address = "0.0.0.0:5680"
-discovery_public_address = "replace-with-public-host:5680"
 heartbeat_interval = 10
 bootstrap_refresh_secs = 60
 
 [storage]
 database = "rocksdb"
 path = "data/chain"
-enable_pruning = false
+enable_pruning = true
 pruning_interval = 86400
 
 [node]
-bootstrap_only = false
+bootstrap_only = true
 auto_register_validator = false
 validator_address = ""
 strict_validator_allowlist = true

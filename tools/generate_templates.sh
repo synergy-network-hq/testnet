@@ -1,43 +1,129 @@
 #!/bin/bash
-
-# Script to generate complete configuration templates for all 19 node types
+set -euo pipefail
 
 TEMPLATES_DIR="templates"
+BOOTNODE_TARGETS='["snr://bootstrap@bootnode1.synergyvps.xyz:5620", "snr://bootstrap@bootnode2.synergyvps.xyz:5620", "snr://bootstrap@bootnode3.synergyvps.xyz:5620"]'
+SEED_SERVER_TARGETS='["http://seed1.synergyvps.xyz:5621", "http://seed2.synergyvps.xyz:5621", "http://seed3.synergyvps.xyz:5621"]'
+BOOTSTRAP_DNS_RECORDS='["_dnsaddr.bootstrap.synergyvps.xyz"]'
+SENTRY1_TARGETS='["relay1.synergynode.xyz:5622"]'
+SENTRY2_TARGETS='["relay2.synergynode.xyz:5622"]'
+SENTRY_EDGE_TARGETS='["relay1.synergynode.xyz:5622", "relay2.synergynode.xyz:5622"]'
+VALIDATOR_MESH_TARGETS='["10.69.0.1:5622", "10.69.0.2:5622", "10.69.0.3:5622", "10.69.0.4:5622", "10.69.0.5:5622"]'
+ALLOWED_VALIDATOR_ADDRESSES='["synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra", "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu", "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu", "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49", "synv11mvlgy72uq7kuh200qnxv67zrqjugz267k46"]'
 
-# Base configuration that all templates will extend
 generate_template() {
     local node_type=$1
-    local node_name=$2
-    local p2p_port=$3
-    local rpc_port=$4
-    local ws_port=$5
-    local discovery_port=$6
-    local log_file=$7
-    local enable_pruning=${8:-false}
-    local vrf_enabled=${9:-true}
+    local role_id=$2
+    local compiled_profile=$3
+    local node_name=$4
+    local p2p_port=$5
+    local rpc_port=$6
+    local ws_port=$7
+    local discovery_port=$8
+    local metrics_port=$9
+    local log_file=${10}
+    local enable_pruning=${11:-false}
+    local vrf_enabled=${12:-true}
+    local bootstrap_mode=${13:-public-bootstrap}
+
+    local bootnodes="$BOOTNODE_TARGETS"
+    local seed_servers="$SEED_SERVER_TARGETS"
+    local bootstrap_dns_records="$BOOTSTRAP_DNS_RECORDS"
+    local additional_dial_targets="[]"
+    local persistent_peers="[]"
+    local enable_discovery="true"
+    local bootstrap_refresh_secs="60"
+    local cors_enabled="false"
+    local cors_origins="[]"
+    local metrics_bind="127.0.0.1:${metrics_port}"
+    local strict_allowlist="true"
+
+    case "$bootstrap_mode" in
+        validator-mesh)
+            bootnodes="[]"
+            seed_servers="[]"
+            bootstrap_dns_records="[]"
+            additional_dial_targets="$VALIDATOR_MESH_TARGETS"
+            persistent_peers="$VALIDATOR_MESH_TARGETS"
+            enable_discovery="false"
+            bootstrap_refresh_secs="3600"
+            ;;
+        sentry-edge)
+            bootnodes="[]"
+            seed_servers="[]"
+            bootstrap_dns_records="[]"
+            additional_dial_targets="$SENTRY_EDGE_TARGETS"
+            persistent_peers="$SENTRY_EDGE_TARGETS"
+            enable_discovery="false"
+            bootstrap_refresh_secs="3600"
+            ;;
+        sentry1-only)
+            bootnodes="[]"
+            seed_servers="[]"
+            bootstrap_dns_records="[]"
+            additional_dial_targets="$SENTRY1_TARGETS"
+            persistent_peers="$SENTRY1_TARGETS"
+            enable_discovery="false"
+            bootstrap_refresh_secs="3600"
+            ;;
+        sentry2-only)
+            bootnodes="[]"
+            seed_servers="[]"
+            bootstrap_dns_records="[]"
+            additional_dial_targets="$SENTRY2_TARGETS"
+            persistent_peers="$SENTRY2_TARGETS"
+            enable_discovery="false"
+            bootstrap_refresh_secs="3600"
+            ;;
+    esac
 
     cat > "$TEMPLATES_DIR/$node_type.toml" <<EOF
+[identity]
+node_id = "$node_name"
+role = "$role_id"
+role_display = "$node_type"
+address = ""
+label = "$node_name"
+
+[role]
+compiled_profile = "$compiled_profile"
+services = []
+
 [network]
 id = 338639
 name = "synergy-testnet-beta"
 p2p_port = $p2p_port
 rpc_port = $rpc_port
 ws_port = $ws_port
-max_peers = 50
-bootnodes = ["snr://bootstrap@bootnode1.synergynode.xyz:5620", "snr://bootstrap@bootnode2.synergynode.xyz:5620", "snr://bootstrap@bootnode3.synergynode.xyz:5620"]
+max_peers = 100
+bootnodes = $bootnodes
+seed_servers = $seed_servers
+bootstrap_dns_records = $bootstrap_dns_records
+additional_dial_targets = $additional_dial_targets
+persistent_peers = $persistent_peers
 
 [blockchain]
-block_time = 5
+block_time = 2
 max_gas_limit = "0x2fefd8"
 chain_id = 338639
 
 [consensus]
 algorithm = "Proof of Synergy"
-block_time_secs = 5
+block_time_secs = 2
 epoch_length = 1000
+min_validators = 5
 validator_cluster_size = 5
-validator_vote_threshold = 3
+validator_vote_threshold = 4
 max_validators = 5
+status_ready_gate_enabled = true
+status_ready_min_validators = 5
+status_ready_genesis_grace_secs = 0
+allow_genesis_status_bypass = false
+mesh_settle_secs = 15
+leader_timeout_secs = 15
+vote_timeout_secs = 8
+block_timeout_secs = 30
+penalization_enabled = false
 synergy_score_decay_rate = 0.05
 vrf_enabled = $vrf_enabled
 vrf_seed_epoch_interval = 1000
@@ -50,35 +136,52 @@ uptime = 0.3
 collaboration = 0.2
 
 [logging]
-log_level = "info"
+log_level = "debug"
 log_file = "$log_file"
 enable_console = true
 max_file_size = 10485760
 max_files = 5
 
 [rpc]
+bind_address = "127.0.0.1:$rpc_port"
 enable_http = true
 http_port = $rpc_port
 enable_ws = true
 ws_port = $ws_port
 enable_grpc = true
 grpc_port = $rpc_port
-cors_enabled = true
-cors_origins = ["*"]
+cors_enabled = $cors_enabled
+cors_origins = $cors_origins
 
 [p2p]
 listen_address = "0.0.0.0:$p2p_port"
-public_address = "127.0.0.1:$p2p_port"
+public_address = "replace-with-public-host:$p2p_port"
 node_name = "$node_name"
-enable_discovery = true
+enable_discovery = $enable_discovery
 discovery_port = $discovery_port
+discovery_listen_address = "0.0.0.0:$discovery_port"
+discovery_public_address = "replace-with-public-host:$discovery_port"
 heartbeat_interval = 10
+bootstrap_refresh_secs = $bootstrap_refresh_secs
 
 [storage]
 database = "rocksdb"
 path = "data/chain"
 enable_pruning = $enable_pruning
 pruning_interval = 86400
+
+[node]
+bootstrap_only = false
+auto_register_validator = false
+validator_address = ""
+strict_validator_allowlist = $strict_allowlist
+allowed_validator_addresses = $ALLOWED_VALIDATOR_ADDRESSES
+
+[telemetry]
+enabled = true
+metrics_bind = "$metrics_bind"
+structured_logs = true
+log_level = "debug"
 EOF
 
     echo "Generated: $node_type.toml"
@@ -89,32 +192,29 @@ mkdir -p "$TEMPLATES_DIR"
 echo "Generating node configuration templates..."
 echo
 
-# Class I - Validators & Governance
-generate_template "validator" "validator-node-01" 5622 5640 5660 5680 "data/logs/validator.log" false true
-generate_template "archive-validator" "archive-validator-01" 5622 5640 5660 5680 "data/logs/archive-validator.log" false true
-generate_template "audit-validator" "audit-validator-01" 5622 5640 5660 5680 "data/logs/audit-validator.log" false true
-generate_template "committee" "committee-node-01" 5622 5640 5660 5680 "data/logs/committee.log" false true
-generate_template "governance-auditor" "governance-auditor-01" 5622 5640 5660 5680 "data/logs/governance-auditor.log" false true
-generate_template "security-council" "security-council-01" 5622 5640 5660 5680 "data/logs/security-council.log" false true
-generate_template "treasury-controller" "treasury-controller-01" 5622 5640 5660 5680 "data/logs/treasury-controller.log" false true
+generate_template "validator" "validator" "validator_node" "validator-node-01" 5622 5640 5660 5680 6030 "data/logs/validator.log" false true "validator-mesh"
+generate_template "archive-validator" "archive_validator" "archive_validator_node" "archive-validator-01" 5622 5640 5660 5680 6030 "data/logs/archive-validator.log" false true "public-bootstrap"
+generate_template "audit-validator" "audit_validator" "audit_validator_node" "audit-validator-01" 5622 5640 5660 5680 6030 "data/logs/audit-validator.log" false true "public-bootstrap"
+generate_template "committee" "committee" "committee_node" "committee-node-01" 5622 5640 5660 5680 6030 "data/logs/committee.log" false true "public-bootstrap"
+generate_template "governance-auditor" "governance_auditor" "governance_auditor_node" "governance-auditor-01" 5622 5640 5660 5680 6030 "data/logs/governance-auditor.log" false true "public-bootstrap"
+generate_template "security-council" "security_council" "security_council_node" "security-council-01" 5622 5640 5660 5680 6030 "data/logs/security-council.log" false true "public-bootstrap"
+generate_template "treasury-controller" "treasury_controller" "treasury_controller_node" "treasury-controller-01" 5622 5640 5660 5680 6030 "data/logs/treasury-controller.log" false true "public-bootstrap"
 
-# Class II - Data & Infrastructure
-generate_template "oracle" "oracle-node-01" 5622 5640 5660 5680 "data/logs/oracle.log" true false
-generate_template "observer" "observer-node-01" 5622 5640 5660 5680 "data/logs/observer.log" true false
-generate_template "indexer" "indexer-node-01" 5622 5640 5660 5680 "data/logs/indexer.log" false false
-generate_template "data-availability" "data-availability-01" 5622 5640 5660 5680 "data/logs/data-availability.log" false false
-generate_template "cross-chain-verifier" "cross-chain-verifier-01" 5622 5640 5660 5680 "data/logs/cross-chain-verifier.log" true false
-generate_template "relayer" "relayer-node-01" 5622 5640 5660 5680 "data/logs/relayer.log" true false
-generate_template "rpc" "rpc-node-01" 5622 5640 5660 5680 "data/logs/rpc.log" true false
-generate_template "rpc-gateway" "rpc-gateway-01" 5622 5640 5660 5680 "data/logs/rpc-gateway.log" true false
-generate_template "witness" "witness-node-01" 5622 5640 5660 5680 "data/logs/witness.log" true false
+generate_template "oracle" "oracle" "oracle_node" "oracle-node-01" 5622 5640 5660 5680 6030 "data/logs/oracle.log" true false "public-bootstrap"
+generate_template "observer" "observer" "observer_light_node" "observer-node-01" 5628 5648 5668 5688 6038 "data/logs/observer.log" true false "sentry-edge"
+generate_template "indexer" "indexer" "indexer_and_explorer_node" "indexer-node-01" 5627 5647 5667 5687 6037 "data/logs/indexer.log" false false "sentry-edge"
+generate_template "data-availability" "data_availability" "data_availability_node" "data-availability-01" 5622 5640 5660 5680 6030 "data/logs/data-availability.log" false false "public-bootstrap"
+generate_template "cross-chain-verifier" "cross_chain_verifier" "cross_chain_verifier_node" "cross-chain-verifier-01" 5622 5640 5660 5680 6030 "data/logs/cross-chain-verifier.log" true false "public-bootstrap"
+generate_template "relayer" "relayer" "relayer_node" "relayer-node-01" 5622 5640 5660 5680 6030 "data/logs/relayer.log" true false "validator-mesh"
+generate_template "rpc" "rpc_gateway" "rpc_gateway_node" "rpc-node-01" 5626 5646 5666 5686 6036 "data/logs/rpc.log" true false "sentry-edge"
+generate_template "rpc-gateway" "rpc_gateway" "rpc_gateway_node" "rpc-gateway-01" 5626 5646 5666 5686 6036 "data/logs/rpc-gateway.log" true false "sentry-edge"
+generate_template "witness" "witness" "witness_node" "witness-node-01" 5622 5640 5660 5680 6030 "data/logs/witness.log" true false "public-bootstrap"
 
-# Class III - Compute & AI
-generate_template "ai-inference" "ai-inference-01" 5622 5640 5660 5680 "data/logs/ai-inference.log" true false
-generate_template "compute" "compute-node-01" 5622 5640 5660 5680 "data/logs/compute.log" true false
-generate_template "pqc-crypto" "pqc-crypto-01" 5622 5640 5660 5680 "data/logs/pqc-crypto.log" true false
-generate_template "uma-coordinator" "uma-coordinator-01" 5622 5640 5660 5680 "data/logs/uma-coordinator.log" true false
+generate_template "ai-inference" "ai_inference" "analytics_simulation_node" "ai-inference-01" 5622 5640 5660 5680 6030 "data/logs/ai-inference.log" true false "public-bootstrap"
+generate_template "compute" "compute" "compute_node" "compute-node-01" 5622 5640 5660 5680 6030 "data/logs/compute.log" true false "public-bootstrap"
+generate_template "pqc-crypto" "pqc_crypto" "pqc_crypto_node" "pqc-crypto-01" 5622 5640 5660 5680 6030 "data/logs/pqc-crypto.log" true false "public-bootstrap"
+generate_template "uma-coordinator" "uma_coordinator" "uma_coordinator_node" "uma-coordinator-01" 5622 5640 5660 5680 6030 "data/logs/uma-coordinator.log" true false "public-bootstrap"
 
 echo
-echo "✓ All 20 node templates generated successfully!"
+echo "✓ All node templates generated successfully!"
 echo "Templates location: $TEMPLATES_DIR/"

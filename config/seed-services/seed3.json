@@ -1,0 +1,15 @@
+{
+  "label": "seed3",
+  "listen_host": "0.0.0.0",
+  "port": 5621,
+  "admin_token_env": "SEED_ADMIN_TOKEN",
+  "allow_dynamic_registration": false,
+  "state_file": "/var/lib/synergy-seed/seed3-peers.json",
+  "bootnodes": [],
+  "static_peers": [
+    "relay2.synergynode.xyz:5622"
+  ],
+  "dnsaddr_bootstrap": [
+    "dnsaddr=/dns4/relay2.synergynode.xyz/tcp/5622"
+  ]
+}
