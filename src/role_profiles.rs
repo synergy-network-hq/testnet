@@ -59,6 +59,8 @@ const ARCHIVE_VALIDATOR_SERVICES: &[&str] = &["state", "archive", "proof-builder
 const AUDIT_VALIDATOR_SERVICES: &[&str] =
     &["consensus-audit", "qc-verifier", "state-diff", "alerting"];
 const RELAYER_SERVICES: &[&str] = &[
+    "p2p",
+    "chain-sync",
     "sxcp-relay",
     "light-client-adapters",
     "attestation-packager",
@@ -158,6 +160,8 @@ const ARCHIVE_VALIDATOR_PORTS: &[&str] = &[
 ];
 const AUDIT_VALIDATOR_PORTS: &[&str] = &["5622 plus slot p2p", "6030 plus slot localhost metrics"];
 const RELAYER_PORTS: &[&str] = &[
+    "5622 plus slot p2p",
+    "5680 plus slot discovery",
     "3040 https sxcp api",
     "3041 wss sxcp stream",
     "6030 plus slot localhost metrics",

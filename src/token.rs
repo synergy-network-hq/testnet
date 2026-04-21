@@ -65,6 +65,15 @@ struct TestnetBetaTokenProfile {
     genesis_mints: Vec<TestnetBetaProfileMint>,
 }
 
+fn profile_allocations_enabled() -> bool {
+    matches!(
+        std::env::var("SYNERGY_ENABLE_PROFILE_ALLOCATIONS")
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON")
+    )
+}
+
 #[derive(Debug)]
 pub struct TokenManager {
     tokens: Arc<Mutex<HashMap<String, Token>>>,
@@ -1235,6 +1244,14 @@ impl TokenManager {
 }
 
 fn load_testbeta_profile_allocations() -> Vec<(String, u64)> {
+    // Per-node profile allocations are not consensus state. Applying them at
+    // validator runtime causes each machine to mint a different local token
+    // ledger from its own profile.json. Keep the old behavior behind an
+    // explicit opt-in for non-network bootstrap tooling only.
+    if !profile_allocations_enabled() {
+        return Vec::new();
+    }
+
     for path in candidate_testbeta_profile_paths() {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
@@ -1314,4 +1331,106 @@ struct TokenState {
 // Global token manager instance
 lazy_static::lazy_static! {
     pub static ref TOKEN_MANAGER: Arc<TokenManager> = Arc::new(TokenManager::new());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    lazy_static::lazy_static! {
+        static ref ENV_GUARD: Mutex<()> = Mutex::new(());
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<String>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: &str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::set_var(key, value);
+            Self { key, previous }
+        }
+
+        fn remove(key: &'static str) -> Self {
+            let previous = std::env::var(key).ok();
+            std::env::remove_var(key);
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = &self.previous {
+                std::env::set_var(self.key, value);
+            } else {
+                std::env::remove_var(self.key);
+            }
+        }
+    }
+
+    fn write_test_profile() -> PathBuf {
+        let unique = format!(
+            "synergy-token-test-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::temp_dir().join(unique);
+        let network_dir = root.join("network");
+        fs::create_dir_all(&network_dir).expect("create temp network dir");
+        fs::write(
+            network_dir.join("profile.json"),
+            r#"{
+  "genesis_mints": [
+    {
+      "wallet_address": "synw1testprofileallocxxxxxxxxxxxxxxxxxxxx",
+      "amount_nwei": "42"
+    }
+  ]
+}"#,
+        )
+        .expect("write test profile");
+        root
+    }
+
+    #[test]
+    fn profile_allocations_are_disabled_by_default() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let temp_root = write_test_profile();
+        let _project_root = EnvVarGuard::set(
+            "SYNERGY_PROJECT_ROOT",
+            temp_root.to_str().expect("temp path utf8"),
+        );
+        let _allocations_flag = EnvVarGuard::remove("SYNERGY_ENABLE_PROFILE_ALLOCATIONS");
+
+        assert!(
+            load_testbeta_profile_allocations().is_empty(),
+            "runtime must ignore per-node profile allocations unless explicitly enabled"
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn profile_allocations_can_be_enabled_explicitly() {
+        let _guard = ENV_GUARD.lock().unwrap();
+        let temp_root = write_test_profile();
+        let _project_root = EnvVarGuard::set(
+            "SYNERGY_PROJECT_ROOT",
+            temp_root.to_str().expect("temp path utf8"),
+        );
+        let _allocations_flag = EnvVarGuard::set("SYNERGY_ENABLE_PROFILE_ALLOCATIONS", "1");
+
+        assert_eq!(
+            load_testbeta_profile_allocations(),
+            vec![("synw1testprofileallocxxxxxxxxxxxxxxxxxxxx".to_string(), 42)]
+        );
+
+        let _ = fs::remove_dir_all(temp_root);
+    }
 }

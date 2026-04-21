@@ -42,6 +42,8 @@ const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
 const MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
 const VALIDATOR_P2P_PORT: u16 = 5622;
 const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
+const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
+const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -250,6 +252,54 @@ fn peer_has_identifying_metadata(peer: &PeerConnection) -> bool {
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .is_some()
+}
+
+fn peer_has_validator_identity(peer: &PeerConnection) -> bool {
+    peer.validator_address
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_some()
+}
+
+fn should_prune_stale_peer(peer: &PeerConnection, now: u64) -> bool {
+    let connected_age = now.saturating_sub(peer.connected_at);
+
+    if !peer_has_identifying_metadata(peer) {
+        return connected_age >= STALE_UNIDENTIFIED_PEER_SECS;
+    }
+
+    peer_has_validator_identity(peer)
+        && !peer_has_remote_status(peer)
+        && connected_age >= STALE_VALIDATOR_STATUS_SECS
+}
+
+fn prune_stale_peers(peer_state_cache: &PeerStateCacheArc, connected_peers: &PeersArc) {
+    let now = current_timestamp();
+    let mut peers = connected_peers.lock().unwrap();
+    let stale_peer_keys = peers
+        .iter()
+        .filter_map(|(peer_key, peer)| {
+            should_prune_stale_peer(peer, now).then_some(peer_key.clone())
+        })
+        .collect::<Vec<_>>();
+
+    for peer_key in stale_peer_keys {
+        if let Some(peer) = peers.get(&peer_key) {
+            warn!(
+                "p2p",
+                "Disconnecting stale peer to force mesh recovery",
+                "peer" => peer_key.clone(),
+                "direction" => format!("{:?}", peer.direction),
+                "connected_age_secs" => now.saturating_sub(peer.connected_at),
+                "last_seen_age_secs" => now.saturating_sub(peer.last_seen),
+                "validator_address" => peer.validator_address.clone().unwrap_or_default(),
+                "has_identifying_metadata" => peer_has_identifying_metadata(peer),
+                "has_remote_status" => peer_has_remote_status(peer)
+            );
+        }
+        disconnect_peer_entry(peer_state_cache, &mut peers, &peer_key);
+    }
 }
 
 fn pending_incoming_connections_from_host(peers: &PeerMap, host: &str) -> usize {
@@ -1697,6 +1747,8 @@ impl P2PNetwork {
                     }
                 }
 
+                prune_stale_peers(&network.peer_state_cache, &network.connected_peers);
+
                 // Keep trying bootnodes until at least one peer is connected.
                 for addr in &bootnode_dials {
                     // Avoid self-dial if the config accidentally includes itself.
@@ -1876,10 +1928,38 @@ fn request_blocks_from_connected_peer(
     }
 }
 
+fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -> NetworkMessage {
+    let (block_height, best_block_hash, genesis_hash) = {
+        let chain = blockchain.lock().unwrap();
+        (
+            if config.node.bootstrap_only {
+                0
+            } else {
+                chain.last().map(|b| b.block_index).unwrap_or(0)
+            },
+            if config.node.bootstrap_only {
+                String::new()
+            } else {
+                chain.last().map(|b| b.hash.clone()).unwrap_or_default()
+            },
+            chain
+                .get_genesis_hash()
+                .filter(|hash| !hash.trim().is_empty())
+                .unwrap_or_else(canonical_genesis_hash),
+        )
+    };
+
+    NetworkMessage::Status {
+        block_height,
+        best_block_hash,
+        genesis_hash,
+    }
+}
+
 fn handle_incoming_connection(
     stream: TcpStream,
     peer_address: String,
-    _blockchain: BlockchainArc,
+    blockchain: BlockchainArc,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
@@ -1929,6 +2009,18 @@ fn handle_incoming_connection(
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
 
+    let status = build_local_status_message(&blockchain, &config);
+    if let Err(error) = send_message(&mut writer, &status) {
+        warn!(
+            "p2p",
+            "Failed to proactively send status after handshake",
+            "peer" => peer_address.clone(),
+            "error" => error.to_string()
+        );
+    } else {
+        writer.flush()?;
+    }
+
     // Listen for messages
     loop {
         match receive_message(&mut reader) {
@@ -1968,7 +2060,7 @@ fn handle_incoming_connection(
 fn handle_outgoing_connection(
     stream: TcpStream,
     peer_address: String,
-    _blockchain: BlockchainArc,
+    blockchain: BlockchainArc,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     message_sender: mpsc::Sender<(String, NetworkMessage)>,
@@ -2017,6 +2109,18 @@ fn handle_outgoing_connection(
 
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
+
+    let status = build_local_status_message(&blockchain, &config);
+    if let Err(error) = send_message(&mut writer, &status) {
+        warn!(
+            "p2p",
+            "Failed to proactively send status after handshake",
+            "peer" => peer_address.clone(),
+            "error" => error.to_string()
+        );
+    } else {
+        writer.flush()?;
+    }
 
     // Listen for messages
     loop {
@@ -2183,14 +2287,28 @@ fn handle_messages(
                                         Some((new_direction, new_connected_at)),
                                     ) = (existing_metadata, new_metadata)
                                     {
-                                        match resolve_duplicate_connection(
-                                            &local_identity,
-                                            &peer_identity,
-                                            existing_direction,
-                                            existing_connected_at,
-                                            new_direction,
-                                            new_connected_at,
-                                        ) {
+                                        let existing_needs_status_recovery = peers
+                                            .get(&existing_key)
+                                            .map(|peer| {
+                                                peer_has_validator_identity(peer)
+                                                    && !peer_has_remote_status(peer)
+                                            })
+                                            .unwrap_or(false);
+                                        let duplicate_resolution = if existing_needs_status_recovery
+                                        {
+                                            DuplicateResolution::ReplaceExisting
+                                        } else {
+                                            resolve_duplicate_connection(
+                                                &local_identity,
+                                                &peer_identity,
+                                                existing_direction,
+                                                existing_connected_at,
+                                                new_direction,
+                                                new_connected_at,
+                                            )
+                                        };
+
+                                        match duplicate_resolution {
                                             DuplicateResolution::KeepExisting => {
                                                 if let Some(peer) = peers.get_mut(&existing_key) {
                                                     peer.node_id = Some(node_id.clone());
@@ -2303,7 +2421,8 @@ fn handle_messages(
                                                             &local_identity,
                                                             &peer_identity
                                                         )
-                                                    )
+                                                    ),
+                                                    "status_recovery_replacement" => existing_needs_status_recovery
                                                 );
                                                 disconnect_peer_entry(
                                                     &peer_state_cache,
@@ -2708,31 +2827,7 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetStatus => {
-                        let (block_height, best_block_hash, genesis_hash) = {
-                            let chain = blockchain.lock().unwrap();
-                            (
-                                if config.node.bootstrap_only {
-                                    0
-                                } else {
-                                    chain.last().map(|b| b.block_index).unwrap_or(0)
-                                },
-                                if config.node.bootstrap_only {
-                                    String::new()
-                                } else {
-                                    chain.last().map(|b| b.hash.clone()).unwrap_or_default()
-                                },
-                                chain
-                                    .get_genesis_hash()
-                                    .filter(|hash| !hash.trim().is_empty())
-                                    .unwrap_or_else(canonical_genesis_hash),
-                            )
-                        };
-
-                        let status = NetworkMessage::Status {
-                            block_height,
-                            best_block_hash: best_block_hash.clone(),
-                            genesis_hash: genesis_hash.clone(),
-                        };
+                        let status = build_local_status_message(&blockchain, &config);
 
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
@@ -3336,11 +3431,13 @@ mod tests {
         parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
         pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
-        should_disconnect_for_status_genesis_mismatch, status_ready_validator_participants,
-        status_sync_batch, validator_status_genesis_grace_remaining_secs,
+        should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
+        status_ready_validator_participants, status_sync_batch,
+        validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
         DuplicateResolution, PeerConnection, DEFAULT_BOOTSTRAP_REFRESH_SECS,
-        IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS,
+        IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
+        STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::BlockChain;
     use crate::config::NodeConfig;
@@ -4224,5 +4321,71 @@ mod tests {
 
         let connected_peers = Arc::new(Mutex::new(peers));
         assert_eq!(best_connected_validator_height(&connected_peers), 7);
+    }
+
+    #[test]
+    fn stale_unidentified_peers_are_pruned_after_grace_window() {
+        let peer = PeerConnection {
+            address: "10.69.0.5:55354".to_string(),
+            direction: ConnectionDirection::Incoming,
+            public_address: None,
+            validator_address: None,
+            connected_at: 100,
+            last_seen: 100,
+            blocks_sent: 0,
+            blocks_received: 0,
+            txs_sent: 0,
+            txs_received: 0,
+            stream: None,
+            node_id: None,
+            version: None,
+            capabilities: Vec::new(),
+            last_known_height: 0,
+            best_block_hash: String::new(),
+            genesis_hash: String::new(),
+            status_received_at: None,
+        };
+
+        assert!(!should_prune_stale_peer(
+            &peer,
+            100 + STALE_UNIDENTIFIED_PEER_SECS - 1
+        ));
+        assert!(should_prune_stale_peer(
+            &peer,
+            100 + STALE_UNIDENTIFIED_PEER_SECS
+        ));
+    }
+
+    #[test]
+    fn validator_peers_missing_status_are_pruned_after_status_timeout() {
+        let peer = PeerConnection {
+            address: "10.69.0.2:5622".to_string(),
+            direction: ConnectionDirection::Outgoing,
+            public_address: Some("10.69.0.2:5622".to_string()),
+            validator_address: Some("synv1peer-b".to_string()),
+            connected_at: 200,
+            last_seen: 200,
+            blocks_sent: 0,
+            blocks_received: 0,
+            txs_sent: 0,
+            txs_received: 0,
+            stream: None,
+            node_id: Some("synv1peer-b".to_string()),
+            version: Some("1.0.0".to_string()),
+            capabilities: vec!["blocks".to_string()],
+            last_known_height: 0,
+            best_block_hash: String::new(),
+            genesis_hash: String::new(),
+            status_received_at: None,
+        };
+
+        assert!(!should_prune_stale_peer(
+            &peer,
+            200 + STALE_VALIDATOR_STATUS_SECS - 1
+        ));
+        assert!(should_prune_stale_peer(
+            &peer,
+            200 + STALE_VALIDATOR_STATUS_SECS
+        ));
     }
 }

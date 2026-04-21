@@ -1780,6 +1780,11 @@ mod tests {
     }
 
     #[test]
+    fn relayer_profile_starts_p2p() {
+        assert!(role_profile_requires_p2p(NodeRole::Relayer.profile()));
+    }
+
+    #[test]
     fn rpc_bind_address_normalizes_host_only_socket_inputs() {
         assert_eq!(
             normalize_rpc_socket_address("0.0.0.0", 5640),

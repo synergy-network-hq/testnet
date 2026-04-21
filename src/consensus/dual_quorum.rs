@@ -77,6 +77,7 @@ pub struct AggregateSignature {
 pub struct DualQuorumConsensus {
     pub validator_manager: Arc<ValidatorManager>,
     pub pqc_manager: Arc<Mutex<PQCManager>>,
+    pub penalization_enabled: bool,
     pub minimum_validator_count: usize,
     pub validator_vote_threshold: usize,
     pub validation_quorum_threshold: f64,
@@ -93,6 +94,7 @@ impl DualQuorumConsensus {
     pub fn new(
         validator_manager: Arc<ValidatorManager>,
         pqc_manager: Arc<Mutex<PQCManager>>,
+        penalization_enabled: bool,
         minimum_validator_count: usize,
         validator_vote_threshold: usize,
         vote_timeout_secs: u64,
@@ -101,6 +103,7 @@ impl DualQuorumConsensus {
         DualQuorumConsensus {
             validator_manager,
             pqc_manager,
+            penalization_enabled,
             minimum_validator_count: minimum_validator_count.max(1),
             validator_vote_threshold: validator_vote_threshold.max(1),
             validation_quorum_threshold: 0.67,
@@ -250,10 +253,24 @@ impl DualQuorumConsensus {
             thread::sleep(Duration::from_millis(100));
         }
 
+        // Drain the mailbox one final time after the wait window closes so votes
+        // that arrive right on the timeout edge still count toward this round.
+        let pending_votes = Self::snapshot_network_votes(block_hash, epoch_number, round_number);
+        self.merge_remote_votes(
+            &mut votes,
+            &expected_validators,
+            block_hash,
+            epoch_number,
+            round_number,
+            pending_votes,
+        );
+
         self.apply_recorded_equivocations();
         votes.retain(|vote| self.vote_is_eligible(vote));
         self.record_vote_participation(&votes);
-        self.record_missed_vote_timeouts(&active_validators, &votes);
+        if self.penalization_enabled {
+            self.record_missed_vote_timeouts(&active_validators, &votes);
+        }
 
         Self::reset_network_vote_mailbox(block_hash, epoch_number, round_number);
         self.votes.insert(block_hash.to_string(), votes.clone());
@@ -515,6 +532,10 @@ impl DualQuorumConsensus {
     }
 
     fn record_missed_vote_timeouts(&self, live_validators: &[Validator], votes: &[Vote]) {
+        if !self.penalization_enabled {
+            return;
+        }
+
         let received_votes = votes
             .iter()
             .map(|vote| vote.validator_address.clone())
@@ -1096,6 +1117,7 @@ mod tests {
         let consensus = DualQuorumConsensus::new(
             Arc::clone(&validator_manager),
             Arc::clone(&pqc_manager),
+            true,
             1,
             1,
             8,
@@ -1163,6 +1185,7 @@ mod tests {
         let mut consensus = DualQuorumConsensus::new(
             Arc::clone(&validator_manager),
             Arc::clone(&pqc_manager),
+            true,
             1,
             1,
             8,
@@ -1176,7 +1199,7 @@ mod tests {
     }
 
     #[test]
-    fn local_conflicting_vote_attempt_is_rejected_without_self_slashing() {
+    fn missed_vote_timeouts_are_ignored_when_penalization_is_disabled() {
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1184,6 +1207,44 @@ mod tests {
         let consensus = DualQuorumConsensus::new(
             Arc::clone(&validator_manager),
             Arc::clone(&pqc_manager),
+            false,
+            1,
+            1,
+            8,
+            5,
+        );
+
+        let before = validator_manager
+            .get_validator("validator2")
+            .expect("validator should exist")
+            .clone();
+
+        consensus.record_missed_vote_timeouts(std::slice::from_ref(&before), &[]);
+
+        let after = validator_manager
+            .get_validator("validator2")
+            .expect("validator should exist");
+        assert_eq!(after.uptime_percentage, before.uptime_percentage);
+        assert_eq!(after.task_accuracy, before.task_accuracy);
+        assert_eq!(after.reputation_score, before.reputation_score);
+        assert_eq!(after.missed_vote_window, before.missed_vote_window);
+        assert_eq!(
+            after.consecutive_missed_votes,
+            before.consecutive_missed_votes
+        );
+        assert_eq!(after.status, ValidatorStatus::Active);
+    }
+
+    #[test]
+    fn local_conflicting_vote_attempt_is_recorded_without_self_slashing() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
             1,
             1,
             8,
@@ -1203,10 +1264,9 @@ mod tests {
         let conflicting_vote =
             DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 30, 1)
                 .expect("conflicting local vote should be created");
-        let error = consensus
+        consensus
             .register_local_vote_or_slash(&conflicting_vote)
-            .expect_err("conflicting local vote should be rejected");
-        assert!(error.contains("attempted conflicting votes"));
+            .expect("conflicting local vote should be recorded");
 
         let validator = validator_manager
             .get_validator("validator2")
@@ -1217,6 +1277,82 @@ mod tests {
 
         let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
         assert!(evidence.is_empty());
+    }
+
+    #[test]
+    fn epoch_randomness_is_deterministic_for_shared_qc() {
+        let previous_qc = QuorumCertificate {
+            block_hash: "shared-block-hash".to_string(),
+            epoch_number: 7,
+            round_number: 3,
+            aggregate_signature: vec![1, 2, 3],
+            participant_bitmap: vec![0x1f],
+            cumulative_weight: 5.0,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: 1_777_000_000,
+        };
+        let mut beacon_a = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+        let mut beacon_b = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+
+        let randomness_a = beacon_a.generate_epoch_randomness(&previous_qc);
+        let randomness_b = beacon_b.generate_epoch_randomness(&previous_qc);
+
+        assert_eq!(randomness_a, randomness_b);
+    }
+
+    #[test]
+    fn epoch_randomness_ignores_qc_timestamp_differences() {
+        let previous_qc_a = QuorumCertificate {
+            block_hash: "shared-block-hash".to_string(),
+            epoch_number: 7,
+            round_number: 3,
+            aggregate_signature: vec![1, 2, 3],
+            participant_bitmap: vec![0x1f],
+            cumulative_weight: 5.0,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: 1_777_000_000,
+        };
+        let mut previous_qc_b = previous_qc_a.clone();
+        previous_qc_b.timestamp += 42;
+
+        let mut beacon_a = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+        let mut beacon_b = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+
+        let randomness_a = beacon_a.generate_epoch_randomness(&previous_qc_a);
+        let randomness_b = beacon_b.generate_epoch_randomness(&previous_qc_b);
+
+        assert_eq!(randomness_a, randomness_b);
+    }
+
+    #[test]
+    fn epoch_randomness_ignores_local_beacon_epoch_drift() {
+        let previous_qc = QuorumCertificate {
+            block_hash: "shared-block-hash".to_string(),
+            epoch_number: 7,
+            round_number: 3,
+            aggregate_signature: vec![1, 2, 3],
+            participant_bitmap: vec![0x1f],
+            cumulative_weight: 5.0,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: 1_777_000_000,
+        };
+        let mut beacon_a = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+        let mut beacon_b = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
+
+        // Simulate nodes that have taken a different number of local transition
+        // attempts before observing the same epoch-boundary QC.
+        beacon_a.current_epoch = 2;
+        beacon_b.current_epoch = 19;
+
+        let randomness_a = beacon_a.generate_epoch_randomness(&previous_qc);
+        let randomness_b = beacon_b.generate_epoch_randomness(&previous_qc);
+
+        assert_eq!(randomness_a, randomness_b);
+        assert_eq!(beacon_a.current_epoch, 8);
+        assert_eq!(beacon_b.current_epoch, 8);
     }
 }
 
@@ -1243,36 +1379,30 @@ impl EntropyBeacon {
     }
 
     pub fn generate_epoch_randomness(&mut self, previous_qc: &QuorumCertificate) -> Vec<u8> {
-        self.current_epoch += 1;
+        let next_epoch = previous_qc.epoch_number.saturating_add(1);
+        self.current_epoch = next_epoch;
         self.previous_qc_hash = self.hash_qc(previous_qc);
         self.nonce += 1;
 
-        // Generate ML-KEM shared secret for entropy
-        let mut pqc_manager = self.pqc_manager.lock().unwrap();
+        // Keep a per-epoch ML-KEM keypair for future cross-validation hooks, but
+        // derive the public epoch randomness deterministically from shared chain
+        // state so every validator computes the same leader rotation.
+        if !self.mlkem_keypairs.contains_key(&next_epoch) {
+            let mut pqc_manager = self.pqc_manager.lock().unwrap();
 
-        // Generate a persistent keypair for this epoch
-        let (pub_key, priv_key) = pqc_manager
-            .generate_keypair(PQCAlgorithm::MLKEM1024)
-            .expect("Failed to generate ML-KEM keypair for epoch");
+            let (pub_key, priv_key) = pqc_manager
+                .generate_keypair(PQCAlgorithm::MLKEM1024)
+                .expect("Failed to generate ML-KEM keypair for epoch");
 
-        // Store the keypair for potential later decapsulation
-        self.mlkem_keypairs
-            .insert(self.current_epoch, (pub_key.clone(), priv_key.clone()));
+            self.mlkem_keypairs.insert(next_epoch, (pub_key, priv_key));
+        }
 
-        // Encapsulate to get shared secret
-        let (_ciphertext, shared_secret) = pqc_manager
-            .encapsulate(&pub_key)
-            .expect("Failed to encapsulate ML-KEM for epoch randomness");
-
-        // Create entropy input - this uses the shared secret from ML-KEM encapsulation
+        // Epoch randomness must be identical across validators at the same chain
+        // tip. Only use deterministic inputs derived from the previous QC.
         let mut input = Vec::new();
-        input.extend(&shared_secret.secret); // Shared secret contributes to entropy
-        input.extend(self.current_epoch.to_be_bytes());
+        input.extend(next_epoch.to_be_bytes());
         input.extend(self.previous_qc_hash.as_bytes());
-        input.extend(Self::current_timestamp().to_be_bytes());
-        input.extend(self.nonce.to_be_bytes());
 
-        // Hash with SHA3-512 to create the actual epoch randomness
         let mut hasher = Sha3_512::new();
         hasher.update(&input);
         let hash = hasher.finalize();
@@ -1301,9 +1431,14 @@ impl EntropyBeacon {
     }
 
     fn hash_qc(&self, qc: &QuorumCertificate) -> String {
-        let serialized = serde_json::to_string(qc).unwrap_or_default();
         let mut hasher = Sha3_512::new();
-        hasher.update(serialized.as_bytes());
+        hasher.update(qc.block_hash.as_bytes());
+        hasher.update(qc.epoch_number.to_be_bytes());
+        hasher.update(qc.round_number.to_be_bytes());
+        hasher.update(&qc.aggregate_signature);
+        hasher.update(&qc.participant_bitmap);
+        hasher.update([qc.validation_quorum_met as u8]);
+        hasher.update([qc.cooperation_quorum_met as u8]);
         let hash = hasher.finalize();
         hex::encode(hash)
     }

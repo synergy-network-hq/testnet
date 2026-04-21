@@ -240,10 +240,10 @@ impl Validator {
     }
 
     pub fn is_eligible(&self, min_stake: u64) -> bool {
-        self.status == ValidatorStatus::Active
-            && self.stake_amount >= min_stake
-            && self.synergy_score >= 50.0
-            && self.uptime_percentage >= 95.0
+        // Consensus membership must only depend on shared state. Local uptime,
+        // reputation, and soft-score observations can drift between validators
+        // and must not evict peers from the active set.
+        self.status == ValidatorStatus::Active && self.stake_amount >= min_stake
     }
 
     fn current_timestamp() -> u64 {
@@ -883,6 +883,31 @@ mod tests {
         assert_eq!(validator.status, ValidatorStatus::Active);
         assert_eq!(validator.synergy_score, INITIAL_VALIDATOR_SYNERGY_SCORE);
         assert_eq!(validator.uptime_percentage, 100.0);
+    }
+
+    #[test]
+    fn consensus_eligibility_ignores_local_soft_scores() {
+        let mut validator = Validator::new(
+            "validator-soft-scores".to_string(),
+            "validator-soft-scores-key".to_string(),
+            "Validator Soft Scores".to_string(),
+            1_000,
+        );
+        validator.status = ValidatorStatus::Active;
+        validator.synergy_score = 0.0;
+        validator.uptime_percentage = 0.0;
+        validator.task_accuracy = 0.0;
+        validator.reputation_score = 0.0;
+
+        assert!(
+            validator.is_eligible(1_000),
+            "local health metrics must not remove a validator from the shared active set"
+        );
+
+        validator.status = ValidatorStatus::Jailed;
+        assert!(!validator.is_eligible(1_000));
+        validator.status = ValidatorStatus::Active;
+        assert!(!validator.is_eligible(1_001));
     }
 
     #[test]

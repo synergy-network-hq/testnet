@@ -11,8 +11,7 @@ use crate::genesis::canonical_genesis;
 use crate::rpc::rpc_server::{SHARED_CHAIN, TX_POOL};
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
-    Validator, ValidatorManager, ValidatorPerformanceUpdate, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
-    VALIDATOR_MANAGER,
+    Validator, ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 use crate::{info, warn};
@@ -264,6 +263,7 @@ impl ProofOfSynergy {
         let dual_quorum_consensus = Arc::new(Mutex::new(DualQuorumConsensus::new(
             Arc::clone(&validator_manager),
             Arc::clone(&pqc_manager),
+            penalization_enabled,
             min_validators,
             validator_vote_threshold,
             vote_timeout_secs,
@@ -429,18 +429,20 @@ impl ProofOfSynergy {
         thread::spawn(move || {
             let mut last_block_time = SystemTime::now();
             let mut consecutive_failures = 0;
-            let mut current_epoch = 0;
-            // View-change state: tracks how many times the scheduled leader has timed out
-            // for the current block height. Increments on each leader timeout, causing
-            // select_leader_for_block to rotate to the next candidate in the top-K list.
-            let mut view_offset: usize = 0;
-            // When we first started waiting for the leader at the current height.
-            let mut block_wait_start: Option<SystemTime> = None;
+            let mut current_epoch = chain
+                .lock()
+                .unwrap()
+                .last()
+                .map(|block| Self::epoch_for_block(block.block_index, epoch_length))
+                .unwrap_or(0);
+            if let Ok(mut consensus) = dual_quorum_consensus.lock() {
+                consensus.current_epoch = current_epoch;
+            }
             let mut mesh_ready_since: Option<Instant> = None;
             let mut status_sync_grace_since: Option<Instant> = None;
             let mut genesis_status_gate_bypassed = false;
-            // The chain height at which view_offset was last reset.
             let mut last_committed_height: u64 = 0;
+            let mut last_logged_view_timeout: Option<(u64, usize)> = None;
 
             loop {
                 let current_time = SystemTime::now();
@@ -453,15 +455,14 @@ impl ProofOfSynergy {
                     let chain_guard = chain.lock().unwrap();
 
                     if let Some(latest_block) = chain_guard.last() {
-                        // Reset view-change state whenever the chain has advanced.
                         if latest_block.block_index != last_committed_height {
                             last_committed_height = latest_block.block_index;
-                            view_offset = 0;
-                            block_wait_start = None;
+                            last_logged_view_timeout = None;
                         }
 
-                        // Check for epoch boundary
-                        if Self::is_epoch_boundary(latest_block.block_index, epoch_length) {
+                        let target_epoch =
+                            Self::epoch_for_next_block(latest_block.block_index, epoch_length);
+                        while current_epoch < target_epoch {
                             Self::handle_epoch_transition(
                                 &mut current_epoch,
                                 &chain_guard,
@@ -628,6 +629,10 @@ impl ProofOfSynergy {
 
                         // Clone latest_block before we might need to drop the guard
                         let latest_block_clone = latest_block.clone();
+                        let view_offset = Self::deterministic_view_offset(
+                            latest_block_clone.timestamp,
+                            leader_timeout_secs,
+                        );
 
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
@@ -638,11 +643,16 @@ impl ProofOfSynergy {
                         // computation time.  The live_active_validators check above
                         // already enforces the min_validators liveness gate.
                         let all_active_validators = validator_manager.get_active_validators();
+                        let epoch_randomness = Self::deterministic_epoch_randomness(
+                            &chain_guard,
+                            next_block_index,
+                            epoch_length,
+                        );
                         let selected_validator = Self::select_leader_for_block(
                             &all_active_validators,
                             next_block_index,
                             &synergy_calculator,
-                            &entropy_beacon,
+                            &epoch_randomness,
                             epoch_length,
                             view_offset,
                         );
@@ -651,34 +661,29 @@ impl ProofOfSynergy {
                         if local_validator_address.as_deref()
                             != Some(selected_validator.address.as_str())
                         {
-                            // Track how long we have been waiting for the leader at this height.
-                            let wait_start = *block_wait_start.get_or_insert(current_time);
-                            let wait_elapsed =
-                                current_time.duration_since(wait_start).unwrap_or_default();
+                            let wait_elapsed = Duration::from_secs(
+                                Self::current_timestamp()
+                                    .saturating_sub(latest_block_clone.timestamp),
+                            );
 
                             if wait_elapsed >= Duration::from_secs(leader_timeout_secs) {
-                                // Leader did not produce within the timeout window.
-                                // Rotate to the next candidate in the top-K list.
-                                view_offset += 1;
-                                block_wait_start = Some(current_time);
-                                warn!(
-                                    "consensus",
-                                    "Leader proposal timeout — rotating to next candidate",
-                                    "timed_out_leader" => selected_validator.address.clone(),
-                                    "new_view_offset" => view_offset,
-                                    "waited_secs" => wait_elapsed.as_secs(),
-                                    "block_height" => next_block_index
-                                );
-                                // Penalise the timed-out leader's synergy score so that
-                                // chronically offline validators sink in the epoch ranking
-                                // and are naturally displaced from the top-K rotation.
-                                Self::maybe_apply_leader_timeout_penalty(
-                                    penalization_enabled,
-                                    &validator_manager,
-                                    &selected_validator.address,
-                                    next_block_index,
-                                    view_offset,
-                                );
+                                let timeout_marker = (next_block_index, view_offset);
+                                if last_logged_view_timeout != Some(timeout_marker) {
+                                    warn!(
+                                        "consensus",
+                                        "Leader proposal timeout — following shared leader rotation",
+                                        "timed_out_leader" => selected_validator.address.clone(),
+                                        "shared_view_offset" => view_offset,
+                                        "waited_secs" => wait_elapsed.as_secs(),
+                                        "block_height" => next_block_index
+                                    );
+                                    // Timeout penalties are intentionally skipped here.
+                                    // They mutate validator-local health state, and applying
+                                    // them independently on each node causes the validator
+                                    // set to drift while the chain is stalled.
+                                    let _ = penalization_enabled;
+                                    last_logged_view_timeout = Some(timeout_marker);
+                                }
                             } else {
                                 info!(
                                     "consensus",
@@ -772,8 +777,7 @@ impl ProofOfSynergy {
                                 // Block committed - update chain.
                                 // Reset view-change state: the chain has advanced, so the next
                                 // block starts with the primary scheduled leader again.
-                                view_offset = 0;
-                                block_wait_start = None;
+                                last_logged_view_timeout = None;
                                 drop(chain_guard);
                                 drop(pool);
 
@@ -814,215 +818,15 @@ impl ProofOfSynergy {
                                     p2p.broadcast_block(&new_block);
                                 }
 
-                                // Update validator performance
-                                let performance_update = ValidatorPerformanceUpdate {
-                                    validator_address: selected_validator.address.clone(),
-                                    update_type: "block_produced".to_string(),
-                                    value: None,
-                                    timestamp: Self::current_timestamp(),
-                                };
-                                validator_manager.update_performance(performance_update.clone());
-
-                                // Distribute rewards to cluster based on PoSy protocol
-                                // Rewards are awarded to the cluster, then distributed among validators
-                                // in that cluster based on their normalized Synergy Scores
-                                let reward_amount = 5 * 10u64.pow(9);
-
-                                // Get the cluster that the selected validator belongs to
-                                if let Some(cluster) = validator_manager
-                                    .get_validator_cluster(&selected_validator.address)
-                                {
-                                    // Get all validators in the cluster
-                                    let cluster_validator_addresses = &cluster.validators;
-
-                                    info!("consensus", "Cluster reward distribution",
-                                          "cluster_id" => cluster.id,
-                                          "cluster_size" => cluster_validator_addresses.len() as u64,
-                                          "selected_validator" => selected_validator.address.clone(),
-                                          "reward_amount" => reward_amount);
-
-                                    // Calculate raw synergy scores for all validators in the cluster
-                                    // Then normalize within the cluster (PoSy Equation 13: SS_v,normalized = SS_v / Σ_i∈V SS_i)
-                                    let mut cluster_validators_with_scores: Vec<(String, f64)> =
-                                        Vec::new();
-                                    let mut raw_scores: Vec<f64> = Vec::new();
-                                    let mut validator_details: Vec<serde_json::Value> = Vec::new();
-
-                                    for validator_address in cluster_validator_addresses {
-                                        if let Some(validator) =
-                                            validator_manager.get_validator(validator_address)
-                                        {
-                                            let components = synergy_calculator
-                                                .calculate_synergy_score(&validator);
-                                            // Calculate raw score: SS_v = (S_v * R_v * C_v) / P_v (PoSy Equation 12)
-                                            let raw_score = (components.stake_weight
-                                                * components.reputation
-                                                * components.contribution_index)
-                                                / components.cartelization_penalty;
-                                            raw_scores.push(raw_score);
-                                            cluster_validators_with_scores
-                                                .push((validator_address.clone(), raw_score));
-
-                                            // Log validator details
-                                            validator_details.push(serde_json::json!({
-                                                "address": validator_address,
-                                                "name": validator.name,
-                                                "raw_synergy_score": raw_score,
-                                                "normalized_synergy_score": components.normalized_score,
-                                                "stake_weight": components.stake_weight,
-                                                "reputation": components.reputation,
-                                                "contribution_index": components.contribution_index,
-                                                "cartelization_penalty": components.cartelization_penalty
-                                            }));
-                                        }
-                                    }
-
-                                    info!("consensus", "Cluster validator synergy scores",
-                                          "cluster_id" => cluster.id,
-                                          "validators" => serde_json::to_string(&validator_details).unwrap_or_default());
-
-                                    // Normalize scores within the cluster so they sum to 1.0 (PoSy Equation 13)
-                                    if !raw_scores.is_empty() {
-                                        let total_score: f64 = raw_scores.iter().sum();
-                                        if total_score > 0.0 {
-                                            // Normalize: SS_v,normalized = SS_v / Σ_i∈cluster SS_i
-                                            for (idx, (_, score)) in cluster_validators_with_scores
-                                                .iter_mut()
-                                                .enumerate()
-                                            {
-                                                *score = raw_scores[idx] / total_score;
-                                            }
-
-                                            // Log normalized distribution
-                                            let normalized_dist: Vec<serde_json::Value> = cluster_validators_with_scores.iter()
-                                                .map(|(addr, score)| serde_json::json!({
-                                                    "validator": addr,
-                                                    "normalized_share": score,
-                                                    "reward_portion": (reward_amount as f64 * score) as u64
-                                                }))
-                                                .collect();
-
-                                            info!("consensus", "Cluster reward distribution (normalized)",
-                                                  "cluster_id" => cluster.id,
-                                                  "total_raw_score" => total_score,
-                                                  "distribution" => serde_json::to_string(&normalized_dist).unwrap_or_default());
-
-                                            // Distribute rewards to cluster
-                                            match token_manager.distribute_cluster_rewards(
-                                                &cluster_validators_with_scores,
-                                                reward_amount,
-                                            ) {
-                                                Ok(result) => {
-                                                    println!(
-                                                        "✅ Cluster rewards distributed: {}",
-                                                        result
-                                                    );
-                                                    info!("consensus", "Cluster rewards distributed successfully",
-                                                          "cluster_id" => cluster.id,
-                                                          "result" => result);
-                                                }
-                                                Err(e) => {
-                                                    println!("❌ Failed to distribute cluster rewards: {}", e);
-                                                    warn!("consensus", "Failed to distribute cluster rewards",
-                                                          "cluster_id" => cluster.id,
-                                                          "error" => e);
-                                                }
-                                            }
-                                        } else {
-                                            println!("⚠️ Cluster has no valid synergy scores, using fallback distribution");
-                                            warn!("consensus", "Cluster has no valid synergy scores, using equal distribution",
-                                                  "cluster_id" => cluster.id);
-                                            // Fallback: distribute equally if no valid scores
-                                            let equal_share =
-                                                1.0 / cluster_validator_addresses.len() as f64;
-                                            let equal_scores: Vec<(String, f64)> =
-                                                cluster_validator_addresses
-                                                    .iter()
-                                                    .map(|addr| (addr.clone(), equal_share))
-                                                    .collect();
-                                            match token_manager.distribute_cluster_rewards(
-                                                &equal_scores,
-                                                reward_amount,
-                                            ) {
-                                                Ok(result) => {
-                                                    println!("✅ Cluster rewards distributed (equal): {}", result);
-                                                    info!("consensus", "Cluster rewards distributed (equal fallback)",
-                                                          "cluster_id" => cluster.id,
-                                                          "result" => result);
-                                                }
-                                                Err(e) => {
-                                                    println!("❌ Failed to distribute cluster rewards: {}", e);
-                                                    warn!("consensus", "Failed to distribute cluster rewards (equal fallback)",
-                                                          "cluster_id" => cluster.id,
-                                                          "error" => e);
-                                                }
-                                            }
-                                        }
-                                    } else {
-                                        println!("⚠️ No validators found in cluster, using legacy distribution");
-                                        warn!("consensus", "No validators found in cluster, using legacy distribution",
-                                              "cluster_id" => cluster.id);
-                                        // Fallback to legacy method if cluster is empty
-                                        match token_manager.distribute_validator_rewards(
-                                            &selected_validator.address,
-                                            reward_amount,
-                                        ) {
-                                            Ok(result) => {
-                                                println!(
-                                                    "✅ Validator rewards distributed (legacy): {}",
-                                                    result
-                                                );
-                                                info!("consensus", "Validator rewards distributed (legacy fallback)",
-                                                      "validator" => selected_validator.address.clone(),
-                                                      "result" => result);
-                                            }
-                                            Err(e) => {
-                                                println!(
-                                                    "❌ Failed to distribute validator rewards: {}",
-                                                    e
-                                                );
-                                                warn!("consensus", "Failed to distribute validator rewards (legacy)",
-                                                      "validator" => selected_validator.address.clone(),
-                                                      "error" => e);
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    println!("⚠️ Validator {} not in a cluster, using legacy distribution", selected_validator.address);
-                                    warn!("consensus", "Validator not in a cluster, using legacy distribution",
-                                          "validator" => selected_validator.address.clone());
-                                    // Fallback to legacy method if validator not in cluster
-                                    match token_manager.distribute_validator_rewards(
-                                        &selected_validator.address,
-                                        reward_amount,
-                                    ) {
-                                        Ok(result) => {
-                                            println!(
-                                                "✅ Validator rewards distributed (legacy): {}",
-                                                result
-                                            );
-                                            info!("consensus", "Validator rewards distributed (legacy fallback)",
-                                                  "validator" => selected_validator.address.clone(),
-                                                  "result" => result);
-                                        }
-                                        Err(e) => {
-                                            println!(
-                                                "❌ Failed to distribute validator rewards: {}",
-                                                e
-                                            );
-                                            warn!("consensus", "Failed to distribute validator rewards (legacy)",
-                                                  "validator" => selected_validator.address.clone(),
-                                                  "error" => e);
-                                        }
-                                    }
-                                }
-
-                                // Update synergy scores
-                                Self::update_synergy_scores(
-                                    &validator_manager,
-                                    &synergy_calculator,
-                                    &selected_validator.address,
-                                );
+                                // Consensus hotfix: validator health metrics and reward
+                                // payouts are currently node-local bookkeeping. Mutating
+                                // them here makes persisted state diverge even when every
+                                // validator commits the same block hash. Keep them out of
+                                // the live validator path until they are applied through a
+                                // shared state transition.
+                                info!("consensus", "Skipped local validator bookkeeping",
+                                      "validator" => selected_validator.address.clone(),
+                                      "mode" => "consensus-hotfix");
 
                                 // Record vote for cartel detection
                                 Self::record_vote_for_cartel_detection(
@@ -1094,8 +898,7 @@ impl ProofOfSynergy {
                                     "qc_cooperation_quorum_met" => qc.cooperation_quorum_met,
                                     "qc_epoch_number" => qc.epoch_number,
                                     "qc_cumulative_weight" => qc.cumulative_weight,
-                                    "qc_timestamp" => qc.timestamp,
-                                    "reward_amount" => reward_amount
+                                    "qc_timestamp" => qc.timestamp
                                 );
                             }
                             Err(e) => {
@@ -1286,10 +1089,32 @@ impl ProofOfSynergy {
 
     // New PoSy Helper Methods
 
-    fn is_epoch_boundary(block_index: u64, epoch_length: u64) -> bool {
-        // Epoch boundary occurs when block_index is divisible by epoch_length
-        // Epoch 0: blocks 0-(epoch_length-1), Epoch 1: next epoch_length blocks, etc.
-        block_index > 0 && block_index % epoch_length == 0
+    fn epoch_for_block(block_index: u64, epoch_length: u64) -> u64 {
+        block_index / epoch_length.max(1)
+    }
+
+    fn epoch_for_next_block(last_block_index: u64, epoch_length: u64) -> u64 {
+        Self::epoch_for_block(last_block_index.saturating_add(1), epoch_length)
+    }
+
+    fn deterministic_view_offset(last_block_timestamp: u64, leader_timeout_secs: u64) -> usize {
+        Self::deterministic_view_offset_for_time(
+            last_block_timestamp,
+            leader_timeout_secs,
+            Self::current_timestamp(),
+        )
+    }
+
+    fn deterministic_view_offset_for_time(
+        last_block_timestamp: u64,
+        leader_timeout_secs: u64,
+        current_timestamp: u64,
+    ) -> usize {
+        let timeout_secs = leader_timeout_secs.max(1);
+        current_timestamp
+            .saturating_sub(last_block_timestamp)
+            .checked_div(timeout_secs)
+            .unwrap_or(0) as usize
     }
 
     fn handle_epoch_transition(
@@ -1308,7 +1133,7 @@ impl ProofOfSynergy {
         println!("🔄 Epoch Transition: Starting epoch {}", current_epoch);
 
         // 1. Generate new epoch randomness
-        let previous_qc = Self::get_previous_quorum_certificate(chain, epoch_length);
+        let previous_qc = Self::get_previous_quorum_certificate(chain, *current_epoch, epoch_length);
         let mut beacon = entropy_beacon.lock().unwrap();
         let _epoch_randomness = beacon.generate_epoch_randomness(&previous_qc);
         drop(beacon);
@@ -1335,15 +1160,30 @@ impl ProofOfSynergy {
         println!("🔄 Epoch Transition: Completed epoch {}", current_epoch);
     }
 
-    fn get_previous_quorum_certificate(chain: &BlockChain, epoch_length: u64) -> QuorumCertificate {
-        // Retrieve the actual QC from the chain at the epoch boundary
-        // For now, we'll create a QC based on the most recent block in the chain
-        if let Some(block) = chain.last() {
+    fn get_previous_quorum_certificate(
+        chain: &BlockChain,
+        current_epoch: u64,
+        epoch_length: u64,
+    ) -> QuorumCertificate {
+        let epoch_length = epoch_length.max(1);
+        let boundary_height = current_epoch
+            .saturating_mul(epoch_length)
+            .saturating_sub(1);
+
+        // Reconstruct the epoch seed from the block immediately before the
+        // epoch boundary. Falling back to the chain tip is only a safeguard for
+        // truncated history; normal operation should always find the boundary block.
+        if let Some(block) = chain
+            .chain
+            .iter()
+            .find(|block| block.block_index == boundary_height)
+            .or_else(|| chain.last())
+        {
             // Create a placeholder QC based on the block's info
             // In the actual implementation, blocks would contain QCs from consensus
             QuorumCertificate {
                 block_hash: block.hash.clone(),
-                epoch_number: block.block_index / epoch_length.max(1), // Calculate epoch from block index
+                epoch_number: block.block_index / epoch_length,
                 round_number: 1,
                 aggregate_signature: block.block_signature.clone(),
                 participant_bitmap: vec![0xFF], // Placeholder bitmap
@@ -1368,11 +1208,47 @@ impl ProofOfSynergy {
         }
     }
 
+    fn deterministic_epoch_randomness(
+        chain: &BlockChain,
+        block_height: u64,
+        epoch_length: u64,
+    ) -> Vec<u8> {
+        let epoch_length = epoch_length.max(1);
+        let current_epoch = block_height / epoch_length;
+        let previous_qc = Self::get_previous_quorum_certificate(chain, current_epoch, epoch_length);
+        Self::deterministic_epoch_randomness_from_qc(&previous_qc)
+    }
+
+    fn deterministic_epoch_randomness_from_qc(previous_qc: &QuorumCertificate) -> Vec<u8> {
+        let next_epoch = previous_qc.epoch_number.saturating_add(1);
+        let qc_hash = Self::hash_quorum_certificate(previous_qc);
+
+        let mut input = Vec::new();
+        input.extend(next_epoch.to_be_bytes());
+        input.extend(qc_hash.as_bytes());
+
+        let mut hasher = Sha3_512::new();
+        hasher.update(&input);
+        hasher.finalize().to_vec()
+    }
+
+    fn hash_quorum_certificate(qc: &QuorumCertificate) -> String {
+        let mut hasher = Sha3_512::new();
+        hasher.update(qc.block_hash.as_bytes());
+        hasher.update(qc.epoch_number.to_be_bytes());
+        hasher.update(qc.round_number.to_be_bytes());
+        hasher.update(&qc.aggregate_signature);
+        hasher.update(&qc.participant_bitmap);
+        hasher.update([qc.validation_quorum_met as u8]);
+        hasher.update([qc.cooperation_quorum_met as u8]);
+        hex::encode(hasher.finalize())
+    }
+
     fn select_leader_for_block(
         validators: &[Validator],
         block_height: u64,
-        synergy_calculator: &Arc<SynergyScoreCalculator>,
-        entropy_beacon: &Arc<Mutex<EntropyBeacon>>,
+        _synergy_calculator: &Arc<SynergyScoreCalculator>,
+        epoch_randomness: &[u8],
         epoch_length: u64,
         view_offset: usize,
     ) -> Validator {
@@ -1406,11 +1282,6 @@ impl ProofOfSynergy {
                 current_epoch
             );
 
-            // Get current epoch randomness
-            let beacon = entropy_beacon.lock().unwrap();
-            let epoch_randomness = beacon.epoch_randomness.clone();
-            drop(beacon);
-
             // Calculate priority for each validator using Equation 17 from PoSy spec
             let mut validator_priorities = Vec::new();
 
@@ -1421,23 +1292,28 @@ impl ProofOfSynergy {
             for validator in validators.iter() {
                 // Calculate priority: H(r_e || validatorID_v) * SS_v,normalized (PoSy Equation 17)
                 let mut hasher = Sha3_512::new();
-                hasher.update(&epoch_randomness);
+                hasher.update(epoch_randomness);
                 hasher.update(validator.address.as_bytes());
                 let hash = hasher.finalize();
+                let raw_hash = u64::from_be_bytes(hash[..8].try_into().unwrap());
 
-                // Get normalized synergy score
-                let components = synergy_calculator.calculate_synergy_score(validator);
-                let normalized_score = components.normalized_score;
+                let consensus_weight = Self::stable_leader_weight(validators, validator);
 
                 // Calculate priority value
-                let priority_value =
-                    u64::from_be_bytes(hash[..8].try_into().unwrap()) as f64 * normalized_score;
+                let priority_value = raw_hash as f64 * consensus_weight;
 
-                validator_priorities.push((validator.clone(), priority_value));
+                validator_priorities.push((validator.clone(), priority_value, raw_hash));
             }
 
-            // Sort by priority value (descending)
-            validator_priorities.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+            // Sort deterministically. When priorities tie, fall back to the raw
+            // hash and finally the validator address so every node computes the
+            // same top-K order from the same epoch randomness.
+            validator_priorities.sort_by(|a, b| {
+                b.1.partial_cmp(&a.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| b.2.cmp(&a.2))
+                    .then_with(|| a.0.address.cmp(&b.0.address))
+            });
 
             // Select top K validators for round-robin (K = min(10, |validators|) as per PoSy)
             // Use all validators if we have 3 or fewer, otherwise use min(10, validators.len())
@@ -1445,7 +1321,7 @@ impl ProofOfSynergy {
             let top_k_addresses: Vec<String> = validator_priorities
                 .iter()
                 .take(k)
-                .map(|(v, _)| v.address.clone())
+                .map(|(v, _, _)| v.address.clone())
                 .collect();
 
             info!("consensus", "Selected top K validators for epoch", 
@@ -1506,6 +1382,21 @@ impl ProofOfSynergy {
             selected_validator.address
         );
         selected_validator
+    }
+
+    fn stable_leader_weight(validators: &[Validator], validator: &Validator) -> f64 {
+        let total_stake = validators
+            .iter()
+            .map(|candidate| candidate.stake_amount)
+            .sum::<u64>()
+            .max(1);
+        let weight = validator.stake_amount as f64 / total_stake as f64;
+
+        if weight > 0.0 {
+            weight
+        } else {
+            f64::EPSILON
+        }
     }
 
     fn create_block_proposal(
@@ -1634,17 +1525,11 @@ impl ProofOfSynergy {
 
     fn update_synergy_scores(
         validator_manager: &Arc<ValidatorManager>,
-        synergy_calculator: &Arc<SynergyScoreCalculator>,
+        _synergy_calculator: &Arc<SynergyScoreCalculator>,
         validator_address: &str,
     ) {
-        if let Some(validator) = validator_manager.get_validator(validator_address) {
-            let components = synergy_calculator.calculate_synergy_score(&validator);
-            validator_manager.update_synergy_score(validator_address, components.normalized_score);
-            println!(
-                "📊 Updated synergy score for {}: {:.2}",
-                validator_address, components.normalized_score
-            );
-        }
+        let _ = validator_manager;
+        let _ = validator_address;
     }
 
     fn record_vote_for_cartel_detection(
@@ -1786,16 +1671,21 @@ impl ProofOfSynergy {
 
     fn recalculate_all_synergy_scores(
         validator_manager: &Arc<ValidatorManager>,
-        synergy_calculator: &Arc<SynergyScoreCalculator>,
+        _synergy_calculator: &Arc<SynergyScoreCalculator>,
     ) {
-        let validators = validator_manager.get_active_validators();
-
-        for validator in validators {
-            let components = synergy_calculator.calculate_synergy_score(&validator);
-            validator_manager.update_synergy_score(&validator.address, components.normalized_score);
+        if let Ok(mut registry) = validator_manager.registry.lock() {
+            for validator in registry.validators.values_mut() {
+                // Keep the persisted validator health score aligned with the
+                // intrinsic validator metrics. The synergy calculator's
+                // normalized score is a comparative ranking for leader
+                // selection, and persisting it here can wrongly evict healthy
+                // validators at epoch boundaries when one proposer has more
+                // proposal history than the rest of the set.
+                validator.calculate_synergy_score();
+            }
         }
 
-        println!("📊 Recalculated synergy scores for all validators");
+        println!("📊 Recalculated validator health scores for all validators");
     }
 
     fn update_governance_proposals(governance: &mut DAOGovernance, current_epoch: u64) {
@@ -1880,6 +1770,7 @@ impl ProofOfSynergy {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::{Block, BlockChain};
     use crate::validator::ValidatorStatus;
 
     fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {
@@ -1939,5 +1830,222 @@ mod tests {
         assert_eq!(after.missed_blocks, before.missed_blocks);
         assert_eq!(after.missed_vote_window, before.missed_vote_window);
         assert_eq!(after.uptime_percentage, before.uptime_percentage);
+    }
+
+    #[test]
+    fn next_block_epoch_transitions_at_boundary_only_once() {
+        assert_eq!(ProofOfSynergy::epoch_for_next_block(998, 1000), 0);
+        assert_eq!(ProofOfSynergy::epoch_for_next_block(999, 1000), 1);
+        assert_eq!(ProofOfSynergy::epoch_for_next_block(1000, 1000), 1);
+
+        let mut current_epoch = 0;
+        let target_epoch = ProofOfSynergy::epoch_for_next_block(999, 1000);
+        while current_epoch < target_epoch {
+            current_epoch += 1;
+        }
+        assert_eq!(current_epoch, 1);
+
+        let same_boundary_epoch = ProofOfSynergy::epoch_for_next_block(1000, 1000);
+        while current_epoch < same_boundary_epoch {
+            current_epoch += 1;
+        }
+        assert_eq!(current_epoch, 1);
+    }
+
+    #[test]
+    fn deterministic_view_offset_uses_shared_block_time() {
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 4_983),
+            0
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_002),
+            0
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_003),
+            1
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_044),
+            3
+        );
+    }
+
+    #[test]
+    fn previous_qc_uses_epoch_boundary_block_on_mid_epoch_restart() {
+        let mut chain = BlockChain::new();
+        chain.add_block(Block {
+            block_index: 999,
+            timestamp: 999,
+            transactions: Vec::new(),
+            previous_hash: "998".to_string(),
+            validator_id: "validator-a".to_string(),
+            nonce: 999,
+            hash: "boundary-999".to_string(),
+            transactions_root: String::new(),
+            proposer_public_key: Vec::new(),
+            block_signature: vec![9, 9, 9],
+            block_signature_algorithm: "fndsa".to_string(),
+        });
+        chain.add_block(Block {
+            block_index: 1026,
+            timestamp: 1026,
+            transactions: Vec::new(),
+            previous_hash: "1025".to_string(),
+            validator_id: "validator-b".to_string(),
+            nonce: 1026,
+            hash: "mid-epoch-1026".to_string(),
+            transactions_root: String::new(),
+            proposer_public_key: Vec::new(),
+            block_signature: vec![1, 2, 6],
+            block_signature_algorithm: "fndsa".to_string(),
+        });
+
+        let previous_qc = ProofOfSynergy::get_previous_quorum_certificate(&chain, 1, 1000);
+
+        assert_eq!(previous_qc.block_hash, "boundary-999");
+        assert_eq!(previous_qc.epoch_number, 0);
+        assert_eq!(previous_qc.aggregate_signature, vec![9, 9, 9]);
+    }
+
+    #[test]
+    fn deterministic_epoch_randomness_uses_boundary_qc_only() {
+        let mut chain = BlockChain::new();
+        chain.add_block(Block {
+            block_index: 999,
+            timestamp: 999,
+            transactions: Vec::new(),
+            previous_hash: "998".to_string(),
+            validator_id: "validator-a".to_string(),
+            nonce: 999,
+            hash: "boundary-999".to_string(),
+            transactions_root: String::new(),
+            proposer_public_key: Vec::new(),
+            block_signature: vec![9, 9, 9],
+            block_signature_algorithm: "fndsa".to_string(),
+        });
+        chain.add_block(Block {
+            block_index: 1026,
+            timestamp: 1026,
+            transactions: Vec::new(),
+            previous_hash: "1025".to_string(),
+            validator_id: "validator-b".to_string(),
+            nonce: 1026,
+            hash: "mid-epoch-1026".to_string(),
+            transactions_root: String::new(),
+            proposer_public_key: Vec::new(),
+            block_signature: vec![1, 2, 6],
+            block_signature_algorithm: "fndsa".to_string(),
+        });
+
+        let direct_qc = ProofOfSynergy::get_previous_quorum_certificate(&chain, 1, 1000);
+        let expected = ProofOfSynergy::deterministic_epoch_randomness_from_qc(&direct_qc);
+        let actual = ProofOfSynergy::deterministic_epoch_randomness(&chain, 1_026, 1_000);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn leader_selection_ignores_local_performance_metrics() {
+        let manager = Arc::new(ValidatorManager::new());
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let synergy_calculator =
+            Arc::new(SynergyScoreCalculator::new(Arc::clone(&manager), Arc::clone(&pqc_manager)));
+        let epoch_randomness = vec![42; 32];
+
+        let build_validator = |address: &str, stake_amount: u64| {
+            let mut validator = Validator::new(
+                address.to_string(),
+                format!("{address}-pubkey"),
+                address.to_string(),
+                stake_amount,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator
+        };
+
+        let validators_a = vec![
+            build_validator("synv1a", 3_000),
+            build_validator("synv1b", 2_000),
+            build_validator("synv1c", 1_000),
+        ];
+
+        let mut validators_b = validators_a.clone();
+        validators_b[0].total_blocks_produced = 10_000;
+        validators_b[0].total_transactions_validated = 10_000;
+        validators_b[0].collaboration_score = 500.0;
+        validators_b[0].average_block_time = 1.0;
+        validators_b[0].reputation_score = 15.0;
+        validators_b[0].slashing_penalty = 0.75;
+        validators_b[0].calculate_synergy_score();
+        validators_b[1].missed_blocks = 250;
+        validators_b[1].reputation_score = 1.0;
+        validators_b[1].calculate_synergy_score();
+
+        *EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0);
+        let leader_a = ProofOfSynergy::select_leader_for_block(
+            &validators_a,
+            1_000,
+            &synergy_calculator,
+            &epoch_randomness,
+            1_000,
+            0,
+        );
+
+        *EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0);
+        let leader_b = ProofOfSynergy::select_leader_for_block(
+            &validators_b,
+            1_000,
+            &synergy_calculator,
+            &epoch_randomness,
+            1_000,
+            0,
+        );
+
+        assert_eq!(leader_a.address, leader_b.address);
+    }
+
+    #[test]
+    fn epoch_recalculation_keeps_healthy_validators_eligible() {
+        let manager = Arc::new(ValidatorManager::new());
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let synergy_calculator =
+            Arc::new(SynergyScoreCalculator::new(Arc::clone(&manager), pqc_manager));
+
+        {
+            let mut registry = manager
+                .registry
+                .lock()
+                .expect("registry lock should succeed");
+
+            for index in 0..5 {
+                let address = format!("synv1epoch{index}");
+                let mut validator = Validator::new(
+                    address.clone(),
+                    format!("{address}-pubkey"),
+                    format!("Validator {index}"),
+                    1_000,
+                );
+                validator.status = ValidatorStatus::Active;
+                validator.total_blocks_produced = u64::from(index == 0) * 1_000;
+                validator.total_transactions_validated = u64::from(index == 0) * 1_000;
+                registry.validators.insert(address, validator);
+            }
+        }
+
+        ProofOfSynergy::recalculate_all_synergy_scores(&manager, &synergy_calculator);
+
+        let active_validators = manager.get_active_validators();
+        assert_eq!(active_validators.len(), 5);
+        assert!(
+            active_validators
+                .iter()
+                .all(|validator| validator.synergy_score >= 50.0)
+        );
     }
 }
