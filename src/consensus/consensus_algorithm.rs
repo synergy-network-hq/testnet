@@ -577,7 +577,12 @@ impl ProofOfSynergy {
                                 genesis_status_gate_bypassed = false;
                             }
 
-                            let best_validator_height = network.get_best_validator_peer_height();
+                            let required_sync_support =
+                                status_ready_required_validators.saturating_sub(1).max(1);
+                            let best_validator_height = network
+                                .get_best_validator_peer_height_with_support(
+                                    required_sync_support,
+                                );
                             if best_validator_height > latest_block.block_index {
                                 mesh_ready_since = None;
                                 status_sync_grace_since = None;
@@ -585,7 +590,8 @@ impl ProofOfSynergy {
                                     "consensus",
                                     "Waiting to sync to best validator height before block production",
                                     "local_height" => latest_block.block_index,
-                                    "best_validator_height" => best_validator_height
+                                    "best_validator_height" => best_validator_height,
+                                    "required_sync_support" => required_sync_support as u64
                                 );
                                 thread::sleep(Duration::from_millis(500));
                                 continue;

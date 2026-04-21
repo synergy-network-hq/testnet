@@ -967,6 +967,39 @@ fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
         .unwrap_or(0)
 }
 
+fn best_connected_validator_height_with_support(
+    connected_peers: &PeersArc,
+    min_support: usize,
+) -> u64 {
+    let min_support = min_support.max(1);
+    connected_peers
+        .lock()
+        .map(|peers| {
+            let mut support_by_tip = HashMap::<(u64, String), usize>::new();
+
+            for peer in peers.values().filter(|peer| {
+                peer.validator_address
+                    .as_deref()
+                    .map(|value| !value.trim().is_empty())
+                    .unwrap_or(false)
+                    && peer_has_remote_status(peer)
+                    && !peer.best_block_hash.trim().is_empty()
+            }) {
+                *support_by_tip
+                    .entry((peer.last_known_height, peer.best_block_hash.clone()))
+                    .or_insert(0) += 1;
+            }
+
+            support_by_tip
+                .into_iter()
+                .filter(|(_, support)| *support >= min_support)
+                .map(|((height, _hash), _support)| height)
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0)
+}
+
 fn current_bootstrap_refresh_interval(config: &NodeConfig, connected_peers: &PeersArc) -> Duration {
     let required_validators = config.consensus.min_validators.max(1);
     let discovered_validators = status_ready_validator_participants(config, connected_peers);
@@ -1607,6 +1640,10 @@ impl P2PNetwork {
 
     pub fn get_best_validator_peer_height(&self) -> u64 {
         best_connected_validator_height(&self.connected_peers)
+    }
+
+    pub fn get_best_validator_peer_height_with_support(&self, min_support: usize) -> u64 {
+        best_connected_validator_height_with_support(&self.connected_peers, min_support)
     }
 
     pub fn collect_peer_snapshots(&self) -> Vec<PeerSnapshot> {
@@ -4321,6 +4358,86 @@ mod tests {
 
         let connected_peers = Arc::new(Mutex::new(peers));
         assert_eq!(best_connected_validator_height(&connected_peers), 7);
+    }
+
+    #[test]
+    fn best_connected_validator_height_with_support_ignores_single_higher_fork() {
+        let mut peers = HashMap::new();
+        peers.insert(
+            "peer-a".to_string(),
+            PeerConnection {
+                address: "127.0.0.1:5622".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-a".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 12,
+                best_block_hash: "hash-12".to_string(),
+                genesis_hash: "genesis-hash".to_string(),
+                status_received_at: Some(1),
+            },
+        );
+        peers.insert(
+            "peer-b".to_string(),
+            PeerConnection {
+                address: "127.0.0.2:5622".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-b".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 12,
+                best_block_hash: "hash-12".to_string(),
+                genesis_hash: "genesis-hash".to_string(),
+                status_received_at: Some(1),
+            },
+        );
+        peers.insert(
+            "peer-c".to_string(),
+            PeerConnection {
+                address: "127.0.0.3:5622".to_string(),
+                direction: ConnectionDirection::Outgoing,
+                public_address: None,
+                validator_address: Some("synv1peer-c".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 20,
+                best_block_hash: "fork-20".to_string(),
+                genesis_hash: "genesis-hash".to_string(),
+                status_received_at: Some(1),
+            },
+        );
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        assert_eq!(
+            super::best_connected_validator_height_with_support(&connected_peers, 2),
+            12
+        );
     }
 
     #[test]
