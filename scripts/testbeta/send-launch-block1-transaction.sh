@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 PROFILE_PATH="${PROFILE_PATH:-$HOME/.synergy/testnet-beta/network/profile.json}"
-RPC_URL="${RPC_URL:-http://127.0.0.1:5640}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5646}"
 AMOUNT_SNRG="${AMOUNT_SNRG:-1}"
 MEMO="${MEMO:-launch-block-1}"
 RUNNER="${RUNNER:-$ROOT_DIR/scripts/testbeta/transaction-runner.sh}"

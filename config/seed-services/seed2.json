@@ -5,11 +5,31 @@
   "admin_token_env": "SEED_ADMIN_TOKEN",
   "allow_dynamic_registration": false,
   "state_file": "/var/lib/synergy-seed/seed2-peers.json",
-  "bootnodes": [],
+  "bootnodes": [
+    {
+      "hostname": "bootnode1.synergynode.xyz",
+      "port": 5620,
+      "reachable": true
+    },
+    {
+      "hostname": "bootnode2.synergynode.xyz",
+      "port": 5620,
+      "reachable": true
+    },
+    {
+      "hostname": "bootnode3.synergynode.xyz",
+      "port": 5620,
+      "reachable": true
+    }
+  ],
   "static_peers": [
-    "relay2.synergynode.xyz:5622"
+    "bootnode1.synergynode.xyz:5620",
+    "bootnode2.synergynode.xyz:5620",
+    "bootnode3.synergynode.xyz:5620"
   ],
   "dnsaddr_bootstrap": [
-    "dnsaddr=/dns4/relay2.synergynode.xyz/tcp/5622"
+    "dnsaddr=/dns4/bootnode1.synergynode.xyz/tcp/5620",
+    "dnsaddr=/dns4/bootnode2.synergynode.xyz/tcp/5620",
+    "dnsaddr=/dns4/bootnode3.synergynode.xyz/tcp/5620"
   ]
 }

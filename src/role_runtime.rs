@@ -327,6 +327,38 @@ fn rpc_bind_url(config: &NodeConfig) -> String {
     )
 }
 
+fn atlas_service_envs_with_overrides(
+    synergy_env: String,
+    database_url: String,
+    source_rpc_url: Option<String>,
+    fallback_rpc_url: Option<String>,
+) -> Vec<(&'static str, String)> {
+    let mut envs = vec![
+        ("NODE_ENV", "production".to_string()),
+        ("SYNERGY_ENV", synergy_env),
+        ("DATABASE_URL", database_url),
+    ];
+
+    if let Some(value) = source_rpc_url.filter(|value| !value.trim().is_empty()) {
+        envs.push(("SYNERGY_CORE_RPC_URL", value));
+    }
+
+    if let Some(value) = fallback_rpc_url.filter(|value| !value.trim().is_empty()) {
+        envs.push(("SYNERGY_CORE_RPC_FALLBACK_URL", value));
+    }
+
+    envs
+}
+
+fn atlas_service_envs(synergy_env: String, database_url: String) -> Vec<(&'static str, String)> {
+    atlas_service_envs_with_overrides(
+        synergy_env,
+        database_url,
+        env::var("SYNERGY_CORE_RPC_URL").ok(),
+        env::var("SYNERGY_CORE_RPC_FALLBACK_URL").ok(),
+    )
+}
+
 fn ensure_logs_dir() -> PathBuf {
     let logs_dir = PathBuf::from("data").join("logs");
     let _ = fs::create_dir_all(&logs_dir);
@@ -400,13 +432,13 @@ fn run_node_script(
     }
 }
 
-fn resolve_explorer_root(project_root: &Path) -> Option<PathBuf> {
-    let local = project_root.join("explorer-app");
+fn resolve_explorer_root(runtime_root: &Path) -> Option<PathBuf> {
+    let local = runtime_root.join("explorer-app");
     if local.exists() {
         return Some(local);
     }
 
-    project_root
+    runtime_root
         .parent()
         .map(|parent| parent.join("explorer-app"))
         .filter(|candidate| candidate.exists())
@@ -587,13 +619,15 @@ fn start_role_local_services(
             });
         }
         NodeRole::IndexerExplorer => {
-            let project_root = utils::get_project_root();
-            let Some(project_root) = project_root else {
-                eprintln!("Indexer/Explorer role requires a project root with Cargo.toml.");
+            let runtime_root = utils::get_runtime_root();
+            let Some(runtime_root) = runtime_root else {
+                eprintln!(
+                    "Indexer/Explorer role requires a runtime root with config/ and bundled explorer-app assets."
+                );
                 return active;
             };
 
-            let Some(explorer_root) = resolve_explorer_root(&project_root) else {
+            let Some(explorer_root) = resolve_explorer_root(&runtime_root) else {
                 eprintln!(
                     "Indexer/Explorer role requires explorer-app directory near the node runtime."
                 );
@@ -613,7 +647,6 @@ fn start_role_local_services(
                 }
             };
 
-            let rpc_url = rpc_bind_url(config);
             let synergy_env = infer_synergy_env(config).to_string();
             let indexer_dir = explorer_root.join("indexer");
             let backend_dir = explorer_root.join("backend");
@@ -628,12 +661,11 @@ fn start_role_local_services(
             let indexer_migrate = indexer_dir.join("scripts").join("migrate.js");
             let backend_migrate = backend_dir.join("scripts").join("migrate.js");
 
-            let base_envs = vec![
-                ("NODE_ENV", "production".to_string()),
-                ("SYNERGY_ENV", synergy_env),
-                ("SYNERGY_CORE_RPC_URL", rpc_url),
-                ("DATABASE_URL", database_url),
-            ];
+            // Atlas defaults to the canonical public core RPC for the current
+            // environment. Preserve only explicit overrides; do not force the
+            // local explorer node RPC, because its synced block store does not
+            // guarantee authoritative wallet/stake query state.
+            let base_envs = atlas_service_envs(synergy_env, database_url);
 
             if let Err(error) = run_node_script(
                 "atlas-indexer-migrate",
@@ -1782,6 +1814,16 @@ mod tests {
     #[test]
     fn relayer_profile_starts_p2p() {
         assert!(role_profile_requires_p2p(NodeRole::Relayer.profile()));
+    }
+
+    #[test]
+    fn indexer_explorer_profile_starts_p2p_and_sync() {
+        let config = NodeConfig::default();
+        let profile = NodeRole::IndexerExplorer.profile();
+
+        assert!(role_profile_requires_p2p(profile));
+        assert!(should_start_p2p(&config, Some(profile)));
+        assert!(should_start_sync(&config, Some(profile)));
     }
 
     #[test]

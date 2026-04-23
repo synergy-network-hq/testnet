@@ -19,8 +19,8 @@ max_peers = 128
 bootnodes = []
 seed_servers = []
 bootstrap_dns_records = []
-additional_dial_targets = ["relay1.synergynode.xyz:5622"]
-persistent_peers = ["relay1.synergynode.xyz:5622"]
+additional_dial_targets = []
+persistent_peers = []
 
 [blockchain]
 block_time = 2
@@ -31,12 +31,12 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 2
 epoch_length = 1000
-min_validators = 5
+min_validators = 3
 validator_cluster_size = 5
 validator_vote_threshold = 4
 max_validators = 5
 status_ready_gate_enabled = true
-status_ready_min_validators = 5
+status_ready_min_validators = 3
 status_ready_genesis_grace_secs = 0
 allow_genesis_status_bypass = false
 mesh_settle_secs = 15
@@ -75,9 +75,9 @@ cors_origins = []
 
 [p2p]
 listen_address = "0.0.0.0:5620"
-public_address = "bootnode2.synergyvps.xyz:5620"
+public_address = "bootnode2.synergynode.xyz:5620"
 discovery_listen_address = "0.0.0.0:5680"
-discovery_public_address = "bootnode2.synergyvps.xyz:5680"
+discovery_public_address = "bootnode2.synergynode.xyz:5680"
 node_name = "bootnode2"
 enable_discovery = true
 discovery_port = 5680

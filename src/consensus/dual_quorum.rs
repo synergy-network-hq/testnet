@@ -686,7 +686,7 @@ impl DualQuorumConsensus {
         }
 
         if let Some(network) = crate::p2p::get_p2p_network() {
-            for validator_address in network.get_connected_validator_addresses() {
+            for validator_address in network.get_status_ready_validator_addresses() {
                 if active_by_address.contains_key(&validator_address) {
                     live_addresses.insert(validator_address);
                 }

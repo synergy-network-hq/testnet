@@ -98,8 +98,8 @@ pub struct RewardWeights {
 
 // Track leader rotation within epochs
 lazy_static::lazy_static! {
-    static ref EPOCH_LEADER_ROTATION: Arc<Mutex<(u64, Vec<String>, usize)>> =
-        Arc::new(Mutex::new((0, Vec::new(), 0))); // (epoch, top_k_validators, current_index)
+    static ref EPOCH_LEADER_ROTATION: Arc<Mutex<(u64, Vec<String>, usize, Vec<String>)>> =
+        Arc::new(Mutex::new((0, Vec::new(), 0, Vec::new()))); // (epoch, top_k_validators, current_index, candidate_set)
     static ref EPHEMERAL_LEADER_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
@@ -487,7 +487,8 @@ impl ProofOfSynergy {
                             .cloned()
                             .collect::<HashSet<_>>();
                         let live_active_validators: Vec<Validator> = active_validators
-                            .into_iter()
+                            .iter()
+                            .cloned()
                             .filter(|validator| {
                                 live_validator_address_set.contains(&validator.address)
                             })
@@ -580,9 +581,7 @@ impl ProofOfSynergy {
                             let required_sync_support =
                                 status_ready_required_validators.saturating_sub(1).max(1);
                             let best_validator_height = network
-                                .get_best_validator_peer_height_with_support(
-                                    required_sync_support,
-                                );
+                                .get_best_validator_peer_height_with_support(required_sync_support);
                             if best_validator_height > latest_block.block_index {
                                 mesh_ready_since = None;
                                 status_sync_grace_since = None;
@@ -636,6 +635,7 @@ impl ProofOfSynergy {
                         // Clone latest_block before we might need to drop the guard
                         let latest_block_clone = latest_block.clone();
                         let view_offset = Self::deterministic_view_offset(
+                            latest_block_clone.block_index,
                             latest_block_clone.timestamp,
                             leader_timeout_secs,
                         );
@@ -643,19 +643,17 @@ impl ProofOfSynergy {
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
                         let next_block_index = latest_block_clone.block_index + 1;
-                        // Use ALL registry-active validators for leader selection
-                        // so that every node computes the same rotation order
-                        // regardless of which peers happen to be connected at
-                        // computation time.  The live_active_validators check above
-                        // already enforces the min_validators liveness gate.
-                        let all_active_validators = validator_manager.get_active_validators();
+                        // Rebuild leader rotation from the registry-active validator set.
+                        // The liveness gate above still decides whether block production is
+                        // allowed, but every node must derive the same leader order from the
+                        // same validator set for a given height/epoch.
                         let epoch_randomness = Self::deterministic_epoch_randomness(
                             &chain_guard,
                             next_block_index,
                             epoch_length,
                         );
                         let selected_validator = Self::select_leader_for_block(
-                            &all_active_validators,
+                            &active_validators,
                             next_block_index,
                             &synergy_calculator,
                             &epoch_randomness,
@@ -1009,7 +1007,7 @@ impl ProofOfSynergy {
         }
 
         if let Some(network) = crate::p2p::get_p2p_network() {
-            for validator_address in network.get_connected_validator_addresses() {
+            for validator_address in network.get_status_ready_validator_addresses() {
                 if active_validator_addresses.contains(&validator_address) {
                     live_validator_addresses.insert(validator_address);
                 }
@@ -1103,11 +1101,37 @@ impl ProofOfSynergy {
         Self::epoch_for_block(last_block_index.saturating_add(1), epoch_length)
     }
 
-    fn deterministic_view_offset(last_block_timestamp: u64, leader_timeout_secs: u64) -> usize {
-        Self::deterministic_view_offset_for_time(
+    fn deterministic_view_offset(
+        last_block_index: u64,
+        last_block_timestamp: u64,
+        leader_timeout_secs: u64,
+    ) -> usize {
+        Self::deterministic_view_offset_for_block_time(
+            last_block_index,
             last_block_timestamp,
             leader_timeout_secs,
             Self::current_timestamp(),
+        )
+    }
+
+    fn deterministic_view_offset_for_block_time(
+        last_block_index: u64,
+        last_block_timestamp: u64,
+        leader_timeout_secs: u64,
+        current_timestamp: u64,
+    ) -> usize {
+        // Genesis has no committed in-network clock yet. Deriving the initial view
+        // offset from each node's wall clock causes different validators to rotate to
+        // different leaders before block 1 exists, so keep the primary leader fixed
+        // until the first block commits and provides a fresh shared timestamp anchor.
+        if last_block_index == 0 {
+            return 0;
+        }
+
+        Self::deterministic_view_offset_for_time(
+            last_block_timestamp,
+            leader_timeout_secs,
+            current_timestamp,
         )
     }
 
@@ -1139,7 +1163,8 @@ impl ProofOfSynergy {
         println!("🔄 Epoch Transition: Starting epoch {}", current_epoch);
 
         // 1. Generate new epoch randomness
-        let previous_qc = Self::get_previous_quorum_certificate(chain, *current_epoch, epoch_length);
+        let previous_qc =
+            Self::get_previous_quorum_certificate(chain, *current_epoch, epoch_length);
         let mut beacon = entropy_beacon.lock().unwrap();
         let _epoch_randomness = beacon.generate_epoch_randomness(&previous_qc);
         drop(beacon);
@@ -1172,9 +1197,7 @@ impl ProofOfSynergy {
         epoch_length: u64,
     ) -> QuorumCertificate {
         let epoch_length = epoch_length.max(1);
-        let boundary_height = current_epoch
-            .saturating_mul(epoch_length)
-            .saturating_sub(1);
+        let boundary_height = current_epoch.saturating_mul(epoch_length).saturating_sub(1);
 
         // Reconstruct the epoch seed from the block immediately before the
         // epoch boundary. Falling back to the chain tip is only a safeguard for
@@ -1277,10 +1300,18 @@ impl ProofOfSynergy {
         // Calculate current epoch from configured epoch length.
         let current_epoch = block_height / epoch_length;
         let block_in_epoch = block_height % epoch_length;
+        let mut candidate_addresses = validators
+            .iter()
+            .map(|validator| validator.address.clone())
+            .collect::<Vec<_>>();
+        candidate_addresses.sort();
+        candidate_addresses.dedup();
 
         // Check if we need to recalculate leader priorities (at epoch start or if not initialized)
         let mut rotation = EPOCH_LEADER_ROTATION.lock().unwrap();
-        let needs_recalculation = rotation.0 != current_epoch || rotation.1.is_empty();
+        let needs_recalculation = rotation.0 != current_epoch
+            || rotation.1.is_empty()
+            || rotation.3 != candidate_addresses;
 
         if needs_recalculation {
             consensus_log!(
@@ -1349,6 +1380,7 @@ impl ProofOfSynergy {
             rotation.0 = current_epoch;
             rotation.1 = top_k_addresses;
             rotation.2 = 0; // Reset index for new epoch
+            rotation.3 = candidate_addresses;
         }
 
         // Use round-robin within epoch (PoSy: top K validators rotate).
@@ -1879,6 +1911,22 @@ mod tests {
     }
 
     #[test]
+    fn deterministic_view_offset_keeps_genesis_on_primary_leader() {
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_block_time(0, 4_983, 20, 4_983),
+            0
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_block_time(0, 4_983, 20, 5_500),
+            0
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_block_time(1, 4_983, 20, 5_500),
+            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_500)
+        );
+    }
+
+    #[test]
     fn previous_qc_uses_epoch_boundary_block_on_mid_epoch_restart() {
         let mut chain = BlockChain::new();
         chain.add_block(Block {
@@ -1956,8 +2004,10 @@ mod tests {
     fn leader_selection_ignores_local_performance_metrics() {
         let manager = Arc::new(ValidatorManager::new());
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
-        let synergy_calculator =
-            Arc::new(SynergyScoreCalculator::new(Arc::clone(&manager), Arc::clone(&pqc_manager)));
+        let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
+            Arc::clone(&manager),
+            Arc::clone(&pqc_manager),
+        ));
         let epoch_randomness = vec![42; 32];
 
         let build_validator = |address: &str, stake_amount: u64| {
@@ -1991,7 +2041,7 @@ mod tests {
 
         *EPOCH_LEADER_ROTATION
             .lock()
-            .expect("rotation lock should succeed") = (0, Vec::new(), 0);
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0, Vec::new());
         let leader_a = ProofOfSynergy::select_leader_for_block(
             &validators_a,
             1_000,
@@ -2003,7 +2053,7 @@ mod tests {
 
         *EPOCH_LEADER_ROTATION
             .lock()
-            .expect("rotation lock should succeed") = (0, Vec::new(), 0);
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0, Vec::new());
         let leader_b = ProofOfSynergy::select_leader_for_block(
             &validators_b,
             1_000,
@@ -2020,8 +2070,10 @@ mod tests {
     fn epoch_recalculation_keeps_healthy_validators_eligible() {
         let manager = Arc::new(ValidatorManager::new());
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
-        let synergy_calculator =
-            Arc::new(SynergyScoreCalculator::new(Arc::clone(&manager), pqc_manager));
+        let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
+            Arc::clone(&manager),
+            pqc_manager,
+        ));
 
         {
             let mut registry = manager
@@ -2048,10 +2100,80 @@ mod tests {
 
         let active_validators = manager.get_active_validators();
         assert_eq!(active_validators.len(), 5);
-        assert!(
-            active_validators
-                .iter()
-                .all(|validator| validator.synergy_score >= 50.0)
+        assert!(active_validators
+            .iter()
+            .all(|validator| validator.synergy_score >= 50.0));
+    }
+
+    #[test]
+    fn leader_rotation_recalculates_when_candidate_set_changes_mid_epoch() {
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
+            Arc::new(ValidatorManager::new()),
+            pqc_manager,
+        ));
+        let epoch_randomness = vec![9u8; 64];
+        let build_validator = |address: &str, stake_amount: u64| {
+            let mut validator = Validator::new(
+                address.to_string(),
+                format!("{address}-pubkey"),
+                address.to_string(),
+                stake_amount,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator
+        };
+        let validators_full = vec![
+            build_validator("synv1a", 5_000),
+            build_validator("synv1b", 4_000),
+            build_validator("synv1c", 3_000),
+            build_validator("synv1d", 2_000),
+        ];
+        let validators_reduced = vec![
+            validators_full[0].clone(),
+            validators_full[1].clone(),
+            validators_full[3].clone(),
+        ];
+
+        *EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0, Vec::new());
+
+        let _ = ProofOfSynergy::select_leader_for_block(
+            &validators_full,
+            1_005,
+            &synergy_calculator,
+            &epoch_randomness,
+            1_000,
+            0,
         );
+        let cached_full = EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed")
+            .clone();
+        assert_eq!(cached_full.3.len(), 4);
+        assert!(cached_full.1.iter().any(|address| address == "synv1c"));
+
+        let _ = ProofOfSynergy::select_leader_for_block(
+            &validators_reduced,
+            1_006,
+            &synergy_calculator,
+            &epoch_randomness,
+            1_000,
+            0,
+        );
+        let cached_reduced = EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed")
+            .clone();
+        assert_eq!(
+            cached_reduced.3,
+            vec![
+                "synv1a".to_string(),
+                "synv1b".to_string(),
+                "synv1d".to_string(),
+            ]
+        );
+        assert!(!cached_reduced.1.iter().any(|address| address == "synv1c"));
     }
 }

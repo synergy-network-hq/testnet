@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import re
-import socketserver
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -141,10 +140,6 @@ class SeedState:
         self._save()
 
 
-class ThreadedHTTPServer(socketserver.ThreadingMixIn, ThreadingHTTPServer):
-    daemon_threads = True
-
-
 class SeedHandler(BaseHTTPRequestHandler):
     server_version = "SynergySeed/1.0"
 
@@ -250,7 +245,8 @@ def main() -> None:
 
     config = load_config(Path(args.config).expanduser())
     state = SeedState(config)
-    server = ThreadedHTTPServer((config.listen_host, config.port), SeedHandler)
+    server = ThreadingHTTPServer((config.listen_host, config.port), SeedHandler)
+    server.daemon_threads = True
     server.seed_state = state  # type: ignore[attr-defined]
     print(f"Seed service '{config.label}' listening on {config.listen_host}:{config.port}")
     server.serve_forever()

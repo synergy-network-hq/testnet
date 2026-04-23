@@ -109,6 +109,37 @@ struct CachedPeerState {
     connected_at: u64,
 }
 
+struct PeerEntryGuard {
+    peer_address: String,
+    connected_peers: PeersArc,
+    peer_state_cache: PeerStateCacheArc,
+}
+
+impl PeerEntryGuard {
+    fn new(
+        peer_address: String,
+        connected_peers: PeersArc,
+        peer_state_cache: PeerStateCacheArc,
+    ) -> Self {
+        Self {
+            peer_address,
+            connected_peers,
+            peer_state_cache,
+        }
+    }
+}
+
+impl Drop for PeerEntryGuard {
+    fn drop(&mut self) {
+        if let Ok(mut peers) = self.connected_peers.lock() {
+            if peers.contains_key(&self.peer_address) {
+                disconnect_peer_entry(&self.peer_state_cache, &mut peers, &self.peer_address);
+                info!("p2p", "Peer disconnected", "peer" => self.peer_address.clone());
+            }
+        }
+    }
+}
+
 fn should_disconnect_for_status_genesis_mismatch(
     local_genesis_hash: &str,
     remote_genesis_hash: &str,
@@ -923,7 +954,10 @@ fn connected_validator_participants(config: &NodeConfig, connected_peers: &Peers
     validators.len()
 }
 
-fn status_ready_validator_participants(config: &NodeConfig, connected_peers: &PeersArc) -> usize {
+fn status_ready_validator_addresses(
+    config: &NodeConfig,
+    connected_peers: &PeersArc,
+) -> Vec<String> {
     let mut validators = HashSet::<String>::new();
 
     if let Some(local_validator) = announced_validator_address(config) {
@@ -944,7 +978,13 @@ fn status_ready_validator_participants(config: &NodeConfig, connected_peers: &Pe
         }
     }
 
-    validators.len()
+    let mut validators = validators.into_iter().collect::<Vec<_>>();
+    validators.sort();
+    validators
+}
+
+fn status_ready_validator_participants(config: &NodeConfig, connected_peers: &PeersArc) -> usize {
+    status_ready_validator_addresses(config, connected_peers).len()
 }
 
 fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
@@ -1638,6 +1678,10 @@ impl P2PNetwork {
         status_ready_validator_participants(&self.config, &self.connected_peers)
     }
 
+    pub fn get_status_ready_validator_addresses(&self) -> Vec<String> {
+        status_ready_validator_addresses(&self.config, &self.connected_peers)
+    }
+
     pub fn get_best_validator_peer_height(&self) -> u64 {
         best_connected_validator_height(&self.connected_peers)
     }
@@ -1814,15 +1858,30 @@ impl P2PNetwork {
 
                 // Try to sync missing blocks.
                 if !network.config.node.bootstrap_only {
+                    let required_validator_support =
+                        if network.config.consensus.status_ready_min_validators == 0 {
+                            network.config.consensus.min_validators.max(1)
+                        } else {
+                            network.config.consensus.status_ready_min_validators.max(1)
+                        }
+                        .saturating_sub(1)
+                        .max(1);
                     let (from_height, best_peer_height) = {
                         let chain = network.blockchain.lock().unwrap();
                         let local = chain.last().map(|b| b.block_index).unwrap_or(0);
-                        let peers = network.connected_peers.lock().unwrap();
-                        let best = peers
-                            .values()
-                            .map(|p| p.last_known_height)
-                            .max()
-                            .unwrap_or(0);
+                        let supported_best = network.get_best_validator_peer_height_with_support(
+                            required_validator_support,
+                        );
+                        let best = if supported_best > 0 {
+                            supported_best
+                        } else {
+                            let peers = network.connected_peers.lock().unwrap();
+                            peers
+                                .values()
+                                .map(|p| p.last_known_height)
+                                .max()
+                                .unwrap_or(0)
+                        };
                         (local + 1, best)
                     };
                     let behind = best_peer_height.saturating_sub(from_height.saturating_sub(1));
@@ -1965,6 +2024,78 @@ fn request_blocks_from_connected_peer(
     }
 }
 
+fn send_vote_to_requester(
+    peers: &mut PeerMap,
+    request_peer_address: &str,
+    proposer_validator_address: &str,
+    response: &NetworkMessage,
+) -> Result<String, String> {
+    if let Some(peer) = peers.get_mut(request_peer_address) {
+        if let Some(ref mut stream) = peer.stream {
+            send_message(stream, response).map_err(|error| error.to_string())?;
+            return Ok(request_peer_address.to_string());
+        }
+    }
+
+    let fallback_peer_key = peers
+        .iter()
+        .find(|(address, peer)| {
+            address.as_str() != request_peer_address
+                && peer.stream.is_some()
+                && peer.validator_address.as_deref().map(str::trim)
+                    == Some(proposer_validator_address)
+        })
+        .map(|(address, _)| address.clone());
+
+    if let Some(fallback_peer_key) = fallback_peer_key {
+        if let Some(peer) = peers.get_mut(&fallback_peer_key) {
+            if let Some(ref mut stream) = peer.stream {
+                send_message(stream, response).map_err(|error| error.to_string())?;
+                return Ok(fallback_peer_key);
+            }
+        }
+    }
+
+    Err(format!(
+        "no writable connection for proposer {} (request peer {})",
+        proposer_validator_address, request_peer_address
+    ))
+}
+
+fn resolve_announced_validator_for_vote(
+    peers: &PeerMap,
+    peer_address: &str,
+    vote_validator_address: &str,
+) -> Option<(String, Option<String>)> {
+    if let Some(validator_address) = peers
+        .get(peer_address)
+        .and_then(|peer| peer.validator_address.clone())
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+    {
+        return Some((validator_address, None));
+    }
+
+    let mut matching_peer_keys = peers
+        .iter()
+        .filter_map(|(address, peer)| {
+            (peer.validator_address.as_deref().map(str::trim) == Some(vote_validator_address))
+                .then_some(address.clone())
+        })
+        .collect::<Vec<_>>();
+    matching_peer_keys.sort();
+    matching_peer_keys.dedup();
+
+    if matching_peer_keys.len() == 1 {
+        Some((
+            vote_validator_address.to_string(),
+            matching_peer_keys.into_iter().next(),
+        ))
+    } else {
+        None
+    }
+}
+
 fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -> NetworkMessage {
     let (block_height, best_block_hash, genesis_hash) = {
         let chain = blockchain.lock().unwrap();
@@ -2033,6 +2164,11 @@ fn handle_incoming_connection(
             },
         );
     }
+    let _peer_entry_guard = PeerEntryGuard::new(
+        peer_address.clone(),
+        Arc::clone(&connected_peers),
+        Arc::clone(&peer_state_cache),
+    );
 
     // Send handshake
     let handshake = NetworkMessage::Handshake {
@@ -2083,14 +2219,6 @@ fn handle_incoming_connection(
             }
         }
     }
-
-    // Remove peer from connected peers
-    {
-        let mut peers = connected_peers.lock().unwrap();
-        disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
-    }
-
-    info!("p2p", "Peer disconnected", "peer" => peer_address);
     Ok(())
 }
 
@@ -2134,6 +2262,11 @@ fn handle_outgoing_connection(
             },
         );
     }
+    let _peer_entry_guard = PeerEntryGuard::new(
+        peer_address.clone(),
+        Arc::clone(&connected_peers),
+        Arc::clone(&peer_state_cache),
+    );
 
     // Send handshake
     let handshake = NetworkMessage::Handshake {
@@ -2184,14 +2317,6 @@ fn handle_outgoing_connection(
             }
         }
     }
-
-    // Remove peer from connected peers
-    {
-        let mut peers = connected_peers.lock().unwrap();
-        disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
-    }
-
-    info!("p2p", "Peer disconnected", "peer" => peer_address);
     Ok(())
 }
 
@@ -2692,6 +2817,16 @@ fn handle_messages(
                             continue;
                         }
 
+                        info!(
+                            "p2p",
+                            "Received vote request",
+                            "peer" => peer_address.clone(),
+                            "proposer" => block_data.validator_id.clone(),
+                            "height" => block_data.block_index,
+                            "epoch" => epoch_number,
+                            "round" => round_number
+                        );
+
                         match DualQuorumConsensus::build_local_vote_for_proposal(
                             &block_data,
                             epoch_number,
@@ -2700,19 +2835,35 @@ fn handle_messages(
                             Ok(vote) => {
                                 let response = NetworkMessage::Vote { vote };
                                 let mut peers = connected_peers.lock().unwrap();
-                                if let Some(peer) = peers.get_mut(&peer_address) {
-                                    if let Some(ref mut stream) = peer.stream {
-                                        if let Err(error) = send_message(stream, &response) {
-                                            warn!(
-                                                "p2p",
-                                                "Failed to send vote",
-                                                "peer" => peer_address.clone(),
-                                                "height" => block_data.block_index,
-                                                "epoch" => epoch_number,
-                                                "round" => round_number,
-                                                "error" => error.to_string()
-                                            );
-                                        }
+                                match send_vote_to_requester(
+                                    &mut peers,
+                                    &peer_address,
+                                    block_data.validator_id.as_str(),
+                                    &response,
+                                ) {
+                                    Ok(response_peer) => {
+                                        info!(
+                                            "p2p",
+                                            "Vote sent",
+                                            "request_peer" => peer_address.clone(),
+                                            "response_peer" => response_peer,
+                                            "proposer" => block_data.validator_id.clone(),
+                                            "height" => block_data.block_index,
+                                            "epoch" => epoch_number,
+                                            "round" => round_number
+                                        );
+                                    }
+                                    Err(error) => {
+                                        warn!(
+                                            "p2p",
+                                            "Failed to send vote",
+                                            "peer" => peer_address.clone(),
+                                            "proposer" => block_data.validator_id.clone(),
+                                            "height" => block_data.block_index,
+                                            "epoch" => epoch_number,
+                                            "round" => round_number,
+                                            "error" => error
+                                        );
                                     }
                                 }
                             }
@@ -2744,11 +2895,14 @@ fn handle_messages(
 
                         let announced_validator = {
                             let peers = connected_peers.lock().unwrap();
-                            peers
-                                .get(&peer_address)
-                                .and_then(|peer| peer.validator_address.clone())
+                            resolve_announced_validator_for_vote(
+                                &peers,
+                                &peer_address,
+                                &vote.validator_address,
+                            )
                         };
-                        let Some(announced_validator) = announced_validator else {
+                        let Some((announced_validator, recovered_peer_key)) = announced_validator
+                        else {
                             warn!(
                                 "p2p",
                                 "Ignoring vote from peer without validator identity",
@@ -2757,6 +2911,15 @@ fn handle_messages(
                             );
                             continue;
                         };
+                        if let Some(recovered_peer_key) = recovered_peer_key {
+                            info!(
+                                "p2p",
+                                "Recovered vote peer identity from active validator mapping",
+                                "peer" => peer_address.clone(),
+                                "recovered_peer" => recovered_peer_key,
+                                "validator" => announced_validator.clone()
+                            );
+                        }
                         if announced_validator != vote.validator_address {
                             warn!(
                                 "p2p",
@@ -3472,7 +3635,7 @@ mod tests {
         status_ready_validator_participants, status_sync_batch,
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution, PeerConnection, DEFAULT_BOOTSTRAP_REFRESH_SECS,
+        DuplicateResolution, PeerConnection, PeerEntryGuard, DEFAULT_BOOTSTRAP_REFRESH_SECS,
         IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
         STALE_VALIDATOR_STATUS_SECS,
     };
@@ -4010,6 +4173,46 @@ mod tests {
             pending_incoming_connections_from_host(&peers, "62.146.182.208"),
             1
         );
+    }
+
+    #[test]
+    fn peer_entry_guard_removes_pending_peer_on_drop() {
+        let peer_address = "62.146.182.208:54001".to_string();
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        connected_peers.lock().unwrap().insert(
+            peer_address.clone(),
+            PeerConnection {
+                address: peer_address.clone(),
+                direction: ConnectionDirection::Incoming,
+                public_address: None,
+                validator_address: None,
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: None,
+                version: None,
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+
+        {
+            let _guard = PeerEntryGuard::new(
+                peer_address.clone(),
+                Arc::clone(&connected_peers),
+                Arc::clone(&peer_state_cache),
+            );
+        }
+
+        assert!(!connected_peers.lock().unwrap().contains_key(&peer_address));
     }
 
     #[test]

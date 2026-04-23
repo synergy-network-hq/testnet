@@ -427,7 +427,10 @@ fn handle_json_rpc(
 
         // Node status
         "synergy_nodeInfo" => {
-            let chain = chain.lock().unwrap();
+            let current_block = {
+                let chain = chain.lock().unwrap();
+                chain.last().map_or(0, |b| b.block_index)
+            };
             let config = crate::config::load_node_config(None).ok();
             let node_name = config
                 .as_ref()
@@ -449,7 +452,7 @@ fn handle_json_rpc(
                 "chainId": chain_id,
                 "consensus": consensus,
                 "syncing": syncing,
-                "currentBlock": chain.last().map_or(0, |b| b.block_index),
+                "currentBlock": current_block,
                 "timestamp": current_timestamp()
             })
         }
@@ -925,14 +928,21 @@ fn handle_json_rpc(
             let mut token_stats = Vec::new();
             for token in tokens {
                 let total_staked = token_manager.get_staked_balance("*", &token.symbol);
+                let holders = {
+                    let balances = token_manager.balances.lock().unwrap();
+                    balances
+                        .values()
+                        .filter(|addr_balances| {
+                            addr_balances.get(&token.symbol).copied().unwrap_or(0) > 0
+                        })
+                        .count()
+                };
                 token_stats.push(json!({
                     "symbol": token.symbol,
                     "name": token.name,
                     "total_supply": token.total_supply,
                     "total_staked": total_staked,
-                    "holders": token_manager.balances.lock().unwrap().keys()
-                        .filter(|addr| token_manager.get_balance(addr, &token.symbol) > 0)
-                        .count()
+                    "holders": holders
                 }));
             }
 
@@ -1251,8 +1261,13 @@ fn handle_json_rpc(
 
         // Node monitoring methods for control panel
         "synergy_getNodeStatus" => {
-            let chain = chain.lock().unwrap();
-            let avg_block_time = calculate_average_block_time(&chain);
+            let (last_block, avg_block_time) = {
+                let chain = chain.lock().unwrap();
+                (
+                    chain.last().map_or(0, |b| b.block_index),
+                    calculate_average_block_time(&chain),
+                )
+            };
             let peer_count = crate::p2p::get_p2p_network()
                 .map(|p2p| p2p.get_peer_count() as u64)
                 .unwrap_or(0);
@@ -1283,7 +1298,7 @@ fn handle_json_rpc(
                 "version": env!("CARGO_PKG_VERSION"),
                 "network": network_name,
                 "sync_status": sync_status,
-                "last_block": chain.last().map_or(0, |b| b.block_index),
+                "last_block": last_block,
                 "avg_block_time": avg_block_time,
                 "average_block_time": avg_block_time,
                 "peers_connected": peer_count,
@@ -2382,7 +2397,7 @@ fn handle_json_rpc(
                 "averageAPY": capped_apy, // Simplified: same as current in testnet
                 "networkStakingRate": staking_rate,
                 "totalStaked": total_staked,
-                "totalSupply": total_supply,
+                "totalSupply": total_supply.to_string(),
                 "baseAPY": base_apy
             });
 
@@ -2441,12 +2456,13 @@ fn handle_json_rpc(
                 let _limit = params.get(1).and_then(|v| v.as_u64()).unwrap_or(100) as usize;
                 let token_manager = TOKEN_MANAGER.clone();
 
-                // Get all staking info and filter by validator
-                // We need to scan all known stakers - use balances as a proxy for known addresses
-                let all_balances = token_manager.balances.lock().unwrap();
+                let addresses: Vec<String> = {
+                    let balances = token_manager.balances.lock().unwrap();
+                    balances.keys().cloned().collect()
+                };
                 let mut delegators: Vec<Value> = Vec::new();
 
-                for address in all_balances.keys() {
+                for address in &addresses {
                     let staking_info = token_manager.get_staking_info(address);
                     for info in &staking_info {
                         if info.validator_address.eq_ignore_ascii_case(validator_addr)

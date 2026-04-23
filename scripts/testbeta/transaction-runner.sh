@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-RPC_URL="${RPC_URL:-http://127.0.0.1:5640}"
+RPC_URL="${RPC_URL:-http://127.0.0.1:5646}"
 MODE="${MODE:-single}"
 DURATION_SECONDS="${DURATION_SECONDS:-60}"
 INTERVAL_MS="${INTERVAL_MS:-1000}"
@@ -11,6 +11,7 @@ TRANSACTIONS_FILE="${TRANSACTIONS_FILE:-}"
 METHOD="${METHOD:-}"
 PARAMS_JSON="${PARAMS_JSON:-}"
 VERBOSE="${VERBOSE:-0}"
+SKIP_PREFLIGHT="${SKIP_PREFLIGHT:-0}"
 
 usage() {
   cat <<'USAGE'
@@ -30,7 +31,7 @@ Required input:
     --transactions-file FILE
 
 Options:
-  --rpc-url URL                  JSON-RPC endpoint (default: http://127.0.0.1:5640)
+  --rpc-url URL                  JSON-RPC endpoint (default: http://127.0.0.1:5646)
   --mode MODE                    single | round-robin | random (default: single)
   --duration-seconds N           Run duration in seconds (default: 60)
   --interval-ms N                Delay between requests per worker in ms (default: 1000)
@@ -39,6 +40,7 @@ Options:
   --transactions-file FILE       JSON array of {label?, method, params}
   --method METHOD                Single RPC method to repeat
   --params-json JSON             JSON array of params for --method
+  --skip-preflight               Skip RPC and sender-wallet validation
   --verbose                      Print successful responses too
   -h, --help                     Show this help
 
@@ -102,6 +104,10 @@ while [[ $# -gt 0 ]]; do
     --params-json)
       PARAMS_JSON="$2"
       shift 2
+      ;;
+    --skip-preflight)
+      SKIP_PREFLIGHT=1
+      shift
       ;;
     --verbose)
       VERBOSE=1
@@ -199,6 +205,155 @@ validate_transactions_file() {
   fi
 }
 
+rpc_request() {
+  local method="$1"
+  local params_json="$2"
+  local request_id="${3:-1}"
+  local payload
+
+  payload="$(jq -cn \
+    --arg method "$method" \
+    --argjson params "$params_json" \
+    --argjson id "$request_id" \
+    '{jsonrpc:"2.0", method:$method, params:$params, id:$id}')"
+
+  curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
+    -X POST "$RPC_URL" \
+    -H "Content-Type: application/json" \
+    -d "$payload"
+}
+
+resolve_scenario_placeholders() {
+  local latest_resp head_num head_hash profile_path
+  profile_path="${PROFILE_PATH:-$HOME/.synergy/testnet-beta/network/profile.json}"
+
+  if ! grep -q '\${' "$TRANSACTIONS_FILE" 2>/dev/null; then
+    return 0
+  fi
+
+  declare -A subs=()
+
+  if latest_resp="$(rpc_request "synergy_getLatestBlock" '[]' 0 2>/dev/null)" \
+      && jq -e '.result != null' >/dev/null 2>&1 <<<"$latest_resp"; then
+    head_num="$(jq -r '.result.block_index // .result.number // empty' <<<"$latest_resp")"
+    head_hash="$(jq -r '.result.hash // empty' <<<"$latest_resp")"
+    if [[ -n "$head_num" ]]; then
+      subs["HEAD_BLOCK_NUMBER"]="$head_num"
+      subs["LATEST_BLOCK_NUMBER"]="$head_num"
+      subs["HEAD_MINUS_1_BLOCK_NUMBER"]="$(( head_num > 0 ? head_num - 1 : 0 ))"
+      subs["HEAD_MINUS_5_BLOCK_NUMBER"]="$(( head_num > 4 ? head_num - 5 : 0 ))"
+    fi
+    if [[ -n "$head_hash" ]]; then
+      subs["LATEST_BLOCK_HASH"]="$head_hash"
+    fi
+  fi
+
+  if [[ -n "${subs[HEAD_MINUS_1_BLOCK_NUMBER]:-}" ]]; then
+    local prev_resp prev_hash
+    if prev_resp="$(rpc_request "synergy_getBlockByNumber" \
+          "$(jq -cn --argjson n "${subs[HEAD_MINUS_1_BLOCK_NUMBER]}" '[$n]')" 0 2>/dev/null)" \
+        && jq -e '.result != null' >/dev/null 2>&1 <<<"$prev_resp"; then
+      prev_hash="$(jq -r '.result.hash // empty' <<<"$prev_resp")"
+      [[ -n "$prev_hash" ]] && subs["HEAD_MINUS_1_BLOCK_HASH"]="$prev_hash"
+    fi
+  fi
+
+  if [[ -f "$profile_path" ]]; then
+    local faucet treasury stake_vault
+    faucet="$(jq -r '.faucet_wallet.address // empty' "$profile_path" 2>/dev/null)"
+    treasury="$(jq -r '.treasury_wallet.address // empty' "$profile_path" 2>/dev/null)"
+    stake_vault="$(jq -r '.stake_vault_wallet.address // empty' "$profile_path" 2>/dev/null)"
+    [[ -n "$faucet" ]] && subs["FAUCET_WALLET"]="$faucet"
+    [[ -n "$treasury" ]] && subs["TREASURY_WALLET"]="$treasury"
+    [[ -n "$stake_vault" ]] && subs["STAKE_VAULT_WALLET"]="$stake_vault"
+  fi
+
+  # Allow callers to inject their own via env: SCENARIO_VAR_FOO=bar => ${FOO}.
+  while IFS='=' read -r env_name env_value; do
+    [[ -n "$env_name" ]] || continue
+    subs["${env_name#SCENARIO_VAR_}"]="$env_value"
+  done < <(printenv | awk -F= '/^SCENARIO_VAR_/ {print}')
+
+  if (( ${#subs[@]} == 0 )); then
+    return 0
+  fi
+
+  local tmp_file
+  tmp_file="$(mktemp "$WORK_DIR/transactions.XXXXXX.json")"
+  local jq_args=(--argjson raw "$(cat "$TRANSACTIONS_FILE")")
+  local jq_program='$raw'
+  for key in "${!subs[@]}"; do
+    jq_args+=(--arg "v_${key}" "${subs[$key]}")
+    jq_program+=' | walk(if type == "string" then gsub("\\$\\{'"$key"'\\}"; $v_'"$key"') else . end)'
+  done
+  jq -c "$jq_program" "${jq_args[@]}" > "$tmp_file"
+  mv "$tmp_file" "$TRANSACTIONS_FILE"
+}
+
+validate_no_placeholder_params() {
+  local unresolved
+
+  unresolved="$(
+    jq -r '
+      .[]
+      | (.params // [])[]
+      | select(type == "string")
+      | select(test("ReplaceWith|\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}"))
+    ' "$TRANSACTIONS_FILE" | sort -u
+  )"
+
+  if [[ -n "$unresolved" ]]; then
+    echo "Transactions file contains unresolved placeholder values:" >&2
+    printf '%s\n' "$unresolved" >&2
+    exit 1
+  fi
+}
+
+validate_rpc_endpoint() {
+  local response
+
+  if ! response="$(rpc_request "synergy_blockNumber" '[]' 0 2>&1)"; then
+    echo "RPC endpoint preflight failed: $response" >&2
+    exit 1
+  fi
+
+  if ! jq -e '.result != null and .error == null' >/dev/null 2>&1 <<<"$response"; then
+    echo "RPC endpoint did not return a usable synergy_blockNumber response:" >&2
+    echo "$response" >&2
+    exit 1
+  fi
+}
+
+validate_required_sender_wallets() {
+  local sender_addresses
+  local sender
+  local response
+
+  sender_addresses="$(
+    jq -r '
+      .[]
+      | select(.method == "synergy_sendTokens" or .method == "synergy_stakeTokens" or .method == "synergy_signTransaction")
+      | .params[0] // empty
+    ' "$TRANSACTIONS_FILE" | sort -u
+  )"
+
+  [[ -n "$sender_addresses" ]] || return 0
+
+  while IFS= read -r sender; do
+    [[ -n "$sender" ]] || continue
+    if ! response="$(rpc_request "synergy_getWallet" "$(jq -cn --arg sender "$sender" '[$sender]')" 0 2>&1)"; then
+      echo "Failed to validate sender wallet $sender: $response" >&2
+      exit 1
+    fi
+
+    if ! jq -e '.error == null and (.result | type == "object")' >/dev/null 2>&1 <<<"$response"; then
+      echo "Sender wallet is not loaded on the target RPC node: $sender" >&2
+      echo "Load that wallet into Node-RPC or use direct token-manager methods in the scenario file." >&2
+      exit 1
+    fi
+  done <<<"$sender_addresses"
+}
+
 WORK_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$WORK_DIR"
@@ -214,6 +369,12 @@ fi
 
 TRANSACTIONS_FILE="$WORK_DIR/transactions.json"
 TRANSACTION_COUNT="$(jq 'length' "$TRANSACTIONS_FILE")"
+
+if (( SKIP_PREFLIGHT == 0 )); then
+  validate_no_placeholder_params
+  validate_rpc_endpoint
+  validate_required_sender_wallets
+fi
 
 sleep_interval_seconds="$(awk -v ms="$INTERVAL_MS" 'BEGIN { printf "%.3f", ms / 1000 }')"
 end_epoch="$(( $(date +%s) + DURATION_SECONDS ))"
@@ -262,23 +423,27 @@ worker_loop() {
       '{jsonrpc:"2.0", method:$method, params:$params, id:$id}')"
 
     if response="$(curl -sS --max-time "$REQUEST_TIMEOUT_SECONDS" \
-      -X POST "$RPC_URL" \
-      -H "Content-Type: application/json" \
-      -d "$payload" 2>&1)"; then
-      if jq -e '.error != null' >/dev/null 2>&1 <<<"$response"; then
-        outcome="failure"
-        error_message="$(jq -r '.error.message // .error // "RPC error"' <<<"$response")"
-      elif jq -e '.result.success == false' >/dev/null 2>&1 <<<"$response"; then
-        outcome="failure"
-        error_message="$(jq -r '.result.error // "RPC returned success=false"' <<<"$response")"
-      else
-        outcome="success"
-        tx_hash="$(jq -r '.result.tx_hash // .result.transaction.hash // empty' <<<"$response")"
-      fi
-    else
-      outcome="failure"
-      error_message="$response"
-    fi
+  -X POST "$RPC_URL" \
+  -H "Content-Type: application/json" \
+  -d "$payload" 2>&1)"; then
+
+  if ! jq -e . >/dev/null 2>&1 <<<"$response"; then
+    outcome="failure"
+    error_message="Non-JSON RPC response: $response"
+  elif jq -e '.error != null' >/dev/null 2>&1 <<<"$response"; then
+    outcome="failure"
+    error_message="$(jq -r '.error.message // (.error|tostring) // "RPC error"' <<<"$response")"
+  elif jq -e '.result.success == false' >/dev/null 2>&1 <<<"$response"; then
+    outcome="failure"
+    error_message="$(jq -r '.result.error // "RPC returned success=false"' <<<"$response")"
+  else
+    outcome="success"
+    tx_hash="$(jq -r '.result.tx_hash? // .result.transaction?.hash? // empty' <<<"$response" 2>/dev/null)"
+  fi
+else
+  outcome="failure"
+  error_message="$response"
+fi
 
     if [[ "$outcome" == "success" ]]; then
       success_count=$((success_count + 1))

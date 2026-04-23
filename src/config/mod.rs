@@ -466,7 +466,18 @@ fn merge_configs(mut base: NodeConfig, override_config: NodeConfig) -> NodeConfi
 fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Error>> {
     // Network overrides
     if let Ok(val) = env::var("SYNERGY_NETWORK_ID") {
-        config.network.id = val.parse()?;
+        let trimmed = val.trim();
+        if let Ok(network_id) = trimmed.parse() {
+            config.network.id = network_id;
+        } else if !trimmed.is_empty() {
+            config.network.name = trimmed.to_string();
+        }
+    }
+    if let Ok(val) = env::var("SYNERGY_NETWORK_NAME") {
+        let trimmed = val.trim();
+        if !trimmed.is_empty() {
+            config.network.name = trimmed.to_string();
+        }
     }
     if let Ok(val) = env::var("SYNERGY_CHAIN_ID") {
         config.blockchain.chain_id = val.parse()?;

@@ -1,32 +1,32 @@
 [
   {
-    "label": "transfer-faucet-to-wallet-a",
-    "method": "synergy_sendTokens",
+    "label": "stake-genesis-wallet-a-to-validator-1",
+    "method": "synergy_stakeTokensDirect",
     "params": [
-      "synwReplaceWithFundedSenderAddress",
-      "synwReplaceWithRecipientAddressA",
+      "synw1hrm96txgnalsjjrx5yjfxuyqkt4mxf8j0tsr",
+      "synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra",
       "SNRG",
       1
     ]
   },
   {
-    "label": "transfer-faucet-to-wallet-b",
-    "method": "synergy_sendTokens",
+    "label": "stake-genesis-wallet-b-to-validator-2",
+    "method": "synergy_stakeTokensDirect",
     "params": [
-      "synwReplaceWithFundedSenderAddress",
-      "synwReplaceWithRecipientAddressB",
+      "synw1xwwrtdg84jcj4kcj423lcma67fnqlr2zq9fd",
+      "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu",
       "SNRG",
       2
     ]
   },
   {
-    "label": "stake-to-validator-1",
+    "label": "stake-genesis-wallet-c-to-validator-4",
     "method": "synergy_stakeTokensDirect",
     "params": [
-      "synwReplaceWithFundedSenderAddress",
-      "synvReplaceWithValidatorAddress",
+      "synw1nr0mf40j2fzs3f09602xwhmyjdk7dv0m35v4",
+      "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49",
       "SNRG",
-      1
+      3
     ]
   }
 ]

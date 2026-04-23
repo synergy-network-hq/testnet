@@ -139,6 +139,9 @@ const RPC_GATEWAY_SERVICES: &[&str] = &[
     "edge-cache",
 ];
 const INDEXER_EXPLORER_SERVICES: &[&str] = &[
+    "p2p",
+    "chain-sync",
+    "state",
     "indexer-ingest",
     "query-api",
     "search",
@@ -178,6 +181,8 @@ const RPC_GATEWAY_PORTS: &[&str] = &[
     "8546 evm ws",
 ];
 const INDEXER_EXPLORER_PORTS: &[&str] = &[
+    "5627 plus slot p2p",
+    "5687 plus slot discovery",
     "3010 ingest",
     "3011 indexer api",
     "3020 explorer api",
@@ -518,6 +523,17 @@ mod tests {
     fn rpc_gateway_profile_requires_p2p_surface() {
         let profile = NodeRole::RpcGateway.profile();
         assert!(profile.service_surface.contains(&"p2p"));
+        assert!(profile
+            .required_ports
+            .iter()
+            .any(|port| port.to_ascii_lowercase().contains("p2p")));
+    }
+
+    #[test]
+    fn indexer_explorer_profile_requires_p2p_surface() {
+        let profile = NodeRole::IndexerExplorer.profile();
+        assert!(profile.service_surface.contains(&"p2p"));
+        assert!(profile.service_surface.contains(&"chain-sync"));
         assert!(profile
             .required_ports
             .iter()
