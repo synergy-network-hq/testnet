@@ -1,9 +1,11 @@
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::block::BlockChain;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
@@ -21,6 +23,7 @@ use crate::wallet::WALLET_MANAGER;
 use hex;
 use lazy_static::lazy_static;
 use serde_json::{json, Value};
+use tungstenite::{accept, Error as WsError, Message as WsMessage};
 
 lazy_static! {
     pub static ref TX_POOL: Arc<Mutex<Vec<Transaction>>> = Arc::new(Mutex::new(Vec::new()));
@@ -28,6 +31,136 @@ lazy_static! {
 
 lazy_static! {
     static ref NODE_START_TIME: Arc<Mutex<Option<u64>>> = Arc::new(Mutex::new(None));
+}
+
+lazy_static! {
+    static ref SIMULATION_CACHE: Mutex<HashMap<String, CachedSimulation>> =
+        Mutex::new(HashMap::new());
+}
+
+static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+#[derive(Debug, Clone)]
+struct RpcError {
+    code: i64,
+    message: String,
+    data: Option<Value>,
+}
+
+impl RpcError {
+    fn new(code: i64, message: impl Into<String>) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            data: None,
+        }
+    }
+
+    fn with_data(code: i64, message: impl Into<String>, data: Value) -> Self {
+        Self {
+            code,
+            message: message.into(),
+            data: Some(data),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CachedSimulation {
+    simulation_hash: String,
+    created_at: u64,
+}
+
+#[derive(Debug, Clone)]
+enum SubscriptionCursor {
+    NewHeads {
+        last_block: u64,
+    },
+    Logs {
+        last_block: u64,
+        address: Option<String>,
+        topics: Vec<String>,
+    },
+    PendingTransactions {
+        seen_hashes: HashSet<String>,
+    },
+    ValidatorEvents {
+        last_block: u64,
+    },
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct RpcTransactionEnvelope {
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    sender: Option<String>,
+    #[serde(default)]
+    to: Option<String>,
+    #[serde(default)]
+    receiver: Option<String>,
+    #[serde(default)]
+    value: Option<Value>,
+    #[serde(default)]
+    amount: Option<Value>,
+    #[serde(default)]
+    nonce: Option<u64>,
+    #[serde(default)]
+    signature: Option<Value>,
+    #[serde(default)]
+    timestamp: Option<u64>,
+    #[serde(default)]
+    gas_price: Option<Value>,
+    #[serde(rename = "gasPrice", default)]
+    gas_price_alias: Option<Value>,
+    #[serde(rename = "maxFee", default)]
+    max_fee: Option<Value>,
+    #[serde(default)]
+    gas_limit: Option<Value>,
+    #[serde(rename = "gasLimit", default)]
+    gas_limit_alias: Option<Value>,
+    #[serde(rename = "maxPriorityFeePerGas", default)]
+    max_priority_fee_per_gas: Option<Value>,
+    #[serde(default)]
+    data: Option<String>,
+    #[serde(default)]
+    signature_algorithm: Option<String>,
+    #[serde(rename = "signatureAlgorithm", default)]
+    signature_algorithm_alias: Option<String>,
+    #[serde(rename = "chainId", default)]
+    chain_id: Option<Value>,
+    #[serde(default)]
+    tx_type: Option<String>,
+    #[serde(rename = "type", default)]
+    envelope_type: Option<String>,
+    #[serde(default)]
+    delegation: Option<Value>,
+    #[serde(default)]
+    delegations: Option<Value>,
+    #[serde(rename = "authorizationList", default)]
+    authorization_list: Option<Value>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedRpcTransaction {
+    sender: String,
+    receiver: String,
+    amount: u64,
+    nonce: u64,
+    signature: Vec<u8>,
+    timestamp: u64,
+    gas_price: u64,
+    gas_limit: u64,
+    data: Option<String>,
+    signature_algorithm: String,
+    chain_id: Option<u64>,
+}
+
+#[derive(Debug, Clone)]
+struct NormalizedEnvelopeResult {
+    transaction: Transaction,
+    warnings: Vec<String>,
+    chain_id: Option<u64>,
 }
 
 // Global shared blockchain instance - will be used by both RPC and consensus
@@ -77,7 +210,12 @@ pub use self::SHARED_CHAIN as CHAIN;
 //     pub static ref AIVM_RUNTIME: Arc<AIVMRuntime> = Arc::new(AIVMRuntime::new());
 // }
 
-pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Vec<String>) {
+pub fn start_rpc_server(
+    bind_address: &str,
+    ws_bind_address: Option<String>,
+    cors_enabled: bool,
+    cors_origins: Vec<String>,
+) {
     println!("📡 RPC server running on {}", bind_address);
     {
         let mut start_time = NODE_START_TIME.lock().unwrap();
@@ -98,6 +236,15 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
         );
     }
 
+    if let Some(ws_bind_address) = ws_bind_address {
+        let tx_pool = Arc::clone(&TX_POOL);
+        let chain = Arc::clone(&CHAIN);
+        let validator_manager = Arc::clone(&VALIDATOR_MANAGER);
+        thread::spawn(move || {
+            start_ws_rpc_server(&ws_bind_address, &tx_pool, &chain, &validator_manager);
+        });
+    }
+
     for stream in TcpListener::bind(bind_address)
         .expect("Failed to bind RPC server")
         .incoming()
@@ -107,9 +254,6 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
         let validator_manager = Arc::clone(&VALIDATOR_MANAGER);
         let cors_enabled_for_conn = cors_enabled;
         let cors_origins_for_conn = cors_origins.clone();
-        // Temporarily disabled AIVM for quick compile
-        // let aivm_runtime = Arc::clone(&AIVM_RUNTIME);
-
         thread::spawn(move || {
             if let Ok(mut stream) = stream {
                 let mut buffer = [0; 16384];
@@ -156,58 +300,80 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
                     // Split headers and body
                     let parts: Vec<&str> = request_str.splitn(2, "\r\n\r\n").collect();
                     if parts.len() < 2 {
-                        send_error(
+                        send_json_rpc_error(
                             &mut stream,
-                            "Malformed HTTP request",
+                            None,
+                            &RpcError::new(-32700, "Malformed HTTP request"),
                             cors_enabled_for_conn,
                             &cors_origins_for_conn,
                         );
                         return;
                     }
 
+                    let headers = parse_http_headers(parts[0]);
                     let body = parts[1];
 
                     if http_method == "POST" {
+                        if !request_is_json(&headers) {
+                            send_json_rpc_error(
+                                &mut stream,
+                                None,
+                                &RpcError::new(-32700, "Content-Type must be application/json"),
+                                cors_enabled_for_conn,
+                                &cors_origins_for_conn,
+                            );
+                            return;
+                        }
+
                         match serde_json::from_str::<Value>(body) {
-                            Ok(parsed) => {
-                                let method =
-                                    parsed.get("method").and_then(|m| m.as_str()).unwrap_or("");
-                                let params = parsed.get("params").cloned().unwrap_or(json!([]));
-                                let id = parsed.get("id").cloned().unwrap_or(json!(null));
-
-                                let result = handle_json_rpc(
-                                    method,
-                                    params,
-                                    &tx_pool,
-                                    &chain,
-                                    &validator_manager,
-                                );
-
-                                let response = json!({
-                                    "jsonrpc": "2.0",
-                                    "id": id,
-                                    "result": result
-                                });
-
-                                let response_str = format_response(
-                                    &response.to_string(),
+                            Ok(parsed) => match process_json_rpc_payload(
+                                &parsed,
+                                &tx_pool,
+                                &chain,
+                                &validator_manager,
+                                None,
+                            ) {
+                                Ok(Some(response)) => {
+                                    let response_str = format_response(
+                                        &response.to_string(),
+                                        cors_enabled_for_conn,
+                                        &cors_origins_for_conn,
+                                    );
+                                    let _ = stream.write(response_str.as_bytes());
+                                    let _ = stream.flush();
+                                }
+                                Ok(None) => {
+                                    let response_str = format_http_response(
+                                        "204 No Content",
+                                        "application/json",
+                                        "",
+                                        cors_enabled_for_conn,
+                                        &cors_origins_for_conn,
+                                    );
+                                    let _ = stream.write(response_str.as_bytes());
+                                    let _ = stream.flush();
+                                }
+                                Err(error) => send_json_rpc_error(
+                                    &mut stream,
+                                    None,
+                                    &error,
                                     cors_enabled_for_conn,
                                     &cors_origins_for_conn,
-                                );
-                                let _ = stream.write(response_str.as_bytes());
-                                let _ = stream.flush();
-                            }
-                            Err(_) => send_error(
+                                ),
+                            },
+                            Err(_) => send_json_rpc_error(
                                 &mut stream,
-                                "Malformed JSON in body",
+                                None,
+                                &RpcError::new(-32700, "Malformed JSON in body"),
                                 cors_enabled_for_conn,
                                 &cors_origins_for_conn,
                             ),
                         }
                     } else {
-                        send_error(
+                        send_json_rpc_error(
                             &mut stream,
-                            "Unsupported HTTP method",
+                            None,
+                            &RpcError::new(-32600, "Unsupported HTTP method"),
                             cors_enabled_for_conn,
                             &cors_origins_for_conn,
                         );
@@ -215,6 +381,251 @@ pub fn start_rpc_server(bind_address: &str, cors_enabled: bool, cors_origins: Ve
                 }
             }
         });
+    }
+}
+
+fn start_ws_rpc_server(
+    bind_address: &str,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+    validator_manager: &Arc<ValidatorManager>,
+) {
+    println!("📡 RPC WebSocket server running on {}", bind_address);
+
+    for stream in TcpListener::bind(bind_address)
+        .expect("Failed to bind RPC WebSocket server")
+        .incoming()
+    {
+        let tx_pool = Arc::clone(tx_pool);
+        let chain = Arc::clone(chain);
+        let validator_manager = Arc::clone(validator_manager);
+        thread::spawn(move || {
+            if let Ok(stream) = stream {
+                handle_ws_connection(stream, &tx_pool, &chain, &validator_manager);
+            }
+        });
+    }
+}
+
+fn handle_ws_connection(
+    stream: std::net::TcpStream,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+    validator_manager: &Arc<ValidatorManager>,
+) {
+    let mut websocket = match accept(stream) {
+        Ok(websocket) => websocket,
+        Err(error) => {
+            eprintln!("WebSocket handshake failed: {}", error);
+            return;
+        }
+    };
+
+    let _ = websocket
+        .get_ref()
+        .set_read_timeout(Some(Duration::from_millis(250)));
+
+    let mut subscriptions: HashMap<String, SubscriptionCursor> = HashMap::new();
+
+    loop {
+        emit_subscription_notifications(&mut websocket, &mut subscriptions, tx_pool, chain);
+
+        match websocket.read() {
+            Ok(WsMessage::Text(body)) => {
+                match serde_json::from_str::<Value>(&body)
+                    .map_err(|_| RpcError::new(-32700, "Malformed JSON in WebSocket payload"))
+                {
+                    Ok(parsed) => match process_json_rpc_payload(
+                        &parsed,
+                        tx_pool,
+                        chain,
+                        validator_manager,
+                        Some(&mut subscriptions),
+                    ) {
+                        Ok(Some(response)) => {
+                            if websocket
+                                .send(WsMessage::Text(response.to_string()))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            let response = json_rpc_error_response(None, &error);
+                            if websocket
+                                .send(WsMessage::Text(response.to_string()))
+                                .is_err()
+                            {
+                                break;
+                            }
+                        }
+                    },
+                    Err(error) => {
+                        let response = json_rpc_error_response(None, &error);
+                        if websocket
+                            .send(WsMessage::Text(response.to_string()))
+                            .is_err()
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(WsMessage::Ping(payload)) => {
+                if websocket.send(WsMessage::Pong(payload)).is_err() {
+                    break;
+                }
+            }
+            Ok(WsMessage::Close(_)) => break,
+            Ok(_) => {}
+            Err(WsError::ConnectionClosed) | Err(WsError::AlreadyClosed) => break,
+            Err(WsError::Io(error))
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+                ) => {}
+            Err(error) => {
+                eprintln!("WebSocket RPC error: {}", error);
+                break;
+            }
+        }
+    }
+}
+
+fn process_json_rpc_payload(
+    parsed: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+    validator_manager: &Arc<ValidatorManager>,
+    subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+) -> Result<Option<Value>, RpcError> {
+    match parsed {
+        Value::Array(items) => {
+            if items.is_empty() {
+                return Ok(Some(json_rpc_error_response(
+                    None,
+                    &RpcError::new(-32600, "Invalid request"),
+                )));
+            }
+
+            let mut responses = Vec::new();
+            let mut subscriptions = subscriptions;
+            for item in items {
+                if let Some(response) = process_json_rpc_request_object(
+                    item,
+                    tx_pool,
+                    chain,
+                    validator_manager,
+                    subscriptions.as_deref_mut(),
+                )? {
+                    responses.push(response);
+                }
+            }
+
+            if responses.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(Value::Array(responses)))
+            }
+        }
+        Value::Object(_) => process_json_rpc_request_object(
+            parsed,
+            tx_pool,
+            chain,
+            validator_manager,
+            subscriptions,
+        )
+        .map(|response| response.map(|value| json!(value))),
+        _ => Ok(Some(json_rpc_error_response(
+            None,
+            &RpcError::new(-32600, "Invalid request"),
+        ))),
+    }
+}
+
+fn process_json_rpc_request_object(
+    request: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+    validator_manager: &Arc<ValidatorManager>,
+    subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+) -> Result<Option<Value>, RpcError> {
+    let request_object = request
+        .as_object()
+        .ok_or_else(|| RpcError::new(-32600, "Invalid request"))?;
+
+    let method = request_object
+        .get("method")
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| RpcError::new(-32600, "Missing method"))?;
+    let params = request_object
+        .get("params")
+        .cloned()
+        .unwrap_or_else(|| json!([]));
+    let id = request_object.get("id").cloned();
+
+    if id.is_none() && method != "synergy_subscribe" && method != "synergy_unsubscribe" {
+        let _ = execute_rpc_method(
+            method,
+            params,
+            tx_pool,
+            chain,
+            validator_manager,
+            subscriptions,
+        )?;
+        return Ok(None);
+    }
+
+    let result = execute_rpc_method(
+        method,
+        params,
+        tx_pool,
+        chain,
+        validator_manager,
+        subscriptions,
+    );
+
+    match result {
+        Ok(value) => Ok(Some(json!({
+            "jsonrpc": "2.0",
+            "id": id.clone().unwrap_or(Value::Null),
+            "result": value
+        }))),
+        Err(error) => Ok(Some(json_rpc_error_response(id, &error))),
+    }
+}
+
+fn execute_rpc_method(
+    method: &str,
+    params: Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+    validator_manager: &Arc<ValidatorManager>,
+    subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+) -> Result<Value, RpcError> {
+    match method {
+        "synergy_simulateTransaction" => simulate_transaction(&params, tx_pool, chain),
+        "synergy_getAccountNonce" | "synergy_getAccountAuthNonce" => {
+            get_account_nonce(&params, tx_pool, chain)
+        }
+        "synergy_subscribe" => {
+            let subscriptions = subscriptions
+                .ok_or_else(|| RpcError::new(-32601, "synergy_subscribe is WebSocket-only"))?;
+            register_subscription(&params, chain, tx_pool, subscriptions)
+        }
+        "synergy_unsubscribe" => {
+            let subscriptions = subscriptions
+                .ok_or_else(|| RpcError::new(-32601, "synergy_unsubscribe is WebSocket-only"))?;
+            unregister_subscription(&params, subscriptions)
+        }
+        _ => translate_legacy_rpc_result(handle_json_rpc(
+            method,
+            params,
+            tx_pool,
+            chain,
+            validator_manager,
+        )),
     }
 }
 
@@ -282,36 +693,65 @@ fn handle_json_rpc(
         // Transaction methods
         "synergy_sendTransaction" => {
             if let Some(tx_data) = params.get(0) {
-                match serde_json::from_value::<Transaction>(tx_data.clone()) {
-                    Ok(tx) => {
-                        match tx.validate() {
+                match normalize_rpc_transaction(tx_data, true) {
+                    Ok(normalized) => {
+                        let configured_chain_id = current_chain_id();
+                        if let Some(chain_id) = normalized.chain_id {
+                            if chain_id != configured_chain_id {
+                                return json!({
+                                    "error": format!("Transaction chainId {} does not match local chain {}", chain_id, configured_chain_id)
+                                });
+                            }
+                        }
+
+                        if let Some(simulation_hash) =
+                            params.get(2).and_then(|value| value.as_str())
+                        {
+                            let tx_digest = canonical_value_digest(tx_data)
+                                .unwrap_or_else(|| normalized.transaction.hash());
+                            let cache = SIMULATION_CACHE.lock().unwrap();
+                            match cache.get(&tx_digest) {
+                                Some(cached) if cached.simulation_hash == simulation_hash => {}
+                                Some(_) => {
+                                    return json!({"error": "simulationHash does not match the current transaction envelope"});
+                                }
+                                None => {
+                                    return json!({"error": "simulationHash is unknown or expired"});
+                                }
+                            }
+                        }
+
+                        match normalized.transaction.validate() {
                             crate::transaction::TransactionValidationResult {
                                 is_valid: true,
                                 ..
                             } => {
                                 let mut pool = tx_pool.lock().unwrap();
-                                let tx_hash = tx.hash();
-                                pool.push(tx.clone());
+                                let tx_hash = normalized.transaction.hash();
+                                pool.push(normalized.transaction.clone());
 
-                                // Best-effort gossip to peers.
                                 if let Some(p2p) = crate::p2p::get_p2p_network() {
-                                    p2p.broadcast_transaction(&tx);
+                                    p2p.broadcast_transaction(&normalized.transaction);
                                 }
 
-                                json!({"success": true, "tx_hash": tx_hash, "message": "Transaction submitted"})
+                                json!({
+                                    "success": true,
+                                    "tx_hash": tx_hash,
+                                    "mempool_status": "queued",
+                                    "policy_warnings": normalized.warnings,
+                                    "message": "Transaction submitted"
+                                })
                             }
                             crate::transaction::TransactionValidationResult {
                                 error_message: Some(msg),
                                 ..
-                            } => {
-                                json!({"error": msg})
-                            }
-                            _ => {
-                                json!("Invalid transaction")
-                            }
+                            } => json!({"error": msg}),
+                            _ => json!("Invalid transaction"),
                         }
                     }
-                    Err(_) => json!("Invalid transaction format"),
+                    Err(error) => {
+                        json!({"error": error.message, "code": error.code, "data": error.data})
+                    }
                 }
             } else {
                 json!("Missing transaction data")
@@ -1625,36 +2065,21 @@ fn handle_json_rpc(
         // Estimate the gas required for a transaction.
         "synergy_estimateGas" => {
             if let Some(tx_obj) = params.get(0) {
-                let to = tx_obj.get("to").and_then(|v| v.as_str());
-                let data = tx_obj.get("data").and_then(|v| v.as_str());
-                let _value = tx_obj.get("value").and_then(|v| v.as_u64()).unwrap_or(0);
-
-                use crate::gas::GasEstimator;
-
-                let estimated = if to.is_none() || to == Some("") || to == Some("0x0") {
-                    // Contract deployment
-                    let bytecode_size = data
-                        .map(|d| {
-                            let d = d.strip_prefix("0x").unwrap_or(d);
-                            d.len() / 2 // hex bytes
+                match normalize_rpc_transaction(tx_obj, false) {
+                    Ok(normalized) => {
+                        let gas = estimate_gas_for_transaction(&normalized.transaction);
+                        let gas_price = current_gas_price_from_chain(chain);
+                        json!({
+                            "gas": gas,
+                            "safeFee": gas.saturating_mul(gas_price),
+                            "maxFee": gas.saturating_mul(normalized.transaction.gas_price),
+                            "warnings": normalized.warnings
                         })
-                        .unwrap_or(0);
-                    GasEstimator::estimate_contract_deploy(bytecode_size).as_u64()
-                } else if data.is_some() && data != Some("") && data != Some("0x") {
-                    // Contract call
-                    let calldata_size = data
-                        .map(|d| {
-                            let d = d.strip_prefix("0x").unwrap_or(d);
-                            d.len() / 2
-                        })
-                        .unwrap_or(0);
-                    GasEstimator::estimate_contract_call(calldata_size).as_u64()
-                } else {
-                    // Simple transfer
-                    GasEstimator::estimate_transfer().as_u64()
-                };
-
-                json!(estimated)
+                    }
+                    Err(error) => {
+                        json!({"error": error.message, "code": error.code, "data": error.data})
+                    }
+                }
             } else {
                 json!({"error": "Missing transaction object parameter"})
             }
@@ -2001,12 +2426,7 @@ fn handle_json_rpc(
 
         // synergy_getChainId
         "synergy_getChainId" => {
-            let config = crate::config::load_node_config(None).ok();
-            let chain_id = config
-                .as_ref()
-                .map(|cfg| cfg.blockchain.chain_id)
-                .unwrap_or(338639);
-            json!(chain_id)
+            json!(format!("0x{:x}", current_chain_id()))
         }
 
         // synergy_getValidatorByCluster
@@ -2597,6 +3017,786 @@ fn handle_json_rpc(
     }
 }
 
+fn parse_http_headers(headers: &str) -> HashMap<String, String> {
+    headers
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            Some((name.trim().to_ascii_lowercase(), value.trim().to_string()))
+        })
+        .collect()
+}
+
+fn request_is_json(headers: &HashMap<String, String>) -> bool {
+    headers
+        .get("content-type")
+        .map(|value| value.to_ascii_lowercase().starts_with("application/json"))
+        .unwrap_or(false)
+}
+
+fn json_rpc_error_response(id: Option<Value>, error: &RpcError) -> Value {
+    let mut payload = serde_json::Map::new();
+    payload.insert("code".to_string(), json!(error.code));
+    payload.insert("message".to_string(), json!(error.message.clone()));
+    if let Some(data) = &error.data {
+        payload.insert("data".to_string(), data.clone());
+    }
+
+    json!({
+        "jsonrpc": "2.0",
+        "id": id.unwrap_or(Value::Null),
+        "error": Value::Object(payload)
+    })
+}
+
+fn send_json_rpc_error(
+    stream: &mut std::net::TcpStream,
+    id: Option<Value>,
+    error: &RpcError,
+    cors_enabled: bool,
+    cors_origins: &[String],
+) {
+    let response = json_rpc_error_response(id, error);
+    let response = format_response(&response.to_string(), cors_enabled, cors_origins);
+    let _ = stream.write(response.as_bytes());
+}
+
+fn translate_legacy_rpc_result(value: Value) -> Result<Value, RpcError> {
+    if let Some(message) = value.as_str() {
+        if message == "Unknown method" {
+            return Err(RpcError::new(-32601, "Method not found"));
+        }
+        if message.starts_with("Invalid") || message.starts_with("Missing") {
+            return Err(RpcError::new(-32602, message));
+        }
+    }
+
+    if let Some(map) = value.as_object() {
+        if matches!(map.get("success"), Some(Value::Bool(false))) {
+            let message = map
+                .get("error")
+                .and_then(|entry| entry.as_str())
+                .unwrap_or("RPC request failed");
+            return Err(RpcError::with_data(-32000, message, value.clone()));
+        }
+
+        if let Some(error) = map.get("error") {
+            let message = error
+                .as_str()
+                .map(|entry| entry.to_string())
+                .unwrap_or_else(|| error.to_string());
+            return Err(RpcError::with_data(-32000, message, value.clone()));
+        }
+    }
+
+    Ok(value)
+}
+
+fn current_chain_id() -> u64 {
+    crate::config::load_node_config(None)
+        .ok()
+        .map(|cfg| cfg.blockchain.chain_id)
+        .unwrap_or(338639)
+}
+
+fn parse_u64ish(value: Option<&Value>) -> Result<Option<u64>, RpcError> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    match value {
+        Value::Null => Ok(None),
+        Value::Number(number) => number
+            .as_u64()
+            .map(Some)
+            .ok_or_else(|| RpcError::new(-32602, "Numeric field must be an unsigned integer")),
+        Value::String(text) => {
+            let trimmed = text.trim();
+            if trimmed.is_empty() {
+                return Ok(None);
+            }
+            let parsed = if let Some(hex_value) = trimmed.strip_prefix("0x") {
+                u64::from_str_radix(hex_value, 16)
+            } else {
+                trimmed.parse::<u64>()
+            };
+            parsed.map(Some).map_err(|_| {
+                RpcError::new(-32602, format!("Unable to parse integer value '{}'", text))
+            })
+        }
+        _ => Err(RpcError::new(
+            -32602,
+            "Numeric field must be a number or string",
+        )),
+    }
+}
+
+fn parse_signature_bytes(
+    value: Option<&Value>,
+    require_signature: bool,
+) -> Result<Vec<u8>, RpcError> {
+    let Some(value) = value else {
+        return if require_signature {
+            Err(RpcError::new(-32602, "Missing signature"))
+        } else {
+            Ok(Vec::new())
+        };
+    };
+
+    match value {
+        Value::String(text) => {
+            let normalized = text.trim().strip_prefix("0x").unwrap_or(text.trim());
+            if normalized.is_empty() {
+                return if require_signature {
+                    Err(RpcError::new(-32602, "Missing signature"))
+                } else {
+                    Ok(Vec::new())
+                };
+            }
+            hex::decode(normalized)
+                .map_err(|_| RpcError::new(-32602, "Signature must be valid hex"))
+        }
+        Value::Array(values) => {
+            let mut bytes = Vec::with_capacity(values.len());
+            for value in values {
+                let byte = value
+                    .as_u64()
+                    .filter(|entry| *entry <= 255)
+                    .ok_or_else(|| RpcError::new(-32602, "Signature array must contain bytes"))?;
+                bytes.push(byte as u8);
+            }
+            Ok(bytes)
+        }
+        _ => Err(RpcError::new(
+            -32602,
+            "Signature must be a hex string or byte array",
+        )),
+    }
+}
+
+fn normalize_signature_algorithm(value: Option<&str>) -> Result<String, RpcError> {
+    let normalized = value.unwrap_or("fndsa").trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "" | "fndsa" | "fn-dsa" | "fn-dsa-512" | "fn-dsa-1024" => Ok("fndsa".to_string()),
+        "mldsa" | "ml-dsa" | "ml-dsa-44" | "ml-dsa-65" | "ml-dsa-87" => Ok("mldsa".to_string()),
+        "slhdsa" | "slh-dsa" | "slh-dsa-128s" | "slh-dsa-192s" | "slh-dsa-256s" => {
+            Ok("slhdsa".to_string())
+        }
+        _ => Err(RpcError::new(
+            -32602,
+            format!(
+                "Unsupported signature algorithm '{}'",
+                value.unwrap_or_default()
+            ),
+        )),
+    }
+}
+
+fn normalize_rpc_transaction(
+    value: &Value,
+    require_signature: bool,
+) -> Result<NormalizedEnvelopeResult, RpcError> {
+    if let Ok(transaction) = serde_json::from_value::<Transaction>(value.clone()) {
+        return Ok(NormalizedEnvelopeResult {
+            chain_id: None,
+            warnings: Vec::new(),
+            transaction,
+        });
+    }
+
+    let envelope = serde_json::from_value::<RpcTransactionEnvelope>(value.clone())
+        .map_err(|_| RpcError::new(-32602, "Invalid transaction format"))?;
+
+    if matches!(
+        envelope.envelope_type.as_deref(),
+        Some("0x04") | Some("4") | Some("delegation")
+    ) || envelope.delegation.is_some()
+        || envelope.delegations.is_some()
+        || envelope.authorization_list.is_some()
+        || matches!(
+            envelope.tx_type.as_deref(),
+            Some("0x04") | Some("4") | Some("delegation")
+        )
+    {
+        return Err(RpcError::with_data(
+            -32014,
+            "Delegation-bearing transaction envelopes are not permitted on Synergy",
+            json!({"reason": "type-0x04 / delegation payload rejected"}),
+        ));
+    }
+
+    let sender = envelope
+        .from
+        .clone()
+        .or(envelope.sender.clone())
+        .ok_or_else(|| RpcError::new(-32602, "Missing transaction sender"))?;
+    let receiver = envelope
+        .to
+        .clone()
+        .or(envelope.receiver.clone())
+        .ok_or_else(|| RpcError::new(-32602, "Missing transaction recipient"))?;
+    let amount = parse_u64ish(envelope.value.as_ref().or(envelope.amount.as_ref()))?.unwrap_or(0);
+    let nonce = envelope
+        .nonce
+        .ok_or_else(|| RpcError::new(-32602, "Missing transaction nonce"))?;
+    let gas_price = parse_u64ish(
+        envelope
+            .max_fee
+            .as_ref()
+            .or(envelope.gas_price.as_ref())
+            .or(envelope.gas_price_alias.as_ref()),
+    )?
+    .unwrap_or_else(|| current_gas_price_from_chain(&CHAIN));
+    let gas_limit = parse_u64ish(
+        envelope
+            .gas_limit_alias
+            .as_ref()
+            .or(envelope.gas_limit.as_ref()),
+    )?
+    .unwrap_or(crate::gas::constants::GAS_LIMIT_TRANSFER);
+    let signature = parse_signature_bytes(envelope.signature.as_ref(), require_signature)?;
+    let signature_algorithm = normalize_signature_algorithm(
+        envelope
+            .signature_algorithm_alias
+            .as_deref()
+            .or(envelope.signature_algorithm.as_deref()),
+    )?;
+    let chain_id = parse_u64ish(envelope.chain_id.as_ref())?;
+
+    let normalized = NormalizedRpcTransaction {
+        sender,
+        receiver,
+        amount,
+        nonce,
+        signature,
+        timestamp: envelope.timestamp.unwrap_or_else(current_timestamp),
+        gas_price,
+        gas_limit,
+        data: envelope.data.clone(),
+        signature_algorithm,
+        chain_id,
+    };
+
+    let mut warnings = Vec::new();
+    if envelope.max_priority_fee_per_gas.is_some() {
+        warnings.push(
+            "maxPriorityFeePerGas is accepted for compatibility but not used by the current fee model"
+                .to_string(),
+        );
+    }
+
+    if normalized.amount == 0
+        && normalized
+            .data
+            .as_deref()
+            .map(|value| !value.is_empty() && value != "0x")
+            .unwrap_or(false)
+    {
+        warnings.push(
+            "Zero-value contract calls remain subject to the current AIVM execution limitations"
+                .to_string(),
+        );
+    }
+
+    let transaction = Transaction {
+        sender: normalized.sender,
+        receiver: normalized.receiver,
+        amount: normalized.amount,
+        nonce: normalized.nonce,
+        signature: normalized.signature,
+        timestamp: normalized.timestamp,
+        gas_price: normalized.gas_price,
+        gas_limit: normalized.gas_limit,
+        data: normalized.data,
+        signature_algorithm: normalized.signature_algorithm,
+    };
+
+    Ok(NormalizedEnvelopeResult {
+        transaction,
+        warnings,
+        chain_id: normalized.chain_id,
+    })
+}
+
+fn estimate_gas_for_transaction(transaction: &Transaction) -> u64 {
+    use crate::gas::GasEstimator;
+
+    if transaction.receiver.is_empty() || transaction.receiver == "0x0" {
+        let bytecode_size = transaction
+            .data
+            .as_deref()
+            .map(|data| {
+                let data = data.strip_prefix("0x").unwrap_or(data);
+                data.len() / 2
+            })
+            .unwrap_or(0);
+        GasEstimator::estimate_contract_deploy(bytecode_size).as_u64()
+    } else if transaction
+        .data
+        .as_deref()
+        .map(|data| !data.is_empty() && data != "0x")
+        .unwrap_or(false)
+    {
+        let calldata_size = transaction
+            .data
+            .as_deref()
+            .map(|data| {
+                let data = data.strip_prefix("0x").unwrap_or(data);
+                data.len() / 2
+            })
+            .unwrap_or(0);
+        GasEstimator::estimate_contract_call(calldata_size).as_u64()
+    } else {
+        GasEstimator::estimate_transfer().as_u64()
+    }
+}
+
+fn dynamic_gas_price(chain: &BlockChain) -> u64 {
+    use crate::gas::constants::{DEFAULT_GAS_PRICE, MAX_GAS_PRICE, MIN_GAS_PRICE};
+
+    let recent_blocks: Vec<_> = chain.chain.iter().rev().take(10).collect();
+    if recent_blocks.is_empty() {
+        return DEFAULT_GAS_PRICE;
+    }
+
+    let mut total_gas_used: u64 = 0;
+    let block_gas_limit = crate::gas::constants::BLOCK_GAS_LIMIT;
+    for block in &recent_blocks {
+        let block_gas: u64 = block.transactions.iter().map(|tx| tx.get_fee()).sum();
+        total_gas_used += block_gas;
+    }
+
+    let avg_gas_per_block = total_gas_used / recent_blocks.len() as u64;
+    let utilization = avg_gas_per_block as f64 / block_gas_limit as f64;
+    let gas_price = if utilization > 0.8 {
+        (DEFAULT_GAS_PRICE as f64 * (1.0 + utilization)) as u64
+    } else {
+        DEFAULT_GAS_PRICE
+    };
+
+    gas_price.max(MIN_GAS_PRICE).min(MAX_GAS_PRICE)
+}
+
+fn current_gas_price_from_chain(chain: &Arc<Mutex<BlockChain>>) -> u64 {
+    let chain = chain.lock().unwrap();
+    dynamic_gas_price(&chain)
+}
+
+fn get_account_nonce(
+    params: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+) -> Result<Value, RpcError> {
+    let address = params
+        .get(0)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| RpcError::new(-32602, "Missing address parameter"))?;
+
+    let mut next_nonce = 0u64;
+
+    if let Ok(wallet_manager) = WALLET_MANAGER.lock() {
+        if let Some(wallet) = wallet_manager.get_wallet(address) {
+            next_nonce = next_nonce.max(wallet.nonce);
+        }
+    }
+
+    {
+        let chain = chain.lock().unwrap();
+        for block in &chain.chain {
+            for tx in &block.transactions {
+                if tx.sender.eq_ignore_ascii_case(address) {
+                    next_nonce = next_nonce.max(tx.nonce.saturating_add(1));
+                }
+            }
+        }
+    }
+
+    {
+        let pool = tx_pool.lock().unwrap();
+        for tx in pool.iter() {
+            if tx.sender.eq_ignore_ascii_case(address) {
+                next_nonce = next_nonce.max(tx.nonce.saturating_add(1));
+            }
+        }
+    }
+
+    Ok(json!(next_nonce))
+}
+
+fn simulate_transaction(
+    params: &Value,
+    _tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+) -> Result<Value, RpcError> {
+    let transaction_value = params
+        .get(0)
+        .ok_or_else(|| RpcError::new(-32602, "Missing transaction parameter"))?;
+    let normalized = normalize_rpc_transaction(transaction_value, false)?;
+
+    let configured_chain_id = current_chain_id();
+    if let Some(chain_id) = normalized.chain_id {
+        if chain_id != configured_chain_id {
+            return Err(RpcError::with_data(
+                -32015,
+                "Simulation chainId does not match the local chain",
+                json!({
+                    "expected": format!("0x{:x}", configured_chain_id),
+                    "actual": format!("0x{:x}", chain_id)
+                }),
+            ));
+        }
+    }
+
+    let gas = estimate_gas_for_transaction(&normalized.transaction);
+    let network_gas_price = current_gas_price_from_chain(chain);
+    let safe_fee = gas.saturating_mul(network_gas_price);
+    let max_fee = gas.saturating_mul(normalized.transaction.gas_price);
+    let sender_balance = TOKEN_MANAGER
+        .clone()
+        .get_balance(&normalized.transaction.sender, "SNRG");
+    let total_cost = normalized.transaction.amount.saturating_add(max_fee);
+
+    let mut warnings = normalized.warnings.clone();
+    let mut divergence = false;
+    if normalized
+        .transaction
+        .data
+        .as_deref()
+        .map(|value| !value.is_empty() && value != "0x")
+        .unwrap_or(false)
+    {
+        divergence = true;
+        warnings.push(
+            "AIVM contract execution is currently disabled, so contract-side effects could not be fully simulated"
+                .to_string(),
+        );
+    }
+
+    if sender_balance < total_cost {
+        warnings.push(format!(
+            "Sender balance {} is below the projected total cost {}",
+            sender_balance, total_cost
+        ));
+    }
+
+    let asset_flows = if normalized.transaction.amount > 0 {
+        vec![json!({
+            "asset": "SNRG",
+            "from": normalized.transaction.sender,
+            "to": normalized.transaction.receiver,
+            "amount": normalized.transaction.amount
+        })]
+    } else {
+        Vec::new()
+    };
+
+    let tx_digest =
+        canonical_value_digest(transaction_value).unwrap_or_else(|| normalized.transaction.hash());
+    let preview = json!({
+        "accepted": sender_balance >= total_cost,
+        "chainId": format!("0x{:x}", configured_chain_id),
+        "txDigest": tx_digest,
+        "gas": gas,
+        "safeFee": safe_fee,
+        "maxFee": max_fee,
+        "assetFlows": asset_flows,
+        "approvals": [],
+        "delegations": [],
+        "warnings": warnings,
+        "divergence": divergence
+    });
+    let simulation_hash = canonical_value_digest(&preview)
+        .unwrap_or_else(|| hex::encode(blake3::hash(preview.to_string().as_bytes()).as_bytes()));
+
+    {
+        let mut cache = SIMULATION_CACHE.lock().unwrap();
+        cache.retain(|_, entry| current_timestamp().saturating_sub(entry.created_at) <= 900);
+        cache.insert(
+            preview
+                .get("txDigest")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string(),
+            CachedSimulation {
+                simulation_hash: simulation_hash.clone(),
+                created_at: current_timestamp(),
+            },
+        );
+    }
+
+    Ok(json!({
+        "simulationHash": simulation_hash,
+        "transactionHashPreview": normalized.transaction.hash(),
+        "result": preview
+    }))
+}
+
+fn register_subscription(
+    params: &Value,
+    chain: &Arc<Mutex<BlockChain>>,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    subscriptions: &mut HashMap<String, SubscriptionCursor>,
+) -> Result<Value, RpcError> {
+    let subscription_type = params
+        .get(0)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| RpcError::new(-32602, "Missing subscription type"))?;
+    let current_height = {
+        let chain = chain.lock().unwrap();
+        chain.last().map(|block| block.block_index).unwrap_or(0)
+    };
+    let filter = params.get(1).cloned().unwrap_or(Value::Null);
+
+    let cursor = match subscription_type {
+        "newHeads" => SubscriptionCursor::NewHeads {
+            last_block: current_height,
+        },
+        "logs" => SubscriptionCursor::Logs {
+            last_block: current_height,
+            address: filter
+                .get("address")
+                .and_then(|value| value.as_str())
+                .map(|value| value.to_ascii_lowercase()),
+            topics: filter
+                .get("topics")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str().map(|entry| entry.to_ascii_lowercase()))
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default(),
+        },
+        "pendingTransactions" => {
+            let seen_hashes = tx_pool
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|transaction| transaction.hash())
+                .collect();
+            SubscriptionCursor::PendingTransactions { seen_hashes }
+        }
+        "validatorEvents" => SubscriptionCursor::ValidatorEvents {
+            last_block: current_height,
+        },
+        _ => {
+            return Err(RpcError::new(
+                -32602,
+                format!("Unsupported subscription type '{}'", subscription_type),
+            ));
+        }
+    };
+
+    let subscription_id = format!(
+        "0x{:016x}",
+        SUBSCRIPTION_COUNTER.fetch_add(1, Ordering::Relaxed)
+    );
+    subscriptions.insert(subscription_id.clone(), cursor);
+    Ok(json!(subscription_id))
+}
+
+fn unregister_subscription(
+    params: &Value,
+    subscriptions: &mut HashMap<String, SubscriptionCursor>,
+) -> Result<Value, RpcError> {
+    let subscription_id = params
+        .get(0)
+        .and_then(|value| value.as_str())
+        .ok_or_else(|| RpcError::new(-32602, "Missing subscriptionId parameter"))?;
+    Ok(json!(subscriptions.remove(subscription_id).is_some()))
+}
+
+fn emit_subscription_notifications(
+    websocket: &mut tungstenite::WebSocket<std::net::TcpStream>,
+    subscriptions: &mut HashMap<String, SubscriptionCursor>,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+) {
+    if subscriptions.is_empty() {
+        return;
+    }
+
+    let subscription_ids: Vec<String> = subscriptions.keys().cloned().collect();
+    for subscription_id in subscription_ids {
+        let Some(cursor) = subscriptions.get_mut(&subscription_id) else {
+            continue;
+        };
+
+        match cursor {
+            SubscriptionCursor::NewHeads { last_block } => {
+                let blocks = {
+                    let chain = chain.lock().unwrap();
+                    chain
+                        .chain
+                        .iter()
+                        .filter(|block| block.block_index > *last_block)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+
+                for block in blocks {
+                    *last_block = block.block_index;
+                    let notification = json!({
+                        "jsonrpc": "2.0",
+                        "method": "synergy_subscription",
+                        "params": {
+                            "subscription": subscription_id,
+                            "result": {
+                                "block_index": block.block_index,
+                                "hash": block.hash,
+                                "parent_hash": block.previous_hash,
+                                "timestamp": block.timestamp,
+                                "validator": block.validator_id,
+                                "tx_count": block.transactions.len()
+                            }
+                        }
+                    });
+                    if websocket
+                        .send(WsMessage::Text(notification.to_string()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+            SubscriptionCursor::Logs {
+                last_block,
+                address,
+                topics,
+            } => {
+                let blocks = {
+                    let chain = chain.lock().unwrap();
+                    chain
+                        .chain
+                        .iter()
+                        .filter(|block| block.block_index > *last_block)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+
+                for block in blocks {
+                    *last_block = block.block_index;
+                    for log in collect_logs_for_block(&block, address.as_deref(), topics) {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "synergy_subscription",
+                            "params": {
+                                "subscription": subscription_id,
+                                "result": log
+                            }
+                        });
+                        if websocket
+                            .send(WsMessage::Text(notification.to_string()))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            SubscriptionCursor::PendingTransactions { seen_hashes } => {
+                let pending_transactions =
+                    tx_pool.lock().unwrap().iter().cloned().collect::<Vec<_>>();
+
+                for transaction in pending_transactions {
+                    let hash = transaction.hash();
+                    if seen_hashes.insert(hash.clone()) {
+                        let notification = json!({
+                            "jsonrpc": "2.0",
+                            "method": "synergy_subscription",
+                            "params": {
+                                "subscription": subscription_id,
+                                "result": hash
+                            }
+                        });
+                        if websocket
+                            .send(WsMessage::Text(notification.to_string()))
+                            .is_err()
+                        {
+                            return;
+                        }
+                    }
+                }
+            }
+            SubscriptionCursor::ValidatorEvents { last_block } => {
+                let blocks = {
+                    let chain = chain.lock().unwrap();
+                    chain
+                        .chain
+                        .iter()
+                        .filter(|block| block.block_index > *last_block)
+                        .cloned()
+                        .collect::<Vec<_>>()
+                };
+
+                for block in blocks {
+                    *last_block = block.block_index;
+                    let notification = json!({
+                        "jsonrpc": "2.0",
+                        "method": "synergy_subscription",
+                        "params": {
+                            "subscription": subscription_id,
+                            "result": {
+                                "event": "blockAccepted",
+                                "block_index": block.block_index,
+                                "validator": block.validator_id,
+                                "hash": block.hash
+                            }
+                        }
+                    });
+                    if websocket
+                        .send(WsMessage::Text(notification.to_string()))
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn collect_logs_for_block(
+    block: &crate::block::Block,
+    address_filter: Option<&str>,
+    topics_filter: &[String],
+) -> Vec<Value> {
+    if !topics_filter.is_empty() {
+        return Vec::new();
+    }
+
+    let mut logs = Vec::new();
+    for (tx_index, transaction) in block.transactions.iter().enumerate() {
+        if let Some(address_filter) = address_filter {
+            if !transaction.sender.eq_ignore_ascii_case(address_filter)
+                && !transaction.receiver.eq_ignore_ascii_case(address_filter)
+            {
+                continue;
+            }
+        }
+
+        if transaction.data.is_none() && address_filter.is_none() {
+            continue;
+        }
+
+        logs.push(json!({
+            "logIndex": logs.len(),
+            "transactionIndex": tx_index,
+            "transactionHash": transaction.hash(),
+            "blockHash": block.hash.clone(),
+            "blockNumber": block.block_index,
+            "address": transaction.receiver.clone(),
+            "data": transaction.data.clone().unwrap_or_else(|| "0x".to_string()),
+            "topics": [],
+            "removed": false
+        }));
+    }
+
+    logs
+}
+
 fn current_timestamp() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2753,17 +3953,6 @@ fn calculate_average_block_time(chain: &BlockChain) -> f64 {
     total_diff as f64 / count as f64
 }
 
-fn send_error(
-    stream: &mut std::net::TcpStream,
-    msg: &str,
-    cors_enabled: bool,
-    cors_origins: &[String],
-) {
-    let body = format!("{{\"error\": \"{}\"}}", msg);
-    let response = format_response(&body, cors_enabled, cors_origins);
-    let _ = stream.write(response.as_bytes());
-}
-
 fn tx_to_explorer_json(
     tx: &Transaction,
     status: &str,
@@ -2816,4 +4005,73 @@ fn block_to_explorer_json(block: &crate::block::Block) -> Value {
         "tx_count": block.transactions.len() as u64,
         "transactions": txs
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn normalize_spec_transaction_envelope_maps_to_internal_transaction() {
+        let envelope = json!({
+            "from": "syna1sender",
+            "to": "syna1receiver",
+            "value": 42,
+            "nonce": 7,
+            "gasLimit": 21000,
+            "maxFee": 1000,
+            "signature": "0x01020304",
+            "signatureAlgorithm": "FN-DSA-1024",
+            "chainId": "0x1234"
+        });
+
+        let normalized =
+            normalize_rpc_transaction(&envelope, true).expect("envelope should normalize");
+        assert_eq!(normalized.transaction.sender, "syna1sender");
+        assert_eq!(normalized.transaction.receiver, "syna1receiver");
+        assert_eq!(normalized.transaction.amount, 42);
+        assert_eq!(normalized.transaction.nonce, 7);
+        assert_eq!(normalized.transaction.gas_limit, 21000);
+        assert_eq!(normalized.transaction.gas_price, 1000);
+        assert_eq!(normalized.transaction.signature, vec![1, 2, 3, 4]);
+        assert_eq!(normalized.transaction.signature_algorithm, "fndsa");
+        assert_eq!(normalized.chain_id, Some(0x1234));
+    }
+
+    #[test]
+    fn normalize_transaction_rejects_delegation_payloads() {
+        let envelope = json!({
+            "from": "syna1sender",
+            "to": "syna1receiver",
+            "value": 1,
+            "nonce": 1,
+            "signature": "0x01",
+            "type": "0x04"
+        });
+
+        let error =
+            normalize_rpc_transaction(&envelope, true).expect_err("delegations must be rejected");
+        assert_eq!(error.code, -32014);
+    }
+
+    #[test]
+    fn translate_legacy_result_promotes_embedded_errors() {
+        let legacy = json!({
+            "success": false,
+            "error": "boom"
+        });
+
+        let error =
+            translate_legacy_rpc_result(legacy).expect_err("legacy error should map to RpcError");
+        assert_eq!(error.code, -32000);
+        assert_eq!(error.message, "boom");
+    }
+
+    #[test]
+    fn request_is_json_recognizes_application_json() {
+        let headers = parse_http_headers(
+            "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\n\r\n",
+        );
+        assert!(request_is_json(&headers));
+    }
 }

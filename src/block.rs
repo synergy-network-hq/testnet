@@ -148,6 +148,22 @@ impl BlockChain {
         self.chain.last()
     }
 
+    pub fn block_at_height(&self, height: u64) -> Option<&Block> {
+        self.chain.iter().find(|block| block.block_index == height)
+    }
+
+    pub fn truncate_to_height(&mut self, height: u64) {
+        if let Some(position) = self
+            .chain
+            .iter()
+            .rposition(|block| block.block_index <= height)
+        {
+            self.chain.truncate(position + 1);
+        } else {
+            self.chain.clear();
+        }
+    }
+
     pub fn genesis(&mut self) -> Result<(), String> {
         let genesis = canonical_genesis()?;
         let genesis_block = Block {

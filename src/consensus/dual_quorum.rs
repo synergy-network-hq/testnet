@@ -124,8 +124,15 @@ impl DualQuorumConsensus {
     ) -> Result<QuorumCertificate, String> {
         let block_hash = proposed_block.hash.clone();
         let epoch_number = self.current_epoch;
-        let round_number =
-            self.allocate_round_number(proposed_block.block_index, minimum_round_number);
+        let local_validator_address = self
+            .resolve_local_validator_address_for_round()
+            .ok_or_else(|| "Local validator address is not configured".to_string())?;
+        let round_number = self.allocate_round_number(
+            proposed_block.block_index,
+            epoch_number,
+            &local_validator_address,
+            minimum_round_number,
+        );
 
         // Phase 1: Proposal validation
         self.validate_block_proposal(proposed_block)?;
@@ -858,26 +865,43 @@ impl DualQuorumConsensus {
 
     fn observe_vote(
         vote: &Vote,
-        _persist_equivocation_evidence: bool,
+        persist_equivocation_evidence: bool,
     ) -> Option<VoteEquivocationEvidence> {
-        // Equivocation detection disabled for testnet-beta stability.
-        // The original implementation used a static OBSERVED_VOTES map that
-        // persisted across consensus rounds, causing false-positive self-
-        // equivocation when leaders retried proposals after round failures
-        // and when multiple nodes selected themselves as leader due to
-        // differing live-validator views.  With penalization_enabled=false
-        // this check only caused liveness failures with no safety benefit.
         let key = Self::vote_observation_key(
             &vote.validator_address,
             vote.epoch_number,
             vote.block_index,
             vote.round_number,
         );
-        if let Ok(mut observed_votes) = OBSERVED_VOTES.lock() {
-            // Still record the vote for observability, but never flag equivocation.
-            observed_votes.insert(key, vote.clone());
+
+        let mut observed_votes = OBSERVED_VOTES.lock().ok()?;
+        match observed_votes.get(&key) {
+            // Idempotent replays of the exact same vote are allowed.
+            Some(existing) if existing.block_hash == vote.block_hash => None,
+            Some(existing) => {
+                let evidence = VoteEquivocationEvidence {
+                    validator_address: vote.validator_address.clone(),
+                    block_index: vote.block_index,
+                    epoch_number: vote.epoch_number,
+                    round_number: vote.round_number,
+                    first_vote: existing.clone(),
+                    conflicting_vote: vote.clone(),
+                    detected_at: Self::current_timestamp(),
+                };
+
+                if persist_equivocation_evidence {
+                    if let Ok(mut evidence_log) = EQUIVOCATION_EVIDENCE_LOG.lock() {
+                        evidence_log.insert(key, evidence.clone());
+                    }
+                }
+
+                Some(evidence)
+            }
+            None => {
+                observed_votes.insert(key, vote.clone());
+                None
+            }
         }
-        None
     }
 
     fn register_vote_observation(vote: &Vote) -> Option<VoteEquivocationEvidence> {
@@ -1026,12 +1050,40 @@ impl DualQuorumConsensus {
             .unwrap_or_default()
     }
 
-    fn allocate_round_number(&mut self, block_index: u64, minimum_round_number: u64) -> u64 {
+    fn latest_observed_round_for_validator(
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+    ) -> u64 {
+        OBSERVED_VOTES
+            .lock()
+            .ok()
+            .and_then(|observed_votes| {
+                observed_votes
+                    .values()
+                    .filter(|vote| {
+                        vote.validator_address == validator_address
+                            && vote.epoch_number == epoch_number
+                            && vote.block_index == block_index
+                    })
+                    .map(|vote| vote.round_number)
+                    .max()
+            })
+            .unwrap_or(0)
+    }
+
+    fn allocate_round_number(
+        &mut self,
+        block_index: u64,
+        epoch_number: u64,
+        validator_address: &str,
+        minimum_round_number: u64,
+    ) -> u64 {
         let next_round = self.current_round_by_height.entry(block_index).or_insert(0);
         let requested_floor = minimum_round_number.saturating_sub(1);
-        if *next_round < requested_floor {
-            *next_round = requested_floor;
-        }
+        let observed_floor =
+            Self::latest_observed_round_for_validator(validator_address, epoch_number, block_index);
+        *next_round = (*next_round).max(requested_floor).max(observed_floor);
         *next_round += 1;
         *next_round
     }
@@ -1192,10 +1244,43 @@ mod tests {
             5,
         );
 
-        assert_eq!(consensus.allocate_round_number(4, 3), 3);
-        assert_eq!(consensus.allocate_round_number(4, 3), 4);
-        assert_eq!(consensus.allocate_round_number(4, 1), 5);
-        assert_eq!(consensus.allocate_round_number(5, 1), 1);
+        assert_eq!(consensus.allocate_round_number(4, 1, "validator1", 3), 3);
+        assert_eq!(consensus.allocate_round_number(4, 1, "validator1", 3), 4);
+        assert_eq!(consensus.allocate_round_number(4, 1, "validator1", 1), 5);
+        assert_eq!(consensus.allocate_round_number(5, 1, "validator1", 1), 1);
+    }
+
+    #[test]
+    fn round_allocation_skips_rounds_already_used_by_local_validator() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let mut consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            1,
+            1,
+            8,
+            5,
+        );
+
+        let remote_leader_block = signed_block(14, 1, "validator1");
+        let prior_local_vote = DualQuorumConsensus::create_vote_for_validator(
+            "validator2",
+            &remote_leader_block,
+            41,
+            2,
+        )
+        .expect("prior local vote should be created");
+        assert!(DualQuorumConsensus::register_local_vote_attempt(&prior_local_vote).is_none());
+
+        assert_eq!(
+            consensus.allocate_round_number(14, 41, "validator2", 2),
+            3,
+            "a local validator that already voted in round 2 must advance to round 3"
+        );
     }
 
     #[test]
@@ -1236,7 +1321,7 @@ mod tests {
     }
 
     #[test]
-    fn local_conflicting_vote_attempt_is_recorded_without_self_slashing() {
+    fn local_conflicting_vote_attempt_is_rejected_without_self_slashing() {
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1264,9 +1349,13 @@ mod tests {
         let conflicting_vote =
             DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 30, 1)
                 .expect("conflicting local vote should be created");
-        consensus
+        let error = consensus
             .register_local_vote_or_slash(&conflicting_vote)
-            .expect("conflicting local vote should be recorded");
+            .expect_err("conflicting local vote should be rejected");
+        assert!(
+            error.contains("attempted conflicting votes"),
+            "unexpected local conflict error: {error}"
+        );
 
         let validator = validator_manager
             .get_validator("validator2")
@@ -1276,7 +1365,53 @@ mod tests {
         assert_eq!(validator.equivocation_evidence_count, 0);
 
         let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
-        assert!(evidence.is_empty());
+        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 30, 11, 1);
+        assert!(
+            !evidence.contains_key(&local_key),
+            "local conflicting vote should not persist slashable evidence"
+        );
+    }
+
+    #[test]
+    fn identical_vote_replay_is_idempotent() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            1,
+            1,
+            8,
+            5,
+        );
+
+        let block = signed_block(12, 1, "validator1");
+        let vote = DualQuorumConsensus::create_vote_for_validator("validator2", &block, 31, 1)
+            .expect("vote should be created");
+
+        consensus
+            .register_local_vote_or_slash(&vote)
+            .expect("first local vote should be accepted");
+        consensus
+            .register_local_vote_or_slash(&vote)
+            .expect("replaying the same vote should be idempotent");
+
+        let validator = validator_manager
+            .get_validator("validator2")
+            .expect("validator should still exist");
+        assert_eq!(validator.status, ValidatorStatus::Active);
+        assert_eq!(validator.double_signs, 0);
+        assert_eq!(validator.equivocation_evidence_count, 0);
+
+        let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
+        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 31, 12, 1);
+        assert!(
+            !evidence.contains_key(&local_key),
+            "idempotent replay should not persist slashable evidence"
+        );
     }
 
     #[test]

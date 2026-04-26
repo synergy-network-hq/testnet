@@ -3165,13 +3165,10 @@ fn handle_messages(
                             continue;
                         }
 
-                        // Apply blocks received in bulk.
-                        let mut applied = 0u64;
-                        for block in blocks {
-                            if apply_block_if_new(&blockchain, block) {
-                                applied += 1;
-                            }
-                        }
+                        // Apply bulk blocks with overlap-aware reconciliation so a lagging
+                        // validator can roll back a divergent local tip to the highest common
+                        // ancestor before replaying forward.
+                        let applied = apply_block_batch(&blockchain, blocks);
                         if applied > 0 {
                             info!("p2p", "Blocks applied", "count" => applied);
                         }
@@ -3543,6 +3540,83 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     true
 }
 
+fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 {
+    if blocks.is_empty() {
+        return 0;
+    }
+
+    blocks.sort_by_key(|block| block.block_index);
+    blocks.dedup_by(|left, right| left.block_index == right.block_index && left.hash == right.hash);
+
+    let (applied, rollback_height, tip_height, snapshot) = {
+        let mut chain = blockchain.lock().unwrap();
+        let local_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
+        let mut rollback_height = None;
+
+        let highest_common_ancestor = blocks.iter().rev().find_map(|block| {
+            if block.block_index > local_tip_height {
+                return None;
+            }
+            chain
+                .block_at_height(block.block_index)
+                .filter(|local| local.hash == block.hash)
+                .map(|_| block.block_index)
+        });
+
+        if let Some(common_height) = highest_common_ancestor {
+            if common_height < local_tip_height {
+                chain.truncate_to_height(common_height);
+                rollback_height = Some(common_height);
+            }
+        }
+
+        let mut applied = 0u64;
+        for block in blocks.into_iter() {
+            let Some(tip) = chain.last() else {
+                break;
+            };
+
+            if block.block_index <= tip.block_index {
+                continue;
+            }
+
+            if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
+                break;
+            }
+
+            chain.add_block(block);
+            applied += 1;
+        }
+
+        let tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
+        let should_snapshot = rollback_height.is_some() || should_persist_chain_tip(tip_height);
+        let snapshot = if should_snapshot {
+            Some(chain.clone())
+        } else {
+            None
+        };
+
+        (applied, rollback_height, tip_height, snapshot)
+    };
+
+    if let Some(common_height) = rollback_height {
+        warn!(
+            "p2p",
+            "Rolled back divergent local tip to common ancestor",
+            "common_height" => common_height,
+            "new_tip_height" => tip_height
+        );
+    }
+
+    if let Some(snapshot) = snapshot {
+        let chain_path = crate::utils::resolve_data_path("data/chain.json");
+        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
+        note_chain_persist(tip_height);
+    }
+
+    applied
+}
+
 fn should_persist_chain_tip(tip_height: u64) -> bool {
     if tip_height <= 32 {
         return true;
@@ -3624,8 +3698,8 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        best_connected_validator_height, cache_peer_state, canonical_genesis_hash,
-        collect_known_peer_addresses, connected_validator_participants,
+        apply_block_batch, best_connected_validator_height, cache_peer_state,
+        canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, dial_with_timeout, handle_status_message,
         hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
@@ -3639,7 +3713,7 @@ mod tests {
         IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
         STALE_VALIDATOR_STATUS_SECS,
     };
-    use crate::block::BlockChain;
+    use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
     use crate::p2p::messages::NetworkMessage;
     use std::collections::HashMap;
@@ -4640,6 +4714,66 @@ mod tests {
         assert_eq!(
             super::best_connected_validator_height_with_support(&connected_peers, 2),
             12
+        );
+    }
+
+    fn test_block(previous: &Block, height: u64, validator: &str, nonce: u64) -> Block {
+        Block::new_with_timestamp(
+            height,
+            Vec::new(),
+            previous.hash.clone(),
+            validator.to_string(),
+            nonce,
+            1_700_000_000 + height,
+        )
+    }
+
+    #[test]
+    fn apply_block_batch_rolls_back_to_common_ancestor_before_replaying() {
+        let mut chain = BlockChain::new();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis-parent".to_string(),
+            "genesis".to_string(),
+            0,
+            1_700_000_000,
+        );
+        chain.add_block(genesis.clone());
+        let block1 = test_block(&genesis, 1, "validator-a", 1);
+        let block2 = test_block(&block1, 2, "validator-b", 2);
+        let local_block3 = test_block(&block2, 3, "validator-c", 3);
+        chain.add_block(block1.clone());
+        chain.add_block(block2.clone());
+        chain.add_block(local_block3.clone());
+
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        let remote_block3 = Block::new_with_timestamp(
+            3,
+            Vec::new(),
+            block2.hash.clone(),
+            "validator-d".to_string(),
+            99,
+            1_700_000_099,
+        );
+        let remote_block4 = test_block(&remote_block3, 4, "validator-e", 4);
+
+        let applied = apply_block_batch(
+            &blockchain,
+            vec![block2.clone(), remote_block3.clone(), remote_block4.clone()],
+        );
+        assert_eq!(applied, 2);
+
+        let chain = blockchain.lock().unwrap();
+        assert_eq!(chain.last().map(|block| block.block_index), Some(4));
+        assert_eq!(
+            chain.block_at_height(3).map(|block| block.hash.clone()),
+            Some(remote_block3.hash.clone())
+        );
+        assert_eq!(
+            chain.block_at_height(4).map(|block| block.hash.clone()),
+            Some(remote_block4.hash.clone())
         );
     }
 

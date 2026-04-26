@@ -27,6 +27,7 @@ blake3 = "1.8.1"
 socket2 = "0.5"
 k256 = { version = "0.13", features = ["sha256"] }
 chrono = "0.4"
+tungstenite = "0.24"
 
 # Post-Quantum Cryptography
 aegis-pqvm = { path = "../aegis-pqvm" }

@@ -8,7 +8,8 @@ use super::vrf::{VRFConsensus, VRFSeed};
 use crate::block::{Block, BlockChain};
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
 use crate::genesis::canonical_genesis;
-use crate::rpc::rpc_server::{SHARED_CHAIN, TX_POOL};
+use crate::p2p::networking::P2PNetwork;
+use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER, TX_POOL};
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
     Validator, ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
@@ -509,6 +510,8 @@ impl ProofOfSynergy {
                                 registry_active_count,
                                 min_validators
                             );
+                            drop(chain_guard);
+                            drop(pool);
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -553,6 +556,8 @@ impl ProofOfSynergy {
                                                 "required_validators" => status_ready_required_validators as u64,
                                                 "grace_secs" => status_ready_genesis_grace_secs
                                             );
+                                            drop(chain_guard);
+                                            drop(pool);
                                             thread::sleep(Duration::from_secs(1));
                                             continue;
                                         }
@@ -566,6 +571,8 @@ impl ProofOfSynergy {
                                                 "required_validators" => status_ready_required_validators as u64,
                                                 "grace_secs" => status_ready_genesis_grace_secs
                                             );
+                                            drop(chain_guard);
+                                            drop(pool);
                                             thread::sleep(Duration::from_secs(1));
                                             continue;
                                         }
@@ -582,17 +589,19 @@ impl ProofOfSynergy {
                                 status_ready_required_validators.saturating_sub(1).max(1);
                             let best_validator_height = network
                                 .get_best_validator_peer_height_with_support(required_sync_support);
-                            if best_validator_height > latest_block.block_index {
+                            let local_height = latest_block.block_index;
+                            if best_validator_height > local_height {
                                 mesh_ready_since = None;
                                 status_sync_grace_since = None;
-                                info!(
-                                    "consensus",
-                                    "Waiting to sync to best validator height before block production",
-                                    "local_height" => latest_block.block_index,
-                                    "best_validator_height" => best_validator_height,
-                                    "required_sync_support" => required_sync_support as u64
+                                drop(chain_guard);
+                                drop(pool);
+                                Self::sync_validator_to_network_tip(
+                                    &network,
+                                    local_height,
+                                    best_validator_height,
+                                    required_sync_support,
                                 );
-                                thread::sleep(Duration::from_millis(500));
+                                last_block_time = SystemTime::now();
                                 continue;
                             }
 
@@ -606,6 +615,8 @@ impl ProofOfSynergy {
                                         "Validator mesh is settling before block production",
                                         "settle_secs" => mesh_settle_secs
                                     );
+                                    drop(chain_guard);
+                                    drop(pool);
                                     thread::sleep(Duration::from_millis(500));
                                     continue;
                                 }
@@ -616,6 +627,8 @@ impl ProofOfSynergy {
                                         "Validator mesh reached quorum; beginning settle window",
                                         "settle_secs" => mesh_settle_secs
                                     );
+                                    drop(chain_guard);
+                                    drop(pool);
                                     thread::sleep(Duration::from_millis(500));
                                     continue;
                                 }
@@ -623,6 +636,8 @@ impl ProofOfSynergy {
                         } else {
                             mesh_ready_since = None;
                             status_sync_grace_since = None;
+                            drop(chain_guard);
+                            drop(pool);
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -932,6 +947,48 @@ impl ProofOfSynergy {
                 thread::sleep(Duration::from_millis(100));
             }
         });
+    }
+
+    fn sync_validator_to_network_tip(
+        network: &Arc<P2PNetwork>,
+        local_height: u64,
+        best_validator_height: u64,
+        required_sync_support: usize,
+    ) {
+        info!(
+            "consensus",
+            "Starting validator catch-up sync before block production",
+            "local_height" => local_height,
+            "best_validator_height" => best_validator_height,
+            "required_sync_support" => required_sync_support as u64
+        );
+
+        let sync_result = {
+            let mut manager = SYNC_MANAGER.lock().unwrap();
+            manager.attach_network(Arc::clone(network));
+            manager.start_sync().map(|_| manager.local_height)
+        };
+
+        match sync_result {
+            Ok(final_height) => {
+                info!(
+                    "consensus",
+                    "Validator catch-up sync completed",
+                    "starting_height" => local_height,
+                    "best_validator_height" => best_validator_height,
+                    "final_height" => final_height
+                );
+            }
+            Err(error) => {
+                warn!(
+                    "consensus",
+                    "Validator catch-up sync failed",
+                    "local_height" => local_height,
+                    "best_validator_height" => best_validator_height,
+                    "error" => error.to_string()
+                );
+            }
+        }
     }
 
     fn initialize_genesis_validators(validator_manager: &Arc<ValidatorManager>) {

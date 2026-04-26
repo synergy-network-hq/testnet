@@ -122,6 +122,43 @@ fn normalize_rpc_client_address(bind_address: &str, default_port: u16) -> String
     normalize_client_address(bind_address, default_port)
 }
 
+fn rebind_socket_address(bind_address: &str, port: u16) -> String {
+    let trimmed = bind_address.trim();
+    let host = trimmed
+        .strip_prefix("http://")
+        .or_else(|| trimmed.strip_prefix("https://"))
+        .unwrap_or(trimmed)
+        .trim_end_matches('/')
+        .trim();
+
+    if host.is_empty() {
+        return format!("127.0.0.1:{port}");
+    }
+
+    match host {
+        "0.0.0.0" => format!("0.0.0.0:{port}"),
+        "::" | "[::]" => format!("[::]:{port}"),
+        "::1" | "[::1]" => format!("[::1]:{port}"),
+        _ if host.starts_with('[') => {
+            if let Some((addr, _)) = host.rsplit_once("]:") {
+                format!("{addr}]:{port}")
+            } else {
+                format!("{host}:{port}")
+            }
+        }
+        _ if host.matches(':').count() == 1 => {
+            let (candidate_host, candidate_port) = host.rsplit_once(':').unwrap();
+            if candidate_port.chars().all(|ch| ch.is_ascii_digit()) {
+                format!("{candidate_host}:{port}")
+            } else {
+                host.to_string()
+            }
+        }
+        _ if host.matches(':').count() == 0 => format!("{host}:{port}"),
+        _ => format!("[{host}]:{port}"),
+    }
+}
+
 fn is_validator_allowed(config: &NodeConfig, validator_address: &str) -> bool {
     if !config.node.strict_validator_allowlist {
         return true;
@@ -997,11 +1034,17 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             if rpc_enabled {
                 let rpc_bind_address =
                     normalize_rpc_socket_address(&config.rpc.bind_address, config.rpc.http_port);
+                let ws_bind_address = if config.rpc.enable_ws {
+                    Some(rebind_socket_address(&rpc_bind_address, config.rpc.ws_port))
+                } else {
+                    None
+                };
                 let cors_enabled = config.rpc.cors_enabled;
                 let cors_origins = config.rpc.cors_origins.clone();
                 let _rpc_handle = std::thread::spawn(move || {
                     rpc::rpc_server::start_rpc_server(
                         &rpc_bind_address,
+                        ws_bind_address,
                         cors_enabled,
                         cors_origins,
                     );

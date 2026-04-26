@@ -9,6 +9,8 @@ use crate::p2p::networking::{P2PNetwork, PeerSnapshot};
 use crate::sync::fast_sync;
 use crate::sync::validation;
 
+const SYNC_RECONCILIATION_LOOKBACK: u64 = 512;
+
 /// Represents where the sync engine currently is in the lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SyncState {
@@ -275,7 +277,7 @@ impl SyncManager {
                     self.network_height = updated_height;
                 }
             }
-            let from = self.local_height + 1;
+            let sync_tip = self.local_height;
             let remaining = self.network_height - self.local_height;
             let batch_size = if remaining > 10000 {
                 2000
@@ -288,34 +290,45 @@ impl SyncManager {
             } else {
                 std::cmp::min(remaining, 200)
             };
+            let target_height = std::cmp::min(self.network_height, sync_tip + batch_size);
+            let request_start = sync_tip.saturating_sub(SYNC_RECONCILIATION_LOOKBACK);
+            let request_count = target_height
+                .saturating_sub(request_start)
+                .saturating_add(1)
+                .min(u32::MAX as u64) as u32;
 
             if let Some(network) = &self.p2p_network {
                 let preferred_peer = self.select_sync_peer();
                 let sent = preferred_peer
                     .as_ref()
-                    .map(|peer| network.request_blocks_from_peer(peer, from, batch_size as u32))
+                    .map(|peer| {
+                        network.request_blocks_from_peer(peer, request_start, request_count)
+                    })
                     .unwrap_or(false);
                 if !sent {
-                    network.request_blocks(from, batch_size as u32);
+                    network.request_blocks(request_start, request_count);
                 }
             } else {
                 return Err(SyncError::NetworkUnavailable);
             }
 
-            let target_height = std::cmp::min(self.network_height, from + batch_size - 1);
-            // Scale timeout with batch size: minimum 15s, up to 60s for large batches.
-            let batch_timeout_secs = std::cmp::max(15, std::cmp::min(60, batch_size / 10 + 10));
+            // Scale timeout with request size because overlap/reconciliation can request
+            // a wider range than the net-new block count.
+            let batch_timeout_secs =
+                std::cmp::max(15, std::cmp::min(180, request_count as u64 / 50 + 10));
             let batch_timeout = Duration::from_secs(batch_timeout_secs);
             let mut satisfied = self.wait_for_height(target_height, batch_timeout);
             if !satisfied {
                 if let Some(network) = &self.p2p_network {
                     let preferred_peer = self.select_sync_peer();
+                    let full_request_count =
+                        target_height.saturating_add(1).min(u32::MAX as u64) as u32;
                     let sent = preferred_peer
                         .as_ref()
-                        .map(|peer| network.request_blocks_from_peer(peer, from, batch_size as u32))
+                        .map(|peer| network.request_blocks_from_peer(peer, 0, full_request_count))
                         .unwrap_or(false);
                     if !sent {
-                        network.request_blocks(from, batch_size as u32);
+                        network.request_blocks(0, full_request_count);
                     }
                 }
                 satisfied = self.wait_for_height(target_height, batch_timeout);
@@ -330,9 +343,11 @@ impl SyncManager {
             self.refresh_local_height();
             self.state = SyncState::Validating;
 
-            let headers = fast_sync::download_headers(&self.blockchain, from, self.local_height);
-            let prev_hash = if from > 0 {
-                Some(self.get_block_hash(from - 1)?)
+            let validation_start = sync_tip.saturating_add(1);
+            let headers =
+                fast_sync::download_headers(&self.blockchain, validation_start, self.local_height);
+            let prev_hash = if validation_start > 0 {
+                Some(self.get_block_hash(validation_start - 1)?)
             } else {
                 None
             };
@@ -348,7 +363,7 @@ impl SyncManager {
 
             self.state = SyncState::Applying;
             self.download_queue.push_back(BlockRange {
-                start: from,
+                start: validation_start,
                 end: target_height,
             });
         }
