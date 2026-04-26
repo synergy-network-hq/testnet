@@ -318,20 +318,28 @@ impl SyncManager {
                 std::cmp::max(15, std::cmp::min(180, request_count as u64 / 50 + 10));
             let batch_timeout = Duration::from_secs(batch_timeout_secs);
             let mut satisfied = self.wait_for_height(target_height, batch_timeout);
+            self.refresh_local_height();
+            if !satisfied && self.local_height > sync_tip {
+                satisfied = true;
+            }
             if !satisfied {
                 if let Some(network) = &self.p2p_network {
                     let preferred_peer = self.select_sync_peer();
-                    let full_request_count =
-                        target_height.saturating_add(1).min(u32::MAX as u64) as u32;
                     let sent = preferred_peer
                         .as_ref()
-                        .map(|peer| network.request_blocks_from_peer(peer, 0, full_request_count))
+                        .map(|peer| {
+                            network.request_blocks_from_peer(peer, request_start, request_count)
+                        })
                         .unwrap_or(false);
                     if !sent {
-                        network.request_blocks(0, full_request_count);
+                        network.request_blocks(request_start, request_count);
                     }
                 }
                 satisfied = self.wait_for_height(target_height, batch_timeout);
+                self.refresh_local_height();
+                if !satisfied && self.local_height > sync_tip {
+                    satisfied = true;
+                }
             }
             if !satisfied {
                 return Err(SyncError::Timeout(format!(
@@ -340,7 +348,6 @@ impl SyncManager {
                 )));
             }
 
-            self.refresh_local_height();
             self.state = SyncState::Validating;
 
             let validation_start = sync_tip.saturating_add(1);

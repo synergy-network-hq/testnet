@@ -3,7 +3,8 @@ use crate::config::NodeConfig;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::genesis::canonical_genesis;
 use crate::p2p::messages::NetworkMessage;
-use crate::rpc::rpc_server::TX_POOL;
+use crate::rpc::rpc_server::{SYNC_MANAGER, TX_POOL};
+use crate::sync::SyncState;
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
@@ -44,6 +45,7 @@ const VALIDATOR_P2P_PORT: u16 = 5622;
 const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
 const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
 const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
+const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -1856,8 +1858,12 @@ impl P2PNetwork {
                     network.request_peer_statuses();
                 }
 
-                // Try to sync missing blocks.
-                if !network.config.node.bootstrap_only {
+                let sync_active = sync_manager_is_active();
+
+                // Try to sync missing blocks, but only when the dedicated sync manager
+                // is not already driving catch-up. Running both paths at once creates a
+                // request storm and starves block-batch processing on lagging nodes.
+                if should_request_missing_blocks(&network.config, sync_active) {
                     let required_validator_support =
                         if network.config.consensus.status_ready_min_validators == 0 {
                             network.config.consensus.min_validators.max(1)
@@ -1913,13 +1919,7 @@ impl P2PNetwork {
                     (local, best)
                 };
                 let behind = best_peer_height.saturating_sub(local_height);
-                if behind > 10 {
-                    // Still catching up — brief yield then request next batch immediately
-                    thread::sleep(std::time::Duration::from_millis(100));
-                } else {
-                    // Synced or nearly synced — normal heartbeat
-                    thread::sleep(heartbeat);
-                };
+                thread::sleep(background_poll_interval(behind, heartbeat, sync_active));
             }
         });
     }
@@ -2060,6 +2060,396 @@ fn send_vote_to_requester(
         "no writable connection for proposer {} (request peer {})",
         proposer_validator_address, request_peer_address
     ))
+}
+
+fn handle_vote_request_message(
+    connected_peers: &PeersArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    block_data: Block,
+    epoch_number: u64,
+    round_number: u64,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node ignoring vote request",
+            "peer" => peer_address.to_string(),
+            "height" => block_data.block_index,
+            "epoch" => epoch_number,
+            "round" => round_number
+        );
+        return;
+    }
+
+    info!(
+        "p2p",
+        "Received vote request",
+        "peer" => peer_address.to_string(),
+        "proposer" => block_data.validator_id.clone(),
+        "height" => block_data.block_index,
+        "epoch" => epoch_number,
+        "round" => round_number
+    );
+
+    match DualQuorumConsensus::build_local_vote_for_proposal(
+        &block_data,
+        epoch_number,
+        round_number,
+    ) {
+        Ok(vote) => {
+            let response = NetworkMessage::Vote { vote };
+            let mut peers = connected_peers.lock().unwrap();
+            match send_vote_to_requester(
+                &mut peers,
+                peer_address,
+                block_data.validator_id.as_str(),
+                &response,
+            ) {
+                Ok(response_peer) => {
+                    info!(
+                        "p2p",
+                        "Vote sent",
+                        "request_peer" => peer_address.to_string(),
+                        "response_peer" => response_peer,
+                        "proposer" => block_data.validator_id.clone(),
+                        "height" => block_data.block_index,
+                        "epoch" => epoch_number,
+                        "round" => round_number
+                    );
+                }
+                Err(error) => {
+                    warn!(
+                        "p2p",
+                        "Failed to send vote",
+                        "peer" => peer_address.to_string(),
+                        "proposer" => block_data.validator_id.clone(),
+                        "height" => block_data.block_index,
+                        "epoch" => epoch_number,
+                        "round" => round_number,
+                        "error" => error
+                    );
+                }
+            }
+        }
+        Err(error) => {
+            warn!(
+                "p2p",
+                "Refusing vote request",
+                "peer" => peer_address.to_string(),
+                "height" => block_data.block_index,
+                "epoch" => epoch_number,
+                "round" => round_number,
+                "error" => error
+            );
+        }
+    }
+}
+
+fn handle_vote_message(
+    connected_peers: &PeersArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    vote: crate::consensus::dual_quorum::Vote,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node ignoring vote payload",
+            "peer" => peer_address.to_string(),
+            "validator" => vote.validator_address.clone(),
+            "epoch" => vote.epoch_number,
+            "round" => vote.round_number
+        );
+        return;
+    }
+
+    let announced_validator = {
+        let peers = connected_peers.lock().unwrap();
+        resolve_announced_validator_for_vote(&peers, peer_address, &vote.validator_address)
+    };
+    let Some((announced_validator, recovered_peer_key)) = announced_validator else {
+        warn!(
+            "p2p",
+            "Ignoring vote from peer without validator identity",
+            "peer" => peer_address.to_string(),
+            "validator" => vote.validator_address.clone()
+        );
+        return;
+    };
+    if let Some(recovered_peer_key) = recovered_peer_key {
+        info!(
+            "p2p",
+            "Recovered vote peer identity from active validator mapping",
+            "peer" => peer_address.to_string(),
+            "recovered_peer" => recovered_peer_key,
+            "validator" => announced_validator.clone()
+        );
+    }
+    if announced_validator != vote.validator_address {
+        warn!(
+            "p2p",
+            "Ignoring vote with mismatched validator identity",
+            "peer" => peer_address.to_string(),
+            "announced_validator" => announced_validator,
+            "vote_validator" => vote.validator_address.clone()
+        );
+        return;
+    }
+
+    DualQuorumConsensus::record_network_vote(vote.clone());
+    debug!(
+        "p2p",
+        "Recorded network vote",
+        "peer" => peer_address.to_string(),
+        "validator" => vote.validator_address.clone(),
+        "block_hash" => vote.block_hash.clone(),
+        "epoch" => vote.epoch_number,
+        "round" => vote.round_number
+    );
+}
+
+fn handle_block_message(
+    blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    block_data: Block,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node ignoring block propagation",
+            "peer" => peer_address.to_string(),
+            "height" => block_data.block_index
+        );
+        return;
+    }
+
+    info!("p2p", "Received block", "peer" => peer_address.to_string());
+
+    {
+        let mut peers = connected_peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(peer_address) {
+            peer.blocks_received += 1;
+            peer.last_known_height = block_data.block_index;
+            peer.best_block_hash = block_data.hash.clone();
+        }
+    }
+
+    if apply_block_if_new(blockchain, block_data.clone()) {
+        info!(
+            "p2p",
+            "Block applied",
+            "height" => block_data.block_index,
+            "hash" => block_data.hash.clone(),
+            "txs" => block_data.transactions.len() as u64
+        );
+    } else {
+        debug!(
+            "p2p",
+            "Block ignored (duplicate/out-of-order)",
+            "height" => block_data.block_index,
+            "hash" => block_data.hash.clone()
+        );
+    }
+}
+
+fn handle_get_blocks_message(
+    blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    from_height: u64,
+    count: u32,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node returning empty block response",
+            "peer" => peer_address.to_string(),
+            "from_height" => from_height,
+            "count" => count as u64
+        );
+        let response = NetworkMessage::Blocks { blocks: Vec::new() };
+        let mut peers = connected_peers.lock().unwrap();
+        if let Some(peer) = peers.get_mut(peer_address) {
+            if let Some(ref mut stream) = peer.stream {
+                let _ = send_message(stream, &response);
+            }
+        }
+        return;
+    }
+
+    info!(
+        "p2p",
+        "Block request",
+        "peer" => peer_address.to_string(),
+        "from_height" => from_height,
+        "count" => count as u64
+    );
+
+    let blocks = {
+        let chain = blockchain.lock().unwrap();
+        chain
+            .chain
+            .iter()
+            .filter(|b| b.block_index >= from_height)
+            .take(count as usize)
+            .cloned()
+            .collect::<Vec<_>>()
+    };
+    let response = NetworkMessage::Blocks { blocks };
+
+    let mut peers = connected_peers.lock().unwrap();
+    if let Some(peer) = peers.get_mut(peer_address) {
+        if let Some(ref mut stream) = peer.stream {
+            if let Err(e) = send_message(stream, &response) {
+                warn!(
+                    "p2p",
+                    "Failed to send blocks",
+                    "peer" => peer_address.to_string(),
+                    "error" => e.to_string()
+                );
+            } else {
+                peer.blocks_sent += 1;
+            }
+        }
+    }
+}
+
+fn handle_blocks_message(
+    blockchain: &BlockchainArc,
+    config: &NodeConfig,
+    peer_address: &str,
+    blocks: Vec<Block>,
+) {
+    if config.node.bootstrap_only {
+        debug!(
+            "p2p",
+            "Bootstrap-only node ignoring bulk blocks",
+            "peer" => peer_address.to_string(),
+            "count" => blocks.len()
+        );
+        return;
+    }
+
+    let applied = apply_block_batch(blockchain, blocks);
+    if applied > 0 {
+        info!(
+            "p2p",
+            "Blocks applied",
+            "count" => applied,
+            "peer" => peer_address.to_string()
+        );
+    }
+}
+
+fn sync_manager_is_active() -> bool {
+    SYNC_MANAGER
+        .lock()
+        .ok()
+        .map(|manager| {
+            matches!(
+                manager.get_state(),
+                SyncState::Discovering
+                    | SyncState::Downloading
+                    | SyncState::Validating
+                    | SyncState::Applying
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn should_request_missing_blocks(config: &NodeConfig, sync_active: bool) -> bool {
+    !config.node.bootstrap_only && !sync_active
+}
+
+fn background_poll_interval(behind: u64, heartbeat: Duration, sync_active: bool) -> Duration {
+    if sync_active {
+        heartbeat
+    } else if behind > 10 {
+        Duration::from_millis(BACKGROUND_SYNC_POLL_MILLIS)
+    } else {
+        heartbeat
+    }
+}
+
+fn bypasses_shared_message_queue(message: &NetworkMessage) -> bool {
+    matches!(
+        message,
+        NetworkMessage::VoteRequest { .. }
+            | NetworkMessage::Vote { .. }
+            | NetworkMessage::Block { .. }
+            | NetworkMessage::GetBlocks { .. }
+            | NetworkMessage::Blocks { .. }
+    )
+}
+
+fn dispatch_peer_message(
+    blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    message_sender: &mpsc::Sender<(String, NetworkMessage)>,
+    config: &NodeConfig,
+    peer_address: &str,
+    message: NetworkMessage,
+) -> Result<(), mpsc::SendError<(String, NetworkMessage)>> {
+    if !bypasses_shared_message_queue(&message) {
+        return message_sender.send((peer_address.to_string(), message));
+    }
+
+    match message {
+        NetworkMessage::VoteRequest {
+            block_data,
+            epoch_number,
+            round_number,
+        } => {
+            // Vote requests and vote payloads sit directly on the block production
+            // critical path. Handle them immediately instead of routing them through
+            // the shared background queue with status, ping, and sync traffic.
+            handle_vote_request_message(
+                connected_peers,
+                config,
+                peer_address,
+                block_data,
+                epoch_number,
+                round_number,
+            );
+            Ok(())
+        }
+        NetworkMessage::Vote { vote } => {
+            handle_vote_message(connected_peers, config, peer_address, vote);
+            Ok(())
+        }
+        NetworkMessage::Block { block_data } => {
+            handle_block_message(
+                blockchain,
+                connected_peers,
+                config,
+                peer_address,
+                block_data,
+            );
+            Ok(())
+        }
+        NetworkMessage::GetBlocks { from_height, count } => {
+            handle_get_blocks_message(
+                blockchain,
+                connected_peers,
+                config,
+                peer_address,
+                from_height,
+                count,
+            );
+            Ok(())
+        }
+        NetworkMessage::Blocks { blocks } => {
+            handle_blocks_message(blockchain, config, peer_address, blocks);
+            Ok(())
+        }
+        other => {
+            unreachable!("non-priority message {other:?} should not reach direct dispatch path")
+        }
+    }
 }
 
 fn resolve_announced_validator_for_vote(
@@ -2206,8 +2596,14 @@ fn handle_incoming_connection(
                     }
                 }
 
-                // Send message to handler
-                if let Err(_) = message_sender.send((peer_address.clone(), message)) {
+                if let Err(_) = dispatch_peer_message(
+                    &blockchain,
+                    &connected_peers,
+                    &message_sender,
+                    &config,
+                    &peer_address,
+                    message,
+                ) {
                     break;
                 }
             }
@@ -2304,8 +2700,14 @@ fn handle_outgoing_connection(
                     }
                 }
 
-                // Send message to handler
-                if let Err(_) = message_sender.send((peer_address.clone(), message)) {
+                if let Err(_) = dispatch_peer_message(
+                    &blockchain,
+                    &connected_peers,
+                    &message_sender,
+                    &config,
+                    &peer_address,
+                    message,
+                ) {
                     break;
                 }
             }
@@ -2761,186 +3163,28 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Block { block_data } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node ignoring block propagation",
-                                "peer" => peer_address.clone(),
-                                "height" => block_data.block_index
-                            );
-                            continue;
-                        }
-
-                        info!("p2p", "Received block", "peer" => peer_address.clone());
-
-                        // Update peer stats
-                        {
-                            let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                peer.blocks_received += 1;
-                                peer.last_known_height = block_data.block_index;
-                                peer.best_block_hash = block_data.hash.clone();
-                            }
-                        }
-
-                        if apply_block_if_new(&blockchain, block_data.clone()) {
-                            info!(
-                                "p2p",
-                                "Block applied",
-                                "height" => block_data.block_index,
-                                "hash" => block_data.hash.clone(),
-                                "txs" => block_data.transactions.len() as u64
-                            );
-                        } else {
-                            debug!(
-                                "p2p",
-                                "Block ignored (duplicate/out-of-order)",
-                                "height" => block_data.block_index,
-                                "hash" => block_data.hash.clone()
-                            );
-                        }
+                        handle_block_message(
+                            &blockchain,
+                            &connected_peers,
+                            &config,
+                            &peer_address,
+                            block_data,
+                        );
                     }
                     NetworkMessage::VoteRequest {
                         block_data,
                         epoch_number,
                         round_number,
-                    } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node ignoring vote request",
-                                "peer" => peer_address.clone(),
-                                "height" => block_data.block_index,
-                                "epoch" => epoch_number,
-                                "round" => round_number
-                            );
-                            continue;
-                        }
-
-                        info!(
-                            "p2p",
-                            "Received vote request",
-                            "peer" => peer_address.clone(),
-                            "proposer" => block_data.validator_id.clone(),
-                            "height" => block_data.block_index,
-                            "epoch" => epoch_number,
-                            "round" => round_number
-                        );
-
-                        match DualQuorumConsensus::build_local_vote_for_proposal(
-                            &block_data,
-                            epoch_number,
-                            round_number,
-                        ) {
-                            Ok(vote) => {
-                                let response = NetworkMessage::Vote { vote };
-                                let mut peers = connected_peers.lock().unwrap();
-                                match send_vote_to_requester(
-                                    &mut peers,
-                                    &peer_address,
-                                    block_data.validator_id.as_str(),
-                                    &response,
-                                ) {
-                                    Ok(response_peer) => {
-                                        info!(
-                                            "p2p",
-                                            "Vote sent",
-                                            "request_peer" => peer_address.clone(),
-                                            "response_peer" => response_peer,
-                                            "proposer" => block_data.validator_id.clone(),
-                                            "height" => block_data.block_index,
-                                            "epoch" => epoch_number,
-                                            "round" => round_number
-                                        );
-                                    }
-                                    Err(error) => {
-                                        warn!(
-                                            "p2p",
-                                            "Failed to send vote",
-                                            "peer" => peer_address.clone(),
-                                            "proposer" => block_data.validator_id.clone(),
-                                            "height" => block_data.block_index,
-                                            "epoch" => epoch_number,
-                                            "round" => round_number,
-                                            "error" => error
-                                        );
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                warn!(
-                                    "p2p",
-                                    "Refusing vote request",
-                                    "peer" => peer_address.clone(),
-                                    "height" => block_data.block_index,
-                                    "epoch" => epoch_number,
-                                    "round" => round_number,
-                                    "error" => error
-                                );
-                            }
-                        }
-                    }
+                    } => handle_vote_request_message(
+                        &connected_peers,
+                        &config,
+                        &peer_address,
+                        block_data,
+                        epoch_number,
+                        round_number,
+                    ),
                     NetworkMessage::Vote { vote } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node ignoring vote payload",
-                                "peer" => peer_address.clone(),
-                                "validator" => vote.validator_address.clone(),
-                                "epoch" => vote.epoch_number,
-                                "round" => vote.round_number
-                            );
-                            continue;
-                        }
-
-                        let announced_validator = {
-                            let peers = connected_peers.lock().unwrap();
-                            resolve_announced_validator_for_vote(
-                                &peers,
-                                &peer_address,
-                                &vote.validator_address,
-                            )
-                        };
-                        let Some((announced_validator, recovered_peer_key)) = announced_validator
-                        else {
-                            warn!(
-                                "p2p",
-                                "Ignoring vote from peer without validator identity",
-                                "peer" => peer_address.clone(),
-                                "validator" => vote.validator_address.clone()
-                            );
-                            continue;
-                        };
-                        if let Some(recovered_peer_key) = recovered_peer_key {
-                            info!(
-                                "p2p",
-                                "Recovered vote peer identity from active validator mapping",
-                                "peer" => peer_address.clone(),
-                                "recovered_peer" => recovered_peer_key,
-                                "validator" => announced_validator.clone()
-                            );
-                        }
-                        if announced_validator != vote.validator_address {
-                            warn!(
-                                "p2p",
-                                "Ignoring vote with mismatched validator identity",
-                                "peer" => peer_address.clone(),
-                                "announced_validator" => announced_validator,
-                                "vote_validator" => vote.validator_address.clone()
-                            );
-                            continue;
-                        }
-
-                        DualQuorumConsensus::record_network_vote(vote.clone());
-                        debug!(
-                            "p2p",
-                            "Recorded network vote",
-                            "peer" => peer_address.clone(),
-                            "validator" => vote.validator_address.clone(),
-                            "block_hash" => vote.block_hash.clone(),
-                            "epoch" => vote.epoch_number,
-                            "round" => vote.round_number
-                        );
+                        handle_vote_message(&connected_peers, &config, &peer_address, vote)
                     }
                     NetworkMessage::Transaction { transaction_data } => {
                         if config.node.bootstrap_only {
@@ -2973,58 +3217,14 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::GetBlocks { from_height, count } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node returning empty block response",
-                                "peer" => peer_address.clone(),
-                                "from_height" => from_height,
-                                "count" => count as u64
-                            );
-                            let response = NetworkMessage::Blocks { blocks: Vec::new() };
-                            let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_message(stream, &response);
-                                }
-                            }
-                            continue;
-                        }
-
-                        info!(
-                            "p2p",
-                            "Block request",
-                            "peer" => peer_address.clone(),
-                            "from_height" => from_height,
-                            "count" => count as u64
+                        handle_get_blocks_message(
+                            &blockchain,
+                            &connected_peers,
+                            &config,
+                            &peer_address,
+                            from_height,
+                            count,
                         );
-
-                        // Send blocks
-                        let blocks = {
-                            let chain = blockchain.lock().unwrap();
-                            chain
-                                .chain
-                                .iter()
-                                .filter(|b| b.block_index >= from_height)
-                                .take(count as usize)
-                                .cloned()
-                                .collect::<Vec<_>>()
-                        };
-                        let response = NetworkMessage::Blocks { blocks };
-
-                        // Send response
-                        {
-                            let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    if let Err(e) = send_message(stream, &response) {
-                                        warn!("p2p", "Failed to send blocks", "peer" => peer_address.clone(), "error" => e.to_string());
-                                    } else {
-                                        peer.blocks_sent += 1;
-                                    }
-                                }
-                            }
-                        }
                     }
                     NetworkMessage::GetStatus => {
                         let status = build_local_status_message(&blockchain, &config);
@@ -3155,23 +3355,7 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Blocks { blocks } => {
-                        if config.node.bootstrap_only {
-                            debug!(
-                                "p2p",
-                                "Bootstrap-only node ignoring bulk blocks",
-                                "peer" => peer_address.clone(),
-                                "count" => blocks.len()
-                            );
-                            continue;
-                        }
-
-                        // Apply bulk blocks with overlap-aware reconciliation so a lagging
-                        // validator can roll back a divergent local tip to the highest common
-                        // ancestor before replaying forward.
-                        let applied = apply_block_batch(&blockchain, blocks);
-                        if applied > 0 {
-                            info!("p2p", "Blocks applied", "count" => applied);
-                        }
+                        handle_blocks_message(&blockchain, &config, &peer_address, blocks);
                     }
                     NetworkMessage::GetPeers => {
                         // Respond with known peer dial addresses.
@@ -3553,6 +3737,20 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
         let local_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
         let mut rollback_height = None;
 
+        // Late duplicate sync responses should never rewind a chain that has already
+        // advanced beyond the batch tip. Only consider rollback when the incoming batch
+        // actually diverges from the local chain at its highest advertised height.
+        if let Some(remote_tip) = blocks.last() {
+            if remote_tip.block_index <= local_tip_height
+                && chain
+                    .block_at_height(remote_tip.block_index)
+                    .map(|local| local.hash == remote_tip.hash)
+                    .unwrap_or(false)
+            {
+                return 0;
+            }
+        }
+
         let highest_common_ancestor = blocks.iter().rev().find_map(|block| {
             if block.block_index > local_tip_height {
                 return None;
@@ -3698,23 +3896,26 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_block_batch, best_connected_validator_height, cache_peer_state,
-        canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
-        current_bootstrap_refresh_interval, dial_with_timeout, handle_status_message,
-        hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
-        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
-        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
-        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        apply_block_batch, background_poll_interval, best_connected_validator_height,
+        bypasses_shared_message_queue, cache_peer_state, canonical_genesis_hash,
+        collect_known_peer_addresses, connected_validator_participants,
+        current_bootstrap_refresh_interval, dial_with_timeout, dispatch_peer_message,
+        handle_status_message, hydrate_peer_from_cache, local_peer_identity,
+        merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
+        peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
+        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
-        status_ready_validator_participants, status_sync_batch,
+        should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution, PeerConnection, PeerEntryGuard, DEFAULT_BOOTSTRAP_REFRESH_SECS,
-        IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
-        STALE_VALIDATOR_STATUS_SECS,
+        DuplicateResolution, PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
+        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS,
+        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
+    use crate::consensus::dual_quorum::Vote;
+    use crate::crypto::pqc::{PQCAlgorithm, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
     use std::collections::HashMap;
     use std::fs;
@@ -4343,6 +4544,150 @@ mod tests {
     }
 
     #[test]
+    fn vote_messages_bypass_the_shared_message_queue() {
+        let vote = Vote {
+            validator_address: "synv1peer-a".to_string(),
+            block_hash: "block-hash".to_string(),
+            block_index: 7,
+            epoch_number: 2,
+            round_number: 1,
+            signature: PQCSignature {
+                algorithm: PQCAlgorithm::FNDSA,
+                signature_data: vec![1, 2, 3],
+                message_hash: vec![7, 8, 9],
+                public_key_id: "peer-a".to_string(),
+                created_at: 123,
+            },
+            signer_public_key: vec![4, 5, 6],
+            timestamp: 123,
+        };
+        assert!(bypasses_shared_message_queue(&NetworkMessage::Vote {
+            vote: vote.clone(),
+        }));
+        assert!(bypasses_shared_message_queue(
+            &NetworkMessage::VoteRequest {
+                block_data: Block::new(
+                    0,
+                    Vec::new(),
+                    "genesis".to_string(),
+                    "synv1leader".to_string(),
+                    0
+                ),
+                epoch_number: 0,
+                round_number: 1,
+            }
+        ));
+        assert!(bypasses_shared_message_queue(&NetworkMessage::GetBlocks {
+            from_height: 10,
+            count: 25,
+        }));
+        assert!(bypasses_shared_message_queue(&NetworkMessage::Blocks {
+            blocks: vec![Block::new(
+                1,
+                Vec::new(),
+                "genesis".to_string(),
+                "synv1leader".to_string(),
+                1,
+            )],
+        }));
+        assert!(bypasses_shared_message_queue(&NetworkMessage::Block {
+            block_data: Block::new(
+                1,
+                Vec::new(),
+                "genesis".to_string(),
+                "synv1leader".to_string(),
+                1,
+            ),
+        }));
+        assert!(!bypasses_shared_message_queue(&NetworkMessage::Status {
+            block_height: 1,
+            best_block_hash: "tip".to_string(),
+            genesis_hash: "genesis".to_string(),
+        }));
+    }
+
+    #[test]
+    fn background_sync_requests_pause_while_sync_manager_is_active() {
+        let config = NodeConfig::default();
+        assert!(should_request_missing_blocks(&config, false));
+        assert!(!should_request_missing_blocks(&config, true));
+    }
+
+    #[test]
+    fn background_poll_interval_uses_heartbeat_during_active_sync() {
+        let heartbeat = Duration::from_secs(7);
+        assert_eq!(background_poll_interval(100, heartbeat, true), heartbeat);
+        assert_eq!(
+            background_poll_interval(100, heartbeat, false),
+            Duration::from_millis(BACKGROUND_SYNC_POLL_MILLIS)
+        );
+        assert_eq!(background_poll_interval(5, heartbeat, false), heartbeat);
+    }
+
+    #[test]
+    fn dispatch_peer_message_keeps_votes_off_the_background_queue() {
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        connected_peers.lock().unwrap().insert(
+            "peer-a".to_string(),
+            PeerConnection {
+                address: "peer-a".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: Some("genesisval2.synergynode.xyz:5622".to_string()),
+                validator_address: Some("synv1peer-a".to_string()),
+                connected_at: 0,
+                last_seen: 0,
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("tbeta-peer-a".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: vec!["blocks".to_string()],
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+
+        let (sender, receiver) = mpsc::channel();
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+        let config = NodeConfig::default();
+        let vote = Vote {
+            validator_address: "synv1peer-a".to_string(),
+            block_hash: "block-hash".to_string(),
+            block_index: 7,
+            epoch_number: 2,
+            round_number: 1,
+            signature: PQCSignature {
+                algorithm: PQCAlgorithm::FNDSA,
+                signature_data: vec![1, 2, 3],
+                message_hash: vec![7, 8, 9],
+                public_key_id: "peer-a".to_string(),
+                created_at: 123,
+            },
+            signer_public_key: vec![4, 5, 6],
+            timestamp: 123,
+        };
+
+        dispatch_peer_message(
+            &blockchain,
+            &connected_peers,
+            &sender,
+            &config,
+            "peer-a",
+            NetworkMessage::Vote { vote },
+        )
+        .expect("vote dispatch should succeed");
+
+        assert!(
+            receiver.recv_timeout(Duration::from_millis(50)).is_err(),
+            "vote dispatch should bypass the shared background queue"
+        );
+    }
+
+    #[test]
     fn status_handler_records_genesis_hash_and_requests_blocks_without_deadlocking() {
         let listener = match TcpListener::bind("127.0.0.1:0") {
             Ok(listener) => listener,
@@ -4774,6 +5119,41 @@ mod tests {
         assert_eq!(
             chain.block_at_height(4).map(|block| block.hash.clone()),
             Some(remote_block4.hash.clone())
+        );
+    }
+
+    #[test]
+    fn apply_block_batch_ignores_stale_matching_prefix_batches() {
+        let mut chain = BlockChain::new();
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis-parent".to_string(),
+            "genesis".to_string(),
+            0,
+            1_700_000_000,
+        );
+        chain.add_block(genesis.clone());
+        let block1 = test_block(&genesis, 1, "validator-a", 1);
+        let block2 = test_block(&block1, 2, "validator-b", 2);
+        let block3 = test_block(&block2, 3, "validator-c", 3);
+        let block4 = test_block(&block3, 4, "validator-d", 4);
+        let block5 = test_block(&block4, 5, "validator-e", 5);
+        chain.add_block(block1.clone());
+        chain.add_block(block2.clone());
+        chain.add_block(block3.clone());
+        chain.add_block(block4.clone());
+        chain.add_block(block5.clone());
+
+        let blockchain = Arc::new(Mutex::new(chain));
+        let applied = apply_block_batch(&blockchain, vec![block2, block3, block4]);
+        assert_eq!(applied, 0);
+
+        let chain = blockchain.lock().unwrap();
+        assert_eq!(chain.last().map(|block| block.block_index), Some(5));
+        assert_eq!(
+            chain.block_at_height(5).map(|block| block.hash.clone()),
+            Some(block5.hash.clone())
         );
     }
 

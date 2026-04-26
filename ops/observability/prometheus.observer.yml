@@ -1,0 +1,136 @@
+# Prometheus configuration for the Synergy Testnet-Beta observer.
+# Location on observer: /opt/prometheus/config/prometheus.yml
+
+global:
+  scrape_interval: 10s
+  scrape_timeout: 8s
+  evaluation_interval: 15s
+  external_labels:
+    network: testnet-beta
+    chain_id: "338639"
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: []
+
+rule_files:
+  - "/opt/prometheus/config/rules/*.yml"
+
+scrape_configs:
+  - job_name: "synergy-validators"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["10.69.0.1:6030"]
+        labels: { role: validator, host: val1, instance_label: "Val1" }
+      - targets: ["10.69.0.2:6030"]
+        labels: { role: validator, host: val2, instance_label: "Val2" }
+      - targets: ["10.69.0.3:6030"]
+        labels: { role: validator, host: val3, instance_label: "Val3" }
+      - targets: ["10.69.0.4:6030"]
+        labels: { role: validator, host: val4, instance_label: "Val4" }
+      - targets: ["10.69.0.5:6030"]
+        labels: { role: validator, host: val5, instance_label: "Val5" }
+
+  - job_name: "synergy-observer"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["127.0.0.1:6030"]
+        labels: { role: observer, host: observer, instance_label: "Observer" }
+
+  - job_name: "synergy-relayers"
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["10.69.0.201:6030"]
+        labels: { role: relayer, host: relayer-1, instance_label: "Relayer-1" }
+      - targets: ["10.69.0.202:6030"]
+        labels: { role: relayer, host: relayer-2, instance_label: "Relayer-2" }
+
+  - job_name: "synergy-rpc-gateways"
+    scheme: https
+    metrics_path: /metrics/node-rpc
+    static_configs:
+      - targets: ["testbeta-core-rpc.synergy-network.io"]
+        labels: { role: rpc_gateway, host: rpc-gateway, instance_label: "RPC-Gateway" }
+
+  - job_name: "synergy-explorer"
+    scheme: https
+    metrics_path: /metrics/node-exp
+    static_configs:
+      - targets: ["testbeta-explorer.synergy-network.io"]
+        labels: { role: explorer, host: explorer, instance_label: "Explorer" }
+
+  - job_name: "node_exporter_private"
+    static_configs:
+      - targets: ["10.69.0.1:9100"]
+        labels: { role: validator, host: val1, instance_label: "Val1" }
+      - targets: ["10.69.0.2:9100"]
+        labels: { role: validator, host: val2, instance_label: "Val2" }
+      - targets: ["10.69.0.3:9100"]
+        labels: { role: validator, host: val3, instance_label: "Val3" }
+      - targets: ["10.69.0.4:9100"]
+        labels: { role: validator, host: val4, instance_label: "Val4" }
+      - targets: ["10.69.0.5:9100"]
+        labels: { role: validator, host: val5, instance_label: "Val5" }
+      - targets: ["10.69.0.201:9100"]
+        labels: { role: relayer, host: relayer-1, instance_label: "Relayer-1" }
+      - targets: ["10.69.0.202:9100"]
+        labels: { role: relayer, host: relayer-2, instance_label: "Relayer-2" }
+      - targets: ["127.0.0.1:9100"]
+        labels: { role: observer, host: observer, instance_label: "Observer" }
+
+  - job_name: "node_exporter_public_roles"
+    scheme: https
+    metrics_path: /metrics/node-exporter
+    static_configs:
+      - targets: ["testbeta-core-rpc.synergy-network.io"]
+        labels: { role: infra, host: infra-74-208, instance_label: "Explorer+RPC" }
+
+  - job_name: "public-tcp-probes"
+    metrics_path: /probe
+    params:
+      module: ["tcp_connect"]
+    static_configs:
+      - targets: ["170.64.187.206:5620"]
+        labels: { role: bootnode, host: bootnode-1, instance_label: "Bootnode-1", probe_label: "p2p_tcp" }
+      - targets: ["146.190.210.121:5620"]
+        labels: { role: bootnode, host: bootnode-2, instance_label: "Bootnode-2", probe_label: "p2p_tcp" }
+      - targets: ["157.245.226.240:5620"]
+        labels: { role: bootnode, host: bootnode-3, instance_label: "Bootnode-3", probe_label: "p2p_tcp" }
+      - targets: ["170.64.187.206:5621"]
+        labels: { role: seed, host: seed-1, instance_label: "Seed-1", probe_label: "seed_tcp" }
+      - targets: ["146.190.210.121:5621"]
+        labels: { role: seed, host: seed-2, instance_label: "Seed-2", probe_label: "seed_tcp" }
+      - targets: ["157.245.226.240:5621"]
+        labels: { role: seed, host: seed-3, instance_label: "Seed-3", probe_label: "seed_tcp" }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+      - source_labels: [__param_target]
+        target_label: target
+
+  - job_name: "public-http-probes"
+    metrics_path: /probe
+    params:
+      module: ["http_2xx"]
+    static_configs:
+      - targets: ["https://testbeta-core-rpc.synergy-network.io/healthz"]
+        labels: { role: rpc_gateway, host: rpc-gateway, instance_label: "RPC-Gateway", probe_label: "https_health" }
+      - targets: ["https://testbeta-explorer.synergy-network.io/healthz"]
+        labels: { role: explorer, host: explorer, instance_label: "Explorer", probe_label: "https_health" }
+      - targets: ["https://testbeta-atlas-api.synergy-network.io/healthz"]
+        labels: { role: atlas_api, host: atlas-api, instance_label: "Atlas-API", probe_label: "https_health" }
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - target_label: __address__
+        replacement: 127.0.0.1:9115
+      - source_labels: [__param_target]
+        target_label: target
+
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["127.0.0.1:9090"]
+        labels: { role: observer, host: observer }
