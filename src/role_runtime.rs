@@ -951,6 +951,11 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 "SYNERGY_CONSENSUS_MIN_VALIDATORS",
                 config.consensus.min_validators.to_string(),
             );
+            env::set_var("SYNERGY_NODE_ROLE_ID", config.identity.role.clone());
+            env::set_var(
+                "SYNERGY_COMPILED_PROFILE",
+                config.role.compiled_profile.clone(),
+            );
 
             let project_root = utils::validate_project_root().unwrap_or_else(|e| {
                 eprintln!("Failed to determine writable project root: {}", e);

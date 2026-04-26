@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -11,6 +11,7 @@ use crate::block::BlockChain;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
+use crate::role_profiles::{resolve_configured_role, AuthorityPlane, RoleProfile};
 use crate::sxcp;
 use crate::sync::{SyncManager, SyncState};
 use crate::token::TOKEN_MANAGER;
@@ -23,7 +24,8 @@ use crate::wallet::WALLET_MANAGER;
 use hex;
 use lazy_static::lazy_static;
 use serde_json::{json, Value};
-use tungstenite::{accept, Error as WsError, Message as WsMessage};
+use tungstenite::handshake::server::{Request as WsRequest, Response as WsResponse};
+use tungstenite::{accept_hdr, Error as WsError, Message as WsMessage};
 
 lazy_static! {
     pub static ref TX_POOL: Arc<Mutex<Vec<Transaction>>> = Arc::new(Mutex::new(Vec::new()));
@@ -69,6 +71,91 @@ impl RpcError {
 struct CachedSimulation {
     simulation_hash: String,
     created_at: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RpcTransport {
+    Http,
+    WebSocket,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RpcMethodExposure {
+    PublicRead,
+    PublicClient,
+    AuthorityPlane,
+    NonPublicWrite,
+    Operator,
+}
+
+impl RpcMethodExposure {
+    fn label(self) -> &'static str {
+        match self {
+            Self::PublicRead => "public-read",
+            Self::PublicClient => "public-client",
+            Self::AuthorityPlane => "authority-plane",
+            Self::NonPublicWrite => "non-public-write",
+            Self::Operator => "operator",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RpcRequestContext {
+    transport: RpcTransport,
+    peer_addr: Option<SocketAddr>,
+    headers: HashMap<String, String>,
+    role_profile: Option<&'static RoleProfile>,
+}
+
+impl RpcRequestContext {
+    fn new(
+        transport: RpcTransport,
+        peer_addr: Option<SocketAddr>,
+        headers: HashMap<String, String>,
+    ) -> Self {
+        Self {
+            transport,
+            peer_addr,
+            headers,
+            role_profile: current_rpc_role_profile(),
+        }
+    }
+
+    fn effective_client_ip(&self) -> Option<IpAddr> {
+        parse_forwarded_ip(
+            self.forwarded_client_ip_header()
+                .or_else(|| {
+                    self.headers
+                        .get("x-forwarded-for")
+                        .map(String::as_str)
+                        .or_else(|| self.headers.get("x-real-ip").map(String::as_str))
+                }),
+        )
+        .or_else(|| self.peer_addr.map(|addr| addr.ip()))
+    }
+
+    fn forwarded_client_ip_header(&self) -> Option<&str> {
+        self.headers
+            .get("cf-connecting-ip")
+            .map(String::as_str)
+            .or_else(|| self.headers.get("true-client-ip").map(String::as_str))
+            .or_else(|| self.headers.get("x-forwarded-for").map(String::as_str))
+            .or_else(|| self.headers.get("x-real-ip").map(String::as_str))
+    }
+
+    fn is_public_request(&self) -> bool {
+        self.effective_client_ip()
+            .map(|ip| !ip.is_loopback())
+            .unwrap_or(false)
+    }
+
+    fn transport_label(&self) -> &'static str {
+        match self.transport {
+            RpcTransport::Http => "http",
+            RpcTransport::WebSocket => "ws",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -311,6 +398,11 @@ pub fn start_rpc_server(
                     }
 
                     let headers = parse_http_headers(parts[0]);
+                    let request_context = RpcRequestContext::new(
+                        RpcTransport::Http,
+                        stream.peer_addr().ok(),
+                        headers.clone(),
+                    );
                     let body = parts[1];
 
                     if http_method == "POST" {
@@ -332,6 +424,7 @@ pub fn start_rpc_server(
                                 &chain,
                                 &validator_manager,
                                 None,
+                                &request_context,
                             ) {
                                 Ok(Some(response)) => {
                                     let response_str = format_response(
@@ -413,7 +506,22 @@ fn handle_ws_connection(
     chain: &Arc<Mutex<BlockChain>>,
     validator_manager: &Arc<ValidatorManager>,
 ) {
-    let mut websocket = match accept(stream) {
+    let peer_addr = stream.peer_addr().ok();
+    let captured_headers: Arc<Mutex<HashMap<String, String>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+    let header_sink = Arc::clone(&captured_headers);
+    let mut websocket = match accept_hdr(stream, |request: &WsRequest, response: WsResponse| {
+        if let Ok(mut headers) = header_sink.lock() {
+            headers.clear();
+            for (name, value) in request.headers() {
+                headers.insert(
+                    name.as_str().to_ascii_lowercase(),
+                    value.to_str().unwrap_or_default().to_string(),
+                );
+            }
+        }
+        Ok(response)
+    }) {
         Ok(websocket) => websocket,
         Err(error) => {
             eprintln!("WebSocket handshake failed: {}", error);
@@ -426,6 +534,14 @@ fn handle_ws_connection(
         .set_read_timeout(Some(Duration::from_millis(250)));
 
     let mut subscriptions: HashMap<String, SubscriptionCursor> = HashMap::new();
+    let request_context = RpcRequestContext::new(
+        RpcTransport::WebSocket,
+        peer_addr,
+        captured_headers
+            .lock()
+            .map(|headers| headers.clone())
+            .unwrap_or_default(),
+    );
 
     loop {
         emit_subscription_notifications(&mut websocket, &mut subscriptions, tx_pool, chain);
@@ -441,6 +557,7 @@ fn handle_ws_connection(
                         chain,
                         validator_manager,
                         Some(&mut subscriptions),
+                        &request_context,
                     ) {
                         Ok(Some(response)) => {
                             if websocket
@@ -499,6 +616,7 @@ fn process_json_rpc_payload(
     chain: &Arc<Mutex<BlockChain>>,
     validator_manager: &Arc<ValidatorManager>,
     subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+    request_context: &RpcRequestContext,
 ) -> Result<Option<Value>, RpcError> {
     match parsed {
         Value::Array(items) => {
@@ -518,6 +636,7 @@ fn process_json_rpc_payload(
                     chain,
                     validator_manager,
                     subscriptions.as_deref_mut(),
+                    request_context,
                 )? {
                     responses.push(response);
                 }
@@ -535,6 +654,7 @@ fn process_json_rpc_payload(
             chain,
             validator_manager,
             subscriptions,
+            request_context,
         )
         .map(|response| response.map(|value| json!(value))),
         _ => Ok(Some(json_rpc_error_response(
@@ -550,6 +670,7 @@ fn process_json_rpc_request_object(
     chain: &Arc<Mutex<BlockChain>>,
     validator_manager: &Arc<ValidatorManager>,
     subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+    request_context: &RpcRequestContext,
 ) -> Result<Option<Value>, RpcError> {
     let request_object = request
         .as_object()
@@ -565,6 +686,8 @@ fn process_json_rpc_request_object(
         .unwrap_or_else(|| json!([]));
     let id = request_object.get("id").cloned();
 
+    enforce_rpc_exposure_policy(method, request_context)?;
+
     if id.is_none() && method != "synergy_subscribe" && method != "synergy_unsubscribe" {
         let _ = execute_rpc_method(
             method,
@@ -573,6 +696,7 @@ fn process_json_rpc_request_object(
             chain,
             validator_manager,
             subscriptions,
+            request_context,
         )?;
         return Ok(None);
     }
@@ -584,6 +708,7 @@ fn process_json_rpc_request_object(
         chain,
         validator_manager,
         subscriptions,
+        request_context,
     );
 
     match result {
@@ -603,6 +728,7 @@ fn execute_rpc_method(
     chain: &Arc<Mutex<BlockChain>>,
     validator_manager: &Arc<ValidatorManager>,
     subscriptions: Option<&mut HashMap<String, SubscriptionCursor>>,
+    _request_context: &RpcRequestContext,
 ) -> Result<Value, RpcError> {
     match method {
         "synergy_simulateTransaction" => simulate_transaction(&params, tx_pool, chain),
@@ -3028,6 +3154,218 @@ fn parse_http_headers(headers: &str) -> HashMap<String, String> {
         .collect()
 }
 
+fn current_rpc_role_profile() -> Option<&'static RoleProfile> {
+    let role_id = std::env::var("SYNERGY_NODE_ROLE_ID").unwrap_or_default();
+    let compiled_profile = std::env::var("SYNERGY_COMPILED_PROFILE").unwrap_or_default();
+    resolve_configured_role(&role_id, &compiled_profile)
+        .ok()
+        .flatten()
+}
+
+fn parse_forwarded_ip(value: Option<&str>) -> Option<IpAddr> {
+    value.and_then(|raw| {
+        raw.split(',')
+            .map(|segment| segment.trim())
+            .find_map(|segment| segment.parse::<IpAddr>().ok())
+    })
+}
+
+fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
+    match method {
+        "synergy_subscribe"
+        | "synergy_unsubscribe"
+        | "synergy_getAccountNonce"
+        | "synergy_getAccountAuthNonce"
+        | "synergy_blockNumber"
+        | "synergy_getBlockNumber"
+        | "synergy_getBlockByNumber"
+        | "synergy_getBlockByHash"
+        | "synergy_getLatestBlock"
+        | "synergy_getTransactionPool"
+        | "synergy_getRelayerSet"
+        | "synergy_getRelayerHealth"
+        | "synergy_getSxcpStatus"
+        | "synergy_getEventAttestation"
+        | "synergy_getAttestations"
+        | "synergy_nodeInfo"
+        | "synergy_getDeterminismDigest"
+        | "synergy_getValidators"
+        | "synergy_getValidator"
+        | "synergy_getTokenBalance"
+        | "synergy_getTokens"
+        | "synergy_getTopValidators"
+        | "synergy_getBlockRange"
+        | "synergy_getTransactionByHash"
+        | "synergy_getTransactionsInBlock"
+        | "synergy_getValidatorStats"
+        | "synergy_getTokenStats"
+        | "synergy_getAllBalances"
+        | "synergy_getTransferHistory"
+        | "synergy_getNodeStatus"
+        | "synergy_getSyncStatus"
+        | "synergy_getBlockValidationStatus"
+        | "synergy_getValidatorActivity"
+        | "synergy_getSynergyScoreBreakdown"
+        | "synergy_getPeerInfo"
+        | "synergy_getTransactionReceipt"
+        | "synergy_getTransactionCount"
+        | "synergy_getBalance"
+        | "synergy_gasPrice"
+        | "synergy_getLogs"
+        | "synergy_getCode"
+        | "synergy_getStorageAt"
+        | "synergy_getBlockTransactionCount"
+        | "synergy_getBlockReceipts"
+        | "synergy_getPendingTransactions"
+        | "synergy_getTransactionByBlockNumberAndIndex"
+        | "synergy_getTransactionByBlockHashAndIndex"
+        | "synergy_maxFeePerGas"
+        | "synergy_maxPriorityFeePerGas"
+        | "synergy_getFeeHistory"
+        | "synergy_getChainId"
+        | "synergy_getValidatorByCluster"
+        | "synergy_getValidatorRewards"
+        | "synergy_getValidatorPerformance"
+        | "synergy_getValidatorQueue"
+        | "synergy_getValidatorSlashingHistory"
+        | "synergy_getClusterInfo"
+        | "synergy_getClusterRewards"
+        | "synergy_getStakedBalance"
+        | "synergy_getStakingInfo"
+        | "synergy_getStakingRewards"
+        | "synergy_getStakingAPY"
+        | "synergy_getDelegatedStakes"
+        | "synergy_getDelegators"
+        | "synergy_getRewardsProjection"
+        | "synergy_getUnstakingPeriod"
+        | "synergy_getActiveApprovals"
+        | "synergy_getApprovalHistory"
+        | "synergy_status" => Some(RpcMethodExposure::PublicRead),
+        "synergy_simulateTransaction"
+        | "synergy_sendTransaction"
+        | "synergy_call"
+        | "synergy_estimateGas"
+        | "synergy_createApproval"
+        | "synergy_revokeAllApprovals" => Some(RpcMethodExposure::PublicClient),
+        "synergy_resolveSynID"
+        | "synergy_reverseResolveSynID"
+        | "synergy_getAddressBook"
+        | "synergy_createWallet"
+        | "synergy_getWallet"
+        | "synergy_createWalletFromKeypair"
+        | "synergy_getAllWallets"
+        | "synergy_signTransaction"
+        | "synergy_signMessage"
+        | "synergy_verifyMessage"
+        | "synergy_getEncryptionKey"
+        | "synergy_rotateKeys"
+        | "synergy_getActiveDelegations"
+        | "synergy_revokeDelegation"
+        | "synergy_initiateRecovery"
+        | "synergy_confirmRecovery"
+        | "synergy_getGuardians"
+        | "synergy_verifyCurrentAuthKey"
+        | "synergy_getPendingGuardianNotifications"
+        | "synergy_getPendingTransfers"
+        | "synergy_cancelPendingTransfer"
+        | "synergy_freezeAccount"
+        | "synergy_getSecurityAlerts" => Some(RpcMethodExposure::AuthorityPlane),
+        "synergy_sendTokens"
+        | "synergy_stakeTokens"
+        | "synergy_stakeTokensDirect"
+        | "synergy_unstakeTokens"
+        | "synergy_registerValidator"
+        | "synergy_approveValidator"
+        | "synergy_slashValidator"
+        | "synergy_requestValidatorExit"
+        | "synergy_registerRelayer"
+        | "synergy_unregisterRelayer"
+        | "synergy_relayerHeartbeat"
+        | "synergy_submitAttestation"
+        | "synergy_slashRelayer"
+        | "synergy_createToken"
+        | "synergy_mintTokens"
+        | "synergy_burnTokens"
+        | "synergy_transferTokens"
+        | "synergy_claimRewards"
+        | "synergy_proposeClusterChange" => Some(RpcMethodExposure::NonPublicWrite),
+        "synergy_setSxcpHeartbeatTimeout"
+        | "synergy_resetSxcpState"
+        | "synergy_mine"
+        | "synergy_setAccountBalance"
+        | "synergy_resetChainHead" => Some(RpcMethodExposure::Operator),
+        _ => None,
+    }
+}
+
+fn build_exposure_error(
+    method: &str,
+    exposure: RpcMethodExposure,
+    request_context: &RpcRequestContext,
+    detail: &str,
+) -> RpcError {
+    RpcError::with_data(
+        -32003,
+        format!("RPC method '{method}' is not available on this exposure profile"),
+        json!({
+            "method": method,
+            "requiredProfile": exposure.label(),
+            "transport": request_context.transport_label(),
+            "clientIp": request_context.effective_client_ip().map(|ip| ip.to_string()),
+            "roleId": request_context.role_profile.map(|profile| profile.role_id),
+            "compiledProfile": request_context.role_profile.map(|profile| profile.compiled_profile),
+            "detail": detail,
+        }),
+    )
+}
+
+fn enforce_rpc_exposure_policy(
+    method: &str,
+    request_context: &RpcRequestContext,
+) -> Result<(), RpcError> {
+    let Some(exposure) = rpc_method_exposure(method) else {
+        return Ok(());
+    };
+
+    if !request_context.is_public_request() {
+        return Ok(());
+    }
+
+    let is_service_access_role = request_context
+        .role_profile
+        .map(|profile| profile.authority_plane == AuthorityPlane::ServiceAccess)
+        .unwrap_or(false);
+
+    match exposure {
+        RpcMethodExposure::PublicRead => Ok(()),
+        RpcMethodExposure::PublicClient if is_service_access_role => Ok(()),
+        RpcMethodExposure::PublicClient => Err(build_exposure_error(
+            method,
+            exposure,
+            request_context,
+            "public client methods are only exposed on service-access node roles",
+        )),
+        RpcMethodExposure::AuthorityPlane => Err(build_exposure_error(
+            method,
+            exposure,
+            request_context,
+            "authority-plane methods must not be exposed on unauthenticated public endpoints",
+        )),
+        RpcMethodExposure::NonPublicWrite => Err(build_exposure_error(
+            method,
+            exposure,
+            request_context,
+            "this state-mutating method is restricted to non-public authenticated routing",
+        )),
+        RpcMethodExposure::Operator => Err(build_exposure_error(
+            method,
+            exposure,
+            request_context,
+            "operator methods require non-public administrative routing and audit controls",
+        )),
+    }
+}
+
 fn request_is_json(headers: &HashMap<String, String>) -> bool {
     headers
         .get("content-type")
@@ -4073,5 +4411,108 @@ mod tests {
             "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\n\r\n",
         );
         assert!(request_is_json(&headers));
+    }
+
+    #[test]
+    fn forwarded_ip_prefers_proxy_header() {
+        let mut headers = HashMap::new();
+        headers.insert(
+            "x-forwarded-for".to_string(),
+            "198.51.100.22, 127.0.0.1".to_string(),
+        );
+
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: None,
+        };
+
+        assert_eq!(
+            context
+                .effective_client_ip()
+                .expect("forwarded ip should be present")
+                .to_string(),
+            "198.51.100.22"
+        );
+        assert!(context.is_public_request());
+    }
+
+    #[test]
+    fn forwarded_ip_accepts_cloudflare_header() {
+        let mut headers = HashMap::new();
+        headers.insert("cf-connecting-ip".to_string(), "198.51.100.44".to_string());
+        headers.insert(
+            "x-forwarded-for".to_string(),
+            "127.0.0.1, 127.0.0.1".to_string(),
+        );
+
+        let context = RpcRequestContext {
+            transport: RpcTransport::WebSocket,
+            peer_addr: Some("127.0.0.1:5666".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        assert_eq!(
+            context
+                .effective_client_ip()
+                .expect("cloudflare header should be present")
+                .to_string(),
+            "198.51.100.44"
+        );
+        assert!(context.is_public_request());
+        let error = enforce_rpc_exposure_policy("synergy_createWallet", &context)
+            .expect_err("authority-plane method should be denied");
+        assert_eq!(error.code, -32003);
+    }
+
+    #[test]
+    fn public_proxy_denies_authority_plane_methods() {
+        let mut headers = HashMap::new();
+        headers.insert("x-forwarded-for".to_string(), "198.51.100.22".to_string());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        let error = enforce_rpc_exposure_policy("synergy_createWallet", &context)
+            .expect_err("authority-plane method should be denied");
+        assert_eq!(error.code, -32003);
+        assert!(error.message.contains("exposure profile"));
+    }
+
+    #[test]
+    fn public_gateway_allows_canonical_client_pipeline() {
+        let mut headers = HashMap::new();
+        headers.insert("x-forwarded-for".to_string(), "198.51.100.22".to_string());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        enforce_rpc_exposure_policy("synergy_sendTransaction", &context)
+            .expect("canonical public client method should be allowed");
+        enforce_rpc_exposure_policy("synergy_simulateTransaction", &context)
+            .expect("simulation should be allowed on the public client surface");
+    }
+
+    #[test]
+    fn loopback_allows_non_public_write_methods() {
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers: HashMap::new(),
+            role_profile: crate::role_profiles::profile_from_compiled_profile("validator_node"),
+        };
+
+        enforce_rpc_exposure_policy("synergy_sendTokens", &context)
+            .expect("loopback traffic should retain access to local write methods");
+        enforce_rpc_exposure_policy("synergy_resetSxcpState", &context)
+            .expect("loopback traffic should retain access to operator methods");
     }
 }
