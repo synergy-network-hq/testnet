@@ -9,7 +9,9 @@ use crate::block::{Block, BlockChain};
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
 use crate::genesis::canonical_genesis;
 use crate::p2p::networking::P2PNetwork;
-use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER, TX_POOL};
+use crate::rpc::rpc_server::{
+    prune_transaction_hashes_from_pool, transaction_hashes, SHARED_CHAIN, SYNC_MANAGER, TX_POOL,
+};
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
     Validator, ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
@@ -722,12 +724,33 @@ impl ProofOfSynergy {
                         consensus_log!("LEADER SELECTED: {}", selected_validator.address);
                         consensus_log!("Getting transactions from pool...");
 
+                        let confirmed_hashes = chain_guard
+                            .chain
+                            .iter()
+                            .flat_map(|block| {
+                                block
+                                    .transactions
+                                    .iter()
+                                    .map(|transaction| transaction.hash())
+                            })
+                            .collect::<HashSet<_>>();
                         let transactions = if pool.is_empty() {
                             consensus_log!("Pool is empty");
                             vec![]
                         } else {
-                            consensus_log!("Pool has {} transactions", pool.len());
-                            pool.clone()
+                            let pending = pool
+                                .iter()
+                                .filter(|transaction| {
+                                    !confirmed_hashes.contains(&transaction.hash())
+                                })
+                                .cloned()
+                                .collect::<Vec<_>>();
+                            consensus_log!(
+                                "Pool has {} transactions ({} eligible after confirmed-tx pruning)",
+                                pool.len(),
+                                pending.len()
+                            );
+                            pending
                         };
 
                         consensus_log!("Creating processed transactions vec...");
@@ -863,13 +886,9 @@ impl ProofOfSynergy {
                                     new_block.block_index,
                                 );
 
-                                // Clear transaction pool
-                                {
-                                    let mut pool = TX_POOL.lock().unwrap();
-                                    if !pool.is_empty() {
-                                        pool.clear();
-                                    }
-                                }
+                                let confirmed_hashes = transaction_hashes(&new_block.transactions);
+                                let pruned_transactions =
+                                    prune_transaction_hashes_from_pool(&confirmed_hashes);
 
                                 last_block_time = current_time;
                                 consecutive_failures = 0;
@@ -911,6 +930,7 @@ impl ProofOfSynergy {
                                     }).to_string(),
                                     "cluster_info" => cluster_info.as_ref().map(|c| c.to_string()).unwrap_or_default(),
                                     "txs" => new_block.transactions.len() as u64,
+                                    "txs_pruned_from_pool" => pruned_transactions as u64,
                                     "txs_applied" => applied_txs,
                                     "txs_failed" => failed_txs,
                                     "qc_validation_quorum_met" => qc.validation_quorum_met,

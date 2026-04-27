@@ -3,7 +3,9 @@ use crate::config::NodeConfig;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::genesis::canonical_genesis;
 use crate::p2p::messages::NetworkMessage;
-use crate::rpc::rpc_server::{SYNC_MANAGER, TX_POOL};
+use crate::rpc::rpc_server::{
+    prune_transaction_hashes_from_pool, transaction_hashes, SYNC_MANAGER, TX_POOL,
+};
 use crate::sync::SyncState;
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
@@ -183,6 +185,58 @@ fn validator_status_genesis_grace_remaining_secs(connected_at: u64, now: u64) ->
 
 fn validator_status_genesis_within_grace_window(connected_at: u64, now: u64) -> bool {
     now.saturating_sub(connected_at) < VALIDATOR_STATUS_GENESIS_GRACE_SECS
+}
+
+fn ensure_peer_status_allows_chain_data(
+    blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
+    peer_address: &str,
+    message_kind: &str,
+) -> bool {
+    let local_genesis_hash = resolve_local_genesis_hash(blockchain);
+    let mut peers = connected_peers.lock().unwrap();
+    let Some((remote_genesis_hash, peer_validator_address, status_received_at)) =
+        peers.get(peer_address).map(|peer| {
+            (
+                peer.genesis_hash.clone(),
+                peer.validator_address.clone(),
+                peer.status_received_at,
+            )
+        })
+    else {
+        return false;
+    };
+
+    if should_disconnect_for_status_genesis_mismatch(
+        &local_genesis_hash,
+        &remote_genesis_hash,
+        peer_validator_address.as_deref(),
+    ) {
+        warn!(
+            "p2p",
+            "Disconnecting peer attempting chain data exchange with mismatched genesis hash",
+            "peer" => peer_address.to_string(),
+            "message_kind" => message_kind.to_string(),
+            "local_genesis_hash" => local_genesis_hash,
+            "remote_genesis_hash" => remote_genesis_hash
+        );
+        disconnect_peer_entry(peer_state_cache, &mut peers, peer_address);
+        return false;
+    }
+
+    if status_received_at.is_none() || remote_genesis_hash.trim().is_empty() {
+        debug!(
+            "p2p",
+            "Ignoring chain data until peer status confirms canonical genesis",
+            "peer" => peer_address.to_string(),
+            "message_kind" => message_kind.to_string()
+        );
+        request_status_from_connected_peer(&mut peers, peer_address);
+        return false;
+    }
+
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -2212,6 +2266,7 @@ fn handle_vote_message(
 fn handle_block_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
     config: &NodeConfig,
     peer_address: &str,
     block_data: Block,
@@ -2227,6 +2282,16 @@ fn handle_block_message(
     }
 
     info!("p2p", "Received block", "peer" => peer_address.to_string());
+
+    if !ensure_peer_status_allows_chain_data(
+        blockchain,
+        connected_peers,
+        peer_state_cache,
+        peer_address,
+        "block",
+    ) {
+        return;
+    }
 
     {
         let mut peers = connected_peers.lock().unwrap();
@@ -2320,6 +2385,8 @@ fn handle_get_blocks_message(
 
 fn handle_blocks_message(
     blockchain: &BlockchainArc,
+    connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
     config: &NodeConfig,
     peer_address: &str,
     blocks: Vec<Block>,
@@ -2331,6 +2398,16 @@ fn handle_blocks_message(
             "peer" => peer_address.to_string(),
             "count" => blocks.len()
         );
+        return;
+    }
+
+    if !ensure_peer_status_allows_chain_data(
+        blockchain,
+        connected_peers,
+        peer_state_cache,
+        peer_address,
+        "blocks",
+    ) {
         return;
     }
 
@@ -2389,6 +2466,7 @@ fn bypasses_shared_message_queue(message: &NetworkMessage) -> bool {
 fn dispatch_peer_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
     message_sender: &mpsc::Sender<(String, NetworkMessage)>,
     config: &NodeConfig,
     peer_address: &str,
@@ -2425,6 +2503,7 @@ fn dispatch_peer_message(
             handle_block_message(
                 blockchain,
                 connected_peers,
+                peer_state_cache,
                 config,
                 peer_address,
                 block_data,
@@ -2443,7 +2522,14 @@ fn dispatch_peer_message(
             Ok(())
         }
         NetworkMessage::Blocks { blocks } => {
-            handle_blocks_message(blockchain, config, peer_address, blocks);
+            handle_blocks_message(
+                blockchain,
+                connected_peers,
+                peer_state_cache,
+                config,
+                peer_address,
+                blocks,
+            );
             Ok(())
         }
         other => {
@@ -2599,6 +2685,7 @@ fn handle_incoming_connection(
                 if let Err(_) = dispatch_peer_message(
                     &blockchain,
                     &connected_peers,
+                    &peer_state_cache,
                     &message_sender,
                     &config,
                     &peer_address,
@@ -2703,6 +2790,7 @@ fn handle_outgoing_connection(
                 if let Err(_) = dispatch_peer_message(
                     &blockchain,
                     &connected_peers,
+                    &peer_state_cache,
                     &message_sender,
                     &config,
                     &peer_address,
@@ -3166,6 +3254,7 @@ fn handle_messages(
                         handle_block_message(
                             &blockchain,
                             &connected_peers,
+                            &peer_state_cache,
                             &config,
                             &peer_address,
                             block_data,
@@ -3355,7 +3444,14 @@ fn handle_messages(
                         }
                     }
                     NetworkMessage::Blocks { blocks } => {
-                        handle_blocks_message(&blockchain, &config, &peer_address, blocks);
+                        handle_blocks_message(
+                            &blockchain,
+                            &connected_peers,
+                            &peer_state_cache,
+                            &config,
+                            &peer_address,
+                            blocks,
+                        );
                     }
                     NetworkMessage::GetPeers => {
                         // Respond with known peer dial addresses.
@@ -3695,6 +3791,7 @@ fn is_assigned_synergy_dial_address(value: &str) -> bool {
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
+    let confirmed_hashes = transaction_hashes(&block.transactions);
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
 
@@ -3721,12 +3818,19 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
         note_chain_persist(tip_height);
     }
 
+    prune_transaction_hashes_from_pool(&confirmed_hashes);
+
     true
 }
 
 fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 {
     if blocks.is_empty() {
         return 0;
+    }
+
+    let mut confirmed_hashes = HashSet::new();
+    for block in &blocks {
+        confirmed_hashes.extend(transaction_hashes(&block.transactions));
     }
 
     blocks.sort_by_key(|block| block.block_index);
@@ -3811,6 +3915,8 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
         snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
         note_chain_persist(tip_height);
     }
+
+    prune_transaction_hashes_from_pool(&confirmed_hashes);
 
     applied
 }
@@ -3899,11 +4005,12 @@ mod tests {
         apply_block_batch, background_poll_interval, best_connected_validator_height,
         bypasses_shared_message_queue, cache_peer_state, canonical_genesis_hash,
         collect_known_peer_addresses, connected_validator_participants,
-        current_bootstrap_refresh_interval, dial_with_timeout, dispatch_peer_message,
-        handle_status_message, hydrate_peer_from_cache, local_peer_identity,
-        merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
-        peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
-        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
+        dispatch_peer_message, ensure_peer_status_allows_chain_data, handle_status_message,
+        hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
+        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
+        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
         validator_status_genesis_grace_remaining_secs,
@@ -3923,6 +4030,13 @@ mod tests {
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::Duration;
+
+    fn configure_canonical_genesis_path_for_tests() {
+        std::env::set_var(
+            "SYNERGY_GENESIS_FILE",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/../config/genesis.json"),
+        );
+    }
 
     #[test]
     fn dial_with_timeout_keeps_established_peer_streams_blocking() {
@@ -4527,6 +4641,95 @@ mod tests {
     }
 
     #[test]
+    fn chain_data_is_rejected_until_peer_status_confirms_genesis() {
+        configure_canonical_genesis_path_for_tests();
+        let mut chain = BlockChain::new();
+        chain.genesis().expect("genesis block should load");
+        let blockchain = Arc::new(Mutex::new(chain));
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+
+        connected_peers.lock().unwrap().insert(
+            "peer-pending".to_string(),
+            PeerConnection {
+                address: "peer-pending".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: None,
+                validator_address: None,
+                connected_at: current_timestamp(),
+                last_seen: current_timestamp(),
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("validator-pending".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: Vec::new(),
+                last_known_height: 0,
+                best_block_hash: String::new(),
+                genesis_hash: String::new(),
+                status_received_at: None,
+            },
+        );
+
+        assert!(!ensure_peer_status_allows_chain_data(
+            &blockchain,
+            &connected_peers,
+            &peer_state_cache,
+            "peer-pending",
+            "blocks",
+        ));
+        assert!(connected_peers.lock().unwrap().contains_key("peer-pending"));
+    }
+
+    #[test]
+    fn chain_data_disconnects_peer_with_mismatched_genesis() {
+        configure_canonical_genesis_path_for_tests();
+        let mut chain = BlockChain::new();
+        chain.genesis().expect("genesis block should load");
+        let blockchain = Arc::new(Mutex::new(chain));
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+
+        connected_peers.lock().unwrap().insert(
+            "peer-mismatch".to_string(),
+            PeerConnection {
+                address: "peer-mismatch".to_string(),
+                direction: ConnectionDirection::Incoming,
+                public_address: None,
+                validator_address: Some("synv1validator".to_string()),
+                connected_at: current_timestamp(),
+                last_seen: current_timestamp(),
+                blocks_sent: 0,
+                blocks_received: 0,
+                txs_sent: 0,
+                txs_received: 0,
+                stream: None,
+                node_id: Some("validator-mismatch".to_string()),
+                version: Some("1.0.0".to_string()),
+                capabilities: Vec::new(),
+                last_known_height: 10,
+                best_block_hash: "remote-tip".to_string(),
+                genesis_hash: "remote-hash".to_string(),
+                status_received_at: Some(current_timestamp()),
+            },
+        );
+
+        assert!(!ensure_peer_status_allows_chain_data(
+            &blockchain,
+            &connected_peers,
+            &peer_state_cache,
+            "peer-mismatch",
+            "block",
+        ));
+        assert!(!connected_peers
+            .lock()
+            .unwrap()
+            .contains_key("peer-mismatch"));
+    }
+
+    #[test]
     fn empty_local_genesis_hash_does_not_force_disconnect() {
         assert!(!should_disconnect_for_status_genesis_mismatch(
             "",
@@ -4627,6 +4830,7 @@ mod tests {
     #[test]
     fn dispatch_peer_message_keeps_votes_off_the_background_queue() {
         let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
         connected_peers.lock().unwrap().insert(
             "peer-a".to_string(),
             PeerConnection {
@@ -4674,6 +4878,7 @@ mod tests {
         dispatch_peer_message(
             &blockchain,
             &connected_peers,
+            &peer_state_cache,
             &sender,
             &config,
             "peer-a",

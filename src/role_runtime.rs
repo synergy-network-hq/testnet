@@ -23,18 +23,29 @@ use crate::logging::{init_logger, LogLevel};
 use crate::p2p;
 use crate::role_profiles::{resolve_configured_role, NodeRole, RoleProfile};
 use crate::rpc;
-use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER};
+use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER, TX_POOL};
 use crate::sxcp;
 use crate::sync::SyncManager;
 use crate::telemetry;
 use crate::token::TOKEN_MANAGER;
+use crate::transaction::Transaction;
 use crate::utils;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::wallet;
+use serde::Deserialize;
 use serde_json::json;
 
 struct RoleProcessGuard {
     child: Mutex<Child>,
+}
+
+#[derive(Debug, Deserialize)]
+struct LaunchBlock1TransactionEnvelope {
+    #[serde(default)]
+    required_block_index: Option<u64>,
+    #[serde(default)]
+    description: Option<String>,
+    transaction: Transaction,
 }
 
 impl RoleProcessGuard {
@@ -517,6 +528,134 @@ fn now_ts() -> u64 {
         .as_secs()
 }
 
+fn candidate_launch_block1_transaction_paths(project_root: &Path) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(raw_path) = env::var("SYNERGY_BLOCK1_TRANSACTION_PATH") {
+        let trimmed = raw_path.trim();
+        if !trimmed.is_empty() {
+            candidates.push(PathBuf::from(trimmed));
+        }
+    }
+
+    candidates.push(
+        project_root
+            .join("config")
+            .join("launch-block1-transaction.json"),
+    );
+    candidates.push(project_root.join("launch-block1-transaction.json"));
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped
+}
+
+fn find_launch_block1_transaction_path(project_root: &Path) -> Option<PathBuf> {
+    candidate_launch_block1_transaction_paths(project_root)
+        .into_iter()
+        .find(|candidate| candidate.is_file())
+}
+
+fn maybe_preload_launch_block1_transaction(
+    project_root: &Path,
+    blockchain: &Arc<Mutex<crate::block::BlockChain>>,
+) -> Result<(), String> {
+    let current_height = blockchain
+        .lock()
+        .unwrap()
+        .last()
+        .map(|block| block.block_index)
+        .unwrap_or(0);
+
+    if current_height != 0 {
+        return Ok(());
+    }
+
+    let Some(path) = find_launch_block1_transaction_path(project_root) else {
+        return Ok(());
+    };
+
+    let contents = fs::read_to_string(&path).map_err(|error| {
+        format!(
+            "Failed to read launch block-1 transaction envelope {}: {}",
+            path.display(),
+            error
+        )
+    })?;
+    let envelope: LaunchBlock1TransactionEnvelope =
+        serde_json::from_str(&contents).map_err(|error| {
+            format!(
+                "Failed to parse launch block-1 transaction envelope {}: {}",
+                path.display(),
+                error
+            )
+        })?;
+
+    let required_block_index = envelope.required_block_index.unwrap_or(1);
+    if required_block_index != 1 {
+        return Err(format!(
+            "Launch block-1 transaction envelope {} requires block {} instead of block 1",
+            path.display(),
+            required_block_index
+        ));
+    }
+
+    let validation = envelope.transaction.validate();
+    if !validation.is_valid {
+        return Err(format!(
+            "Launch block-1 transaction envelope {} failed validation: {}",
+            path.display(),
+            validation
+                .error_message
+                .unwrap_or_else(|| "unknown validation error".to_string())
+        ));
+    }
+
+    let required_balance = envelope
+        .transaction
+        .amount
+        .saturating_add(envelope.transaction.get_fee());
+    let sender_balance = TOKEN_MANAGER.get_balance(&envelope.transaction.sender, "SNRG");
+    if sender_balance < required_balance {
+        return Err(format!(
+            "Launch block-1 transaction sender {} has insufficient SNRG balance: need {}, have {}",
+            envelope.transaction.sender, required_balance, sender_balance
+        ));
+    }
+
+    let tx_hash = envelope.transaction.hash();
+    let description = envelope
+        .description
+        .clone()
+        .unwrap_or_else(|| "Deterministic launch transaction".to_string());
+    let mut pool = TX_POOL.lock().unwrap();
+    if pool.iter().any(|transaction| transaction.hash() == tx_hash) {
+        info!(
+            "main",
+            "Launch block-1 transaction already present in local mempool",
+            "path" => path.display().to_string(),
+            "tx_hash" => tx_hash,
+            "description" => description
+        );
+        return Ok(());
+    }
+
+    pool.push(envelope.transaction);
+    info!(
+        "main",
+        "Preloaded deterministic launch block-1 transaction",
+        "path" => path.display().to_string(),
+        "tx_hash" => tx_hash,
+        "description" => description
+    );
+    Ok(())
+}
+
 fn start_role_local_services(
     profile: Option<&'static RoleProfile>,
     config: &NodeConfig,
@@ -987,6 +1126,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 "path" => genesis.path().display().to_string(),
                 "hash" => genesis.hash().to_string()
             );
+            let blockchain = Arc::clone(&SHARED_CHAIN);
 
             wallet::init_testbeta_wallets();
             {
@@ -1003,6 +1143,15 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 }
             }
 
+            if let Err(error) = maybe_preload_launch_block1_transaction(&project_root, &blockchain)
+            {
+                eprintln!(
+                    "Failed to preload deterministic launch block-1 transaction: {}",
+                    error
+                );
+                process::exit(1);
+            }
+
             info!("main", "Starting the node...");
 
             let pid = std::process::id();
@@ -1011,7 +1160,6 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             }
 
             let process_start_time = SystemTime::now();
-            let blockchain = Arc::clone(&SHARED_CHAIN);
 
             let p2p_enabled = should_start_p2p(&config, role_profile);
             let p2p_network = if p2p_enabled {

@@ -25,7 +25,7 @@ Phases:
   launch-quorum      Start only validator1, validator2, and validator4 after bootnodes are confirmed reachable.
   expand             Wipe/redeploy validator3 and/or validator5 after the core quorum is stable.
   start-support      Start RPC and indexer only after validator liveness is stable.
-  launch-transaction Submit the deterministic launch transaction marker through the local RPC helper.
+  launch-transaction Generate and bundle the deterministic block-1 launch transaction envelope.
   status             Print orchestrator status for bootnodes, validators, RPC, and indexer.
 USAGE
 }
@@ -76,9 +76,14 @@ require_orchestrator
 
 case "${1:-}" in
   prepare)
+    if [[ ! -x "$TX_HELPER" ]]; then
+      echo "Launch transaction helper not found or not executable: $TX_HELPER" >&2
+      exit 1
+    fi
     stop_nodes "${SUPPORT_NODES[@]}" "${EXPANSION_VALIDATORS[@]}" "${QUORUM_VALIDATORS[@]}"
+    "$TX_HELPER"
     reset_nodes "${QUORUM_VALIDATORS[@]}"
-    echo "Core quorum validators have been wiped and redeployed. Leave the three Linux bootnodes online."
+    echo "Core quorum validators have been wiped and redeployed, and the deterministic block-1 transaction envelope has been bundled. Leave the three Linux bootnodes online."
     ;;
   launch-quorum)
     show_status

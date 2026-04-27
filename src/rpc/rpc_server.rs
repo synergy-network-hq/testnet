@@ -16,7 +16,10 @@ use crate::sxcp;
 use crate::sync::{SyncManager, SyncState};
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
-use crate::validator::{ValidatorManager, VALIDATOR_MANAGER};
+use crate::validator::{
+    Validator, ValidatorManager, ValidatorStatus, INITIAL_VALIDATOR_SYNERGY_SCORE,
+    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+};
 use crate::wallet::WALLET_MANAGER;
 // Temporarily disabled for quick compile
 // use crate::aivm::AIVMRuntime;
@@ -123,15 +126,12 @@ impl RpcRequestContext {
     }
 
     fn effective_client_ip(&self) -> Option<IpAddr> {
-        parse_forwarded_ip(
-            self.forwarded_client_ip_header()
-                .or_else(|| {
-                    self.headers
-                        .get("x-forwarded-for")
-                        .map(String::as_str)
-                        .or_else(|| self.headers.get("x-real-ip").map(String::as_str))
-                }),
-        )
+        parse_forwarded_ip(self.forwarded_client_ip_header().or_else(|| {
+            self.headers
+                .get("x-forwarded-for")
+                .map(String::as_str)
+                .or_else(|| self.headers.get("x-real-ip").map(String::as_str))
+        }))
         .or_else(|| self.peer_addr.map(|addr| addr.ip()))
     }
 
@@ -475,6 +475,201 @@ pub fn start_rpc_server(
             }
         });
     }
+}
+
+pub fn transaction_hashes(transactions: &[Transaction]) -> HashSet<String> {
+    transactions
+        .iter()
+        .map(|transaction| transaction.hash())
+        .collect()
+}
+
+pub fn prune_transaction_hashes_from_pool(confirmed_hashes: &HashSet<String>) -> usize {
+    if confirmed_hashes.is_empty() {
+        return 0;
+    }
+
+    let mut pool = TX_POOL.lock().unwrap();
+    let before = pool.len();
+    pool.retain(|transaction| !confirmed_hashes.contains(&transaction.hash()));
+    before.saturating_sub(pool.len())
+}
+
+fn default_cluster_id(index: usize) -> Option<u64> {
+    Some((index / TESTNET_BETA_VALIDATOR_CLUSTER_SIZE.max(1)) as u64)
+}
+
+fn synthesize_validator(
+    address: String,
+    public_key: String,
+    name: String,
+    stake_amount: u64,
+    registered_at: u64,
+) -> Validator {
+    Validator {
+        address,
+        public_key,
+        name,
+        website: None,
+        description: None,
+        email: None,
+        registered_at,
+        last_active: 0,
+        total_blocks_produced: 0,
+        total_transactions_validated: 0,
+        uptime_percentage: 0.0,
+        average_block_time: 0.0,
+        missed_blocks: 0,
+        double_signs: 0,
+        consecutive_missed_votes: 0,
+        missed_vote_window: 0,
+        last_vote_timestamp: 0,
+        equivocation_evidence_count: 0,
+        synergy_score: 0.0,
+        task_accuracy: 0.0,
+        collaboration_score: 0.0,
+        reputation_score: 0.0,
+        slashing_penalty: 0.0,
+        stake_amount,
+        min_stake_required: stake_amount.max(1),
+        cluster_id: None,
+        status: ValidatorStatus::Inactive,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
+fn recent_active_validator_addresses(
+    chain: &BlockChain,
+    total_known_validators: usize,
+) -> HashSet<String> {
+    let window = total_known_validators.max(1).saturating_mul(4);
+    chain
+        .chain
+        .iter()
+        .rev()
+        .filter(|block| block.block_index > 0 && block.validator_id != "genesis")
+        .take(window)
+        .map(|block| block.validator_id.clone())
+        .collect()
+}
+
+fn network_validator_snapshot(
+    chain: &BlockChain,
+    validator_manager: &ValidatorManager,
+) -> Vec<Validator> {
+    let mut validators = validator_manager
+        .get_all_validators()
+        .into_iter()
+        .map(|validator| (validator.address.clone(), validator))
+        .collect::<HashMap<_, _>>();
+    let genesis_timestamp = canonical_genesis()
+        .map(|genesis| genesis.timestamp())
+        .unwrap_or(0);
+
+    if let Ok(genesis) = canonical_genesis() {
+        for (index, entry) in genesis.validators().iter().enumerate() {
+            let address = entry.operator_address.clone();
+            let validator = validators.entry(address.clone()).or_insert_with(|| {
+                synthesize_validator(
+                    address.clone(),
+                    entry.consensus_public_key.clone(),
+                    entry.moniker.clone(),
+                    entry.stake_nwei,
+                    genesis.timestamp(),
+                )
+            });
+            if validator.public_key.is_empty() {
+                validator.public_key = entry.consensus_public_key.clone();
+            }
+            if validator.name.trim().is_empty() {
+                validator.name = entry.moniker.clone();
+            }
+            if validator.stake_amount == 0 {
+                validator.stake_amount = entry.stake_nwei;
+            }
+            if validator.min_stake_required == 0 {
+                validator.min_stake_required = entry.stake_nwei.max(1);
+            }
+            if validator.cluster_id.is_none() {
+                validator.cluster_id = default_cluster_id(index);
+            }
+            if validator.registered_at == 0 {
+                validator.registered_at = genesis.timestamp();
+            }
+        }
+    }
+
+    let total_observed_blocks = chain
+        .chain
+        .iter()
+        .filter(|block| block.block_index > 0)
+        .count() as u64;
+    let recent_active = recent_active_validator_addresses(chain, validators.len());
+
+    for block in chain.chain.iter().filter(|block| block.block_index > 0) {
+        let address = block.validator_id.clone();
+        let validator = validators.entry(address.clone()).or_insert_with(|| {
+            synthesize_validator(
+                address.clone(),
+                String::new(),
+                format!("Validator-{}", &address[..8.min(address.len())]),
+                0,
+                genesis_timestamp,
+            )
+        });
+        validator.total_blocks_produced = validator.total_blocks_produced.saturating_add(1);
+        validator.total_transactions_validated = validator
+            .total_transactions_validated
+            .saturating_add(block.transactions.len() as u64);
+        validator.last_active = validator.last_active.max(block.timestamp);
+        validator.last_vote_timestamp = validator.last_vote_timestamp.max(block.timestamp);
+    }
+
+    let mut ordered = validators.into_values().collect::<Vec<_>>();
+    ordered.sort_by(|left, right| left.address.cmp(&right.address));
+    for (index, validator) in ordered.iter_mut().enumerate() {
+        let is_recently_active = recent_active.contains(&validator.address);
+        let has_observed_activity = validator.total_blocks_produced > 0;
+        if validator.cluster_id.is_none() {
+            validator.cluster_id = default_cluster_id(index);
+        }
+        if validator.min_stake_required == 0 {
+            validator.min_stake_required = validator.stake_amount.max(1);
+        }
+        validator.average_block_time = calculate_average_block_time(chain);
+        validator.uptime_percentage = if total_observed_blocks > 0 {
+            (validator.total_blocks_produced as f64 / total_observed_blocks as f64) * 100.0
+        } else if is_recently_active {
+            100.0
+        } else {
+            0.0
+        };
+        if matches!(
+            validator.status,
+            ValidatorStatus::Active | ValidatorStatus::Pending
+        ) || is_recently_active
+            || has_observed_activity
+        {
+            validator.status = ValidatorStatus::Active;
+        } else if !matches!(
+            validator.status,
+            ValidatorStatus::Jailed | ValidatorStatus::Slashed
+        ) {
+            validator.status = ValidatorStatus::Inactive;
+        }
+        if validator.synergy_score <= 0.0 && matches!(validator.status, ValidatorStatus::Active) {
+            validator.synergy_score = INITIAL_VALIDATOR_SYNERGY_SCORE;
+        }
+        if validator.task_accuracy <= 0.0 && matches!(validator.status, ValidatorStatus::Active) {
+            validator.task_accuracy = 100.0;
+        }
+        if validator.reputation_score <= 0.0 && matches!(validator.status, ValidatorStatus::Active)
+        {
+            validator.reputation_score = 100.0;
+        }
+    }
+
+    ordered
 }
 
 fn start_ws_rpc_server(
@@ -1064,7 +1259,11 @@ fn handle_json_rpc(
 
         // Validator management
         "synergy_getValidators" => {
-            let validators = validator_manager.get_active_validators();
+            let chain = chain.lock().unwrap();
+            let validators = network_validator_snapshot(&chain, &validator_manager)
+                .into_iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .collect::<Vec<_>>();
             println!(
                 "🔍 [RPC] synergy_getValidators called, returning {} validators",
                 validators.len()
@@ -1074,7 +1273,11 @@ fn handle_json_rpc(
 
         "synergy_getValidator" => {
             if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
-                match validator_manager.get_validator(address) {
+                let chain = chain.lock().unwrap();
+                match network_validator_snapshot(&chain, &validator_manager)
+                    .into_iter()
+                    .find(|validator| validator.address.eq_ignore_ascii_case(address))
+                {
                     Some(validator) => json!(validator),
                     None => json!(null),
                 }
@@ -1352,7 +1555,17 @@ fn handle_json_rpc(
 
         "synergy_getTopValidators" => {
             let count = params.get(0).and_then(|v| v.as_u64()).unwrap_or(10) as usize;
-            json!(validator_manager.get_top_validators(count))
+            let chain = chain.lock().unwrap();
+            let mut validators = network_validator_snapshot(&chain, &validator_manager);
+            validators.sort_by(|left, right| {
+                right
+                    .synergy_score
+                    .partial_cmp(&left.synergy_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| right.stake_amount.cmp(&left.stake_amount))
+                    .then_with(|| left.address.cmp(&right.address))
+            });
+            json!(validators.into_iter().take(count).collect::<Vec<_>>())
         }
 
         "synergy_slashValidator" => {
@@ -1476,11 +1689,26 @@ fn handle_json_rpc(
         }
 
         "synergy_getValidatorStats" => {
-            let active_validators = validator_manager.get_active_validators();
-            let top_validators = validator_manager.get_top_validators(20);
+            let chain = chain.lock().unwrap();
+            let mut validators = network_validator_snapshot(&chain, &validator_manager);
+            let active_validators = validators
+                .iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .cloned()
+                .collect::<Vec<_>>();
+            let total_validators = validators.len();
+            validators.sort_by(|left, right| {
+                right
+                    .synergy_score
+                    .partial_cmp(&left.synergy_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| right.stake_amount.cmp(&left.stake_amount))
+                    .then_with(|| left.address.cmp(&right.address))
+            });
+            let top_validators = validators.into_iter().take(20).collect::<Vec<_>>();
 
             json!({
-                "total_validators": active_validators.len(),
+                "total_validators": total_validators,
                 "active_validators": active_validators,
                 "top_validators": top_validators,
                 "epoch_rewards": validator_manager.calculate_epoch_rewards(0)
@@ -1708,6 +1936,11 @@ fn handle_json_rpc(
         "synergy_getNetworkStats" => {
             let chain = chain.lock().unwrap();
             let token_manager = TOKEN_MANAGER.clone();
+            let validators = network_validator_snapshot(&chain, &validator_manager);
+            let active_validator_count = validators
+                .iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .count();
 
             let total_supply = token_manager
                 .get_all_tokens()
@@ -1718,7 +1951,7 @@ fn handle_json_rpc(
             json!({
                 "block_height": chain.last().map_or(0, |b| b.block_index),
                 "total_transactions": chain.chain.iter().map(|b| b.transactions.len()).sum::<usize>(),
-                "active_validators": validator_manager.get_active_validators().len(),
+                "active_validators": active_validator_count,
                 "total_supply": total_supply.to_string(),
                 "tokens": token_manager.get_all_tokens().len(),
                 "network_uptime": "99.9%",
@@ -1894,6 +2127,21 @@ fn handle_json_rpc(
 
         "synergy_getBlockValidationStatus" => {
             let chain = chain.lock().unwrap();
+            let validators = network_validator_snapshot(&chain, &validator_manager);
+            let active_validators = validators
+                .iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .count();
+            let active_clusters = validators
+                .iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .filter_map(|validator| validator.cluster_id)
+                .collect::<HashSet<_>>()
+                .len();
+            let total_stake = validators
+                .iter()
+                .map(|validator| validator.stake_amount)
+                .sum::<u64>();
             let recent_blocks: Vec<_> = chain
                 .chain
                 .iter()
@@ -1914,17 +2162,21 @@ fn handle_json_rpc(
                 "current_block_height": chain.last().map_or(0, |b| b.block_index),
                 "recent_blocks": recent_blocks,
                 "validation_queue": [], // Add pending validation queue
-                "active_validators": validator_manager.get_active_validators().len(),
-                "total_validators": validator_manager.get_validator_count(),
+                "active_validators": active_validators,
+                "total_validators": validators.len(),
                 "cluster_info": {
-                    "active_clusters": validator_manager.get_cluster_count(),
-                    "total_stake": validator_manager.get_total_stake()
+                    "active_clusters": active_clusters,
+                    "total_stake": total_stake
                 }
             })
         }
 
         "synergy_getValidatorActivity" => {
-            let active_validators = validator_manager.get_active_validators();
+            let chain = chain.lock().unwrap();
+            let active_validators = network_validator_snapshot(&chain, &validator_manager)
+                .into_iter()
+                .filter(|validator| validator.status == ValidatorStatus::Active)
+                .collect::<Vec<_>>();
             let mut validator_activity = Vec::new();
 
             for validator in active_validators {
@@ -4348,6 +4600,7 @@ fn block_to_explorer_json(block: &crate::block::Block) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::{Block, BlockChain};
 
     #[test]
     fn normalize_spec_transaction_envelope_maps_to_internal_transaction() {
@@ -4514,5 +4767,88 @@ mod tests {
             .expect("loopback traffic should retain access to local write methods");
         enforce_rpc_exposure_policy("synergy_resetSxcpState", &context)
             .expect("loopback traffic should retain access to operator methods");
+    }
+
+    #[test]
+    fn prune_confirmed_transactions_from_pool_removes_only_matching_hashes() {
+        let tx_a = Transaction::new(
+            "syna1sendera".to_string(),
+            "syna1receivera".to_string(),
+            1,
+            0,
+            vec![1, 2, 3],
+            1000,
+            21000,
+            None,
+            "fndsa".to_string(),
+        );
+        let tx_b = Transaction::new(
+            "syna1senderb".to_string(),
+            "syna1receiverb".to_string(),
+            2,
+            1,
+            vec![4, 5, 6],
+            1000,
+            21000,
+            None,
+            "fndsa".to_string(),
+        );
+
+        {
+            let mut pool = TX_POOL.lock().unwrap();
+            pool.clear();
+            pool.push(tx_a.clone());
+            pool.push(tx_b.clone());
+        }
+
+        let pruned = prune_transaction_hashes_from_pool(&transaction_hashes(&[tx_a]));
+        assert_eq!(pruned, 1);
+
+        let remaining_hashes = TX_POOL
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|transaction| transaction.hash())
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_hashes, vec![tx_b.hash()]);
+
+        TX_POOL.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn network_validator_snapshot_uses_canonical_genesis_for_read_only_nodes() {
+        let genesis_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../config/genesis.json")
+            .canonicalize()
+            .expect("repo genesis path should resolve");
+        std::env::set_var("SYNERGY_GENESIS_FILE", genesis_path);
+        let genesis = canonical_genesis().expect("canonical genesis must load");
+        let first_validator = genesis
+            .validators()
+            .first()
+            .expect("canonical genesis should define validators");
+
+        let mut chain = BlockChain::new();
+        chain.genesis().expect("genesis block should load");
+        chain.add_block(Block::new_with_timestamp(
+            1,
+            Vec::new(),
+            chain.last().unwrap().hash.clone(),
+            first_validator.operator_address.clone(),
+            1,
+            genesis.timestamp().saturating_add(2),
+        ));
+
+        let validator_manager = ValidatorManager::new();
+        let validators = network_validator_snapshot(&chain, &validator_manager);
+        let matched = validators
+            .into_iter()
+            .find(|validator| validator.address == first_validator.operator_address)
+            .expect("canonical validator should be present in synthesized snapshot");
+
+        assert_eq!(matched.name, first_validator.moniker);
+        assert_eq!(matched.stake_amount, first_validator.stake_nwei);
+        assert_eq!(matched.status, ValidatorStatus::Active);
+        assert_eq!(matched.total_blocks_produced, 1);
     }
 }
