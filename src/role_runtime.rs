@@ -48,6 +48,108 @@ struct LaunchBlock1TransactionEnvelope {
     transaction: Transaction,
 }
 
+fn read_env_file_value(path: &Path, key: &str) -> Option<String> {
+    let contents = fs::read_to_string(path).ok()?;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        let Some((candidate_key, value)) = trimmed.split_once('=') else {
+            continue;
+        };
+        if candidate_key.trim() != key {
+            continue;
+        }
+
+        let value = value
+            .trim()
+            .trim_matches('"')
+            .trim_matches('\'')
+            .trim()
+            .to_string();
+        if !value.is_empty() {
+            return Some(value);
+        }
+    }
+    None
+}
+
+fn candidate_launch_block1_rpc_urls(project_root: &Path) -> Vec<String> {
+    let mut candidates = Vec::new();
+    for key in [
+        "SYNERGY_CORE_RPC_FALLBACK_URL",
+        "SYNERGY_RPC_FALLBACK_URL",
+        "RPC_FALLBACK_URL",
+    ] {
+        if let Ok(value) = env::var(key) {
+            let trimmed = value.trim();
+            if !trimmed.is_empty() {
+                candidates.push(trimmed.to_string());
+            }
+        }
+
+        if let Some(value) = read_env_file_value(&project_root.join("node.env"), key) {
+            candidates.push(value);
+        }
+    }
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+    deduped
+}
+
+fn parse_rpc_block_number(value: &serde_json::Value) -> Option<u64> {
+    if let Some(number) = value.as_u64() {
+        return Some(number);
+    }
+
+    let text = value.as_str()?.trim();
+    if let Some(hex) = text.strip_prefix("0x") {
+        return u64::from_str_radix(hex, 16).ok();
+    }
+    text.parse::<u64>().ok()
+}
+
+fn rpc_block_number(url: &str) -> Option<u64> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .ok()?;
+    let response = client
+        .post(url)
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "method": "synergy_blockNumber",
+            "params": [],
+            "id": 1
+        }))
+        .send()
+        .ok()?;
+    let payload = response.json::<serde_json::Value>().ok()?;
+    parse_rpc_block_number(payload.get("result")?)
+}
+
+fn launch_block1_network_has_started(project_root: &Path) -> bool {
+    for url in candidate_launch_block1_rpc_urls(project_root) {
+        if matches!(rpc_block_number(&url), Some(height) if height > 0) {
+            info!(
+                "main",
+                "Detected live network past genesis before launch block-1 preload",
+                "rpc_url" => url
+            );
+            return true;
+        }
+    }
+
+    false
+}
+
 impl RoleProcessGuard {
     fn new(child: Child) -> Self {
         RoleProcessGuard {
@@ -580,6 +682,15 @@ fn maybe_preload_launch_block1_transaction(
         return Ok(());
     };
 
+    if launch_block1_network_has_started(project_root) {
+        info!(
+            "main",
+            "Skipping historical launch block-1 transaction envelope because the network is already past genesis",
+            "path" => path.display().to_string()
+        );
+        return Ok(());
+    }
+
     let contents = fs::read_to_string(&path).map_err(|error| {
         format!(
             "Failed to read launch block-1 transaction envelope {}: {}",
@@ -607,12 +718,13 @@ fn maybe_preload_launch_block1_transaction(
 
     let validation = envelope.transaction.validate();
     if !validation.is_valid {
+        let error_message = validation
+            .error_message
+            .unwrap_or_else(|| "unknown validation error".to_string());
         return Err(format!(
             "Launch block-1 transaction envelope {} failed validation: {}",
             path.display(),
-            validation
-                .error_message
-                .unwrap_or_else(|| "unknown validation error".to_string())
+            error_message
         ));
     }
 
@@ -654,6 +766,140 @@ fn maybe_preload_launch_block1_transaction(
         "description" => description
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod launch_block1_tests {
+    use super::*;
+    use crate::block::{Block, BlockChain};
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+    use std::thread;
+
+    fn temp_project_root(test_name: &str) -> PathBuf {
+        let unique = format!(
+            "synergy-role-runtime-{test_name}-{}-{}",
+            std::process::id(),
+            now_ts()
+        );
+        let path = std::env::temp_dir().join(unique);
+        fs::create_dir_all(path.join("config")).unwrap();
+        path
+    }
+
+    fn write_launch_envelope(project_root: &Path, transaction_json: &str) {
+        let path = project_root
+            .join("config")
+            .join("launch-block1-transaction.json");
+        let envelope = format!(
+            r#"{{"description":"test","required_block_index":1,"transaction":{transaction_json}}}"#
+        );
+        fs::write(path, envelope).unwrap();
+    }
+
+    fn write_node_env(project_root: &Path, key: &str, value: &str) {
+        fs::write(project_root.join("node.env"), format!("{key}={value}\n")).unwrap();
+    }
+
+    fn spawn_block_number_rpc(height: u64) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        thread::spawn(move || {
+            if let Ok((mut stream, _)) = listener.accept() {
+                let mut request = [0_u8; 1024];
+                let _ = stream.read(&mut request);
+                let body = format!(r#"{{"jsonrpc":"2.0","result":{height},"id":1}}"#);
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes());
+            }
+        });
+        format!("http://{address}")
+    }
+
+    fn signed_transaction_json(timestamp: u64) -> String {
+        format!(
+            r#"{{
+                "sender":"synv1sender",
+                "receiver":"synw1receiver",
+                "amount":1,
+                "nonce":0,
+                "signature":[1,2,3],
+                "timestamp":{timestamp},
+                "gas_price":1,
+                "gas_limit":21000,
+                "data":null,
+                "signature_algorithm":"fndsa"
+            }}"#
+        )
+    }
+
+    #[test]
+    fn expired_launch_block1_envelope_does_not_block_recovery() {
+        let project_root = temp_project_root("expired-launch-envelope");
+        write_launch_envelope(&project_root, &signed_transaction_json(1));
+        let rpc_url = spawn_block_number_rpc(42);
+        write_node_env(&project_root, "RPC_FALLBACK_URL", &rpc_url);
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+
+        let result = maybe_preload_launch_block1_transaction(&project_root, &blockchain);
+
+        assert!(result.is_ok());
+        let _ = fs::remove_dir_all(project_root);
+    }
+
+    #[test]
+    fn expired_launch_block1_envelope_fails_before_network_launch() {
+        let project_root = temp_project_root("expired-launch-envelope-before-launch");
+        write_launch_envelope(&project_root, &signed_transaction_json(1));
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+
+        let result = maybe_preload_launch_block1_transaction(&project_root, &blockchain);
+
+        assert!(result
+            .unwrap_err()
+            .contains("Transaction timestamp is too old"));
+        let _ = fs::remove_dir_all(project_root);
+    }
+
+    #[test]
+    fn malformed_launch_block1_envelope_still_fails_hard() {
+        let project_root = temp_project_root("malformed-launch-envelope");
+        let invalid_sender = signed_transaction_json(now_ts()).replace("synv1sender", "");
+        write_launch_envelope(&project_root, &invalid_sender);
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+
+        let result = maybe_preload_launch_block1_transaction(&project_root, &blockchain);
+
+        assert!(result
+            .unwrap_err()
+            .contains("Sender address cannot be empty"));
+        let _ = fs::remove_dir_all(project_root);
+    }
+
+    #[test]
+    fn launch_block1_envelope_is_ignored_after_genesis() {
+        let project_root = temp_project_root("post-genesis-envelope");
+        write_launch_envelope(&project_root, &signed_transaction_json(1));
+        let mut chain = BlockChain::new();
+        chain.add_block(Block::new(
+            1,
+            vec![],
+            "genesis".to_string(),
+            "validator".to_string(),
+            0,
+        ));
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        let result = maybe_preload_launch_block1_transaction(&project_root, &blockchain);
+
+        assert!(result.is_ok());
+        let _ = fs::remove_dir_all(project_root);
+    }
 }
 
 fn start_role_local_services(

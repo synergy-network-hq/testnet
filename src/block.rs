@@ -1,6 +1,6 @@
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
 
@@ -207,11 +207,48 @@ impl BlockChain {
     }
 
     pub fn save_to_file(&self, path: &str) {
-        if let Ok(json) = serde_json::to_string_pretty(&self.chain) {
-            if let Ok(mut file) = File::create(path) {
-                let _ = file.write_all(json.as_bytes());
-            }
+        if let Err(error) = self.save_to_file_atomic(path) {
+            eprintln!("failed to save blockchain state to {path}: {error}");
         }
+    }
+
+    fn save_to_file_atomic(&self, path: &str) -> Result<(), String> {
+        let json = serde_json::to_vec_pretty(&self.chain)
+            .map_err(|error| format!("serialize chain: {error}"))?;
+        let target = Path::new(path);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).map_err(|error| {
+                format!("create chain state directory {}: {error}", parent.display())
+            })?;
+        }
+
+        let file_name = target
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("invalid chain state path: {}", target.display()))?;
+        let temp_path = target.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
+
+        {
+            let mut file = File::create(&temp_path).map_err(|error| {
+                format!("create temp chain state {}: {error}", temp_path.display())
+            })?;
+            file.write_all(&json).map_err(|error| {
+                format!("write temp chain state {}: {error}", temp_path.display())
+            })?;
+            file.sync_all().map_err(|error| {
+                format!("sync temp chain state {}: {error}", temp_path.display())
+            })?;
+        }
+
+        fs::rename(&temp_path, target).map_err(|error| {
+            let _ = fs::remove_file(&temp_path);
+            format!(
+                "replace chain state {} with {}: {error}",
+                target.display(),
+                temp_path.display()
+            )
+        })?;
+        Ok(())
     }
 
     pub fn load_from_file(path: &str) -> Option<Self> {

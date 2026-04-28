@@ -58,6 +58,21 @@ reset_nodes() {
   done
 }
 
+prepare_launch_transaction() {
+  if [[ ! -x "$TX_HELPER" ]]; then
+    echo "Launch transaction helper not found or not executable: $TX_HELPER" >&2
+    exit 1
+  fi
+  "$TX_HELPER"
+}
+
+deploy_nodes() {
+  local node_id
+  for node_id in "$@"; do
+    run_remote "$node_id" install_node
+  done
+}
+
 bootstrap_nodes() {
   local node_id
   for node_id in "$@"; do
@@ -76,16 +91,14 @@ require_orchestrator
 
 case "${1:-}" in
   prepare)
-    if [[ ! -x "$TX_HELPER" ]]; then
-      echo "Launch transaction helper not found or not executable: $TX_HELPER" >&2
-      exit 1
-    fi
     stop_nodes "${SUPPORT_NODES[@]}" "${EXPANSION_VALIDATORS[@]}" "${QUORUM_VALIDATORS[@]}"
-    "$TX_HELPER"
+    prepare_launch_transaction
     reset_nodes "${QUORUM_VALIDATORS[@]}"
     echo "Core quorum validators have been wiped and redeployed, and the deterministic block-1 transaction envelope has been bundled. Leave the three Linux bootnodes online."
     ;;
   launch-quorum)
+    prepare_launch_transaction
+    deploy_nodes "${QUORUM_VALIDATORS[@]}"
     show_status
     bootstrap_nodes "${QUORUM_VALIDATORS[@]}"
     echo "Launched validator1, validator2, and validator4 only. Wait for 20 consecutive blocks before expanding."
@@ -115,11 +128,7 @@ case "${1:-}" in
     bootstrap_nodes "${SUPPORT_NODES[@]}"
     ;;
   launch-transaction)
-    if [[ ! -x "$TX_HELPER" ]]; then
-      echo "Launch transaction helper not found or not executable: $TX_HELPER" >&2
-      exit 1
-    fi
-    "$TX_HELPER"
+    prepare_launch_transaction
     ;;
   status)
     show_status

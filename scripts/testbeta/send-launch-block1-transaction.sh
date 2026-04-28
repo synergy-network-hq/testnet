@@ -16,9 +16,7 @@ NWEI_PER_SNRG=1000000000
 DEFAULT_OUTPUTS=(
   "$ROOT_DIR/node-control-panel/testbeta/runtime/installers/GenVal-01/config/launch-block1-transaction.json"
   "$ROOT_DIR/node-control-panel/testbeta/runtime/installers/GenVal-02/config/launch-block1-transaction.json"
-  "$ROOT_DIR/node-control-panel/testbeta/runtime/installers/GenVal-03/config/launch-block1-transaction.json"
   "$ROOT_DIR/node-control-panel/testbeta/runtime/installers/GenVal-04/config/launch-block1-transaction.json"
-  "$ROOT_DIR/node-control-panel/testbeta/runtime/installers/GenVal-05/config/launch-block1-transaction.json"
 )
 
 require_command() {
