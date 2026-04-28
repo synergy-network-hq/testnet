@@ -48,6 +48,7 @@ const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
 const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
 const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
 const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
+const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 512;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -582,6 +583,25 @@ fn status_sync_batch(block_height: u64, local_height: u64) -> Option<u32> {
     })
 }
 
+fn block_sync_request_range(
+    local_height: u64,
+    remote_height: u64,
+    desired_new_blocks: u32,
+) -> Option<(u64, u32)> {
+    if remote_height <= local_height || desired_new_blocks == 0 {
+        return None;
+    }
+
+    let request_start = local_height.saturating_sub(BLOCK_SYNC_RECONCILIATION_LOOKBACK);
+    let target_height = remote_height.min(local_height.saturating_add(desired_new_blocks as u64));
+    let request_count = target_height
+        .saturating_sub(request_start)
+        .saturating_add(1)
+        .min(u32::MAX as u64) as u32;
+
+    Some((request_start, request_count.max(1)))
+}
+
 fn handle_status_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
@@ -688,13 +708,13 @@ fn handle_status_message(
         chain.last().map(|block| block.block_index).unwrap_or(0)
     };
     if let Some(batch) = status_sync_batch(block_height, local_height) {
+        let Some((request_start, request_count)) =
+            block_sync_request_range(local_height, block_height, batch)
+        else {
+            return;
+        };
         let mut peers = connected_peers.lock().unwrap();
-        request_blocks_from_connected_peer(
-            &mut peers,
-            peer_address,
-            local_height.saturating_add(1),
-            batch,
-        );
+        request_blocks_from_connected_peer(&mut peers, peer_address, request_start, request_count);
     }
 }
 
@@ -1926,7 +1946,7 @@ impl P2PNetwork {
                         }
                         .saturating_sub(1)
                         .max(1);
-                    let (from_height, best_peer_height) = {
+                    let (local_height, best_peer_height) = {
                         let chain = network.blockchain.lock().unwrap();
                         let local = chain.last().map(|b| b.block_index).unwrap_or(0);
                         let supported_best = network.get_best_validator_peer_height_with_support(
@@ -1942,9 +1962,9 @@ impl P2PNetwork {
                                 .max()
                                 .unwrap_or(0)
                         };
-                        (local + 1, best)
+                        (local, best)
                     };
-                    let behind = best_peer_height.saturating_sub(from_height.saturating_sub(1));
+                    let behind = best_peer_height.saturating_sub(local_height);
                     // Request larger batches when far behind.
                     let batch = if behind > 5000 {
                         2000
@@ -1953,7 +1973,11 @@ impl P2PNetwork {
                     } else {
                         500
                     };
-                    network.request_blocks(from_height, batch);
+                    if let Some((request_start, request_count)) =
+                        block_sync_request_range(local_height, best_peer_height, batch)
+                    {
+                        network.request_blocks(request_start, request_count);
+                    }
                 }
 
                 // Keep connections alive.
@@ -4003,8 +4027,8 @@ fn dial_peer_async(
 mod tests {
     use super::{
         apply_block_batch, background_poll_interval, best_connected_validator_height,
-        bypasses_shared_message_queue, cache_peer_state, canonical_genesis_hash,
-        collect_known_peer_addresses, connected_validator_participants,
+        block_sync_request_range, bypasses_shared_message_queue, cache_peer_state,
+        canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
         dispatch_peer_message, ensure_peer_status_allows_chain_data, handle_status_message,
         hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
@@ -4747,6 +4771,20 @@ mod tests {
     }
 
     #[test]
+    fn block_sync_request_range_includes_reconciliation_overlap() {
+        assert_eq!(block_sync_request_range(10, 10, 500), None);
+        assert_eq!(block_sync_request_range(0, 12, 500), Some((0, 13)));
+        assert_eq!(
+            block_sync_request_range(20_657, 20_735, 500),
+            Some((20_145, 591))
+        );
+        assert_eq!(
+            block_sync_request_range(10_000, 20_000, 2_000),
+            Some((9_488, 2_513))
+        );
+    }
+
+    #[test]
     fn vote_messages_bypass_the_shared_message_queue() {
         let vote = Vote {
             validator_address: "synv1peer-a".to_string(),
@@ -4977,8 +5015,8 @@ mod tests {
 
         match receive_message(&mut server).expect("status handling should request blocks") {
             NetworkMessage::GetBlocks { from_height, count } => {
-                assert_eq!(from_height, 1);
-                assert_eq!(count, IMMEDIATE_STATUS_SYNC_BATCH);
+                assert_eq!(from_height, 0);
+                assert_eq!(count, 13);
             }
             other => panic!("expected GetBlocks request, got {other:?}"),
         }
