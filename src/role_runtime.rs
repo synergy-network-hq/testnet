@@ -361,6 +361,19 @@ fn should_start_consensus(config: &NodeConfig, profile: Option<&RoleProfile>) ->
     }
 }
 
+fn should_require_state_sync_before_join(
+    config: &NodeConfig,
+    profile: Option<&RoleProfile>,
+) -> bool {
+    if !config.validator.state_sync_before_join {
+        return false;
+    }
+
+    matches!(profile.map(|value| value.role), Some(NodeRole::Validator))
+        && config.node.auto_register_validator
+        && !config.node.bootstrap_only
+}
+
 fn normalize_expected_profile(
     config: &mut NodeConfig,
     expected_profile: Option<&'static RoleProfile>,
@@ -1536,29 +1549,51 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
 
             let reset_flag_path = "data/.reset_flag";
             let should_sync = !std::path::Path::new(reset_flag_path).exists();
+            let sync_required_before_join =
+                should_require_state_sync_before_join(&config, role_profile);
 
             if !should_start_sync(&config, role_profile) {
                 info!("main", "Chain sync disabled for this node profile");
             } else if should_sync {
-                let sync_result = {
-                    let mut manager = SYNC_MANAGER.lock().unwrap();
-                    if let Some(network) = &p2p_network {
-                        manager.attach_network(Arc::clone(network));
-                    }
-                    manager.start_sync()
-                };
-                match sync_result {
-                    Ok(_) => {
-                        let current_height = blockchain
-                            .lock()
-                            .unwrap()
-                            .last()
-                            .map(|b| b.block_index)
-                            .unwrap_or(0);
-                        info!("main", "Sync complete", "height" => current_height);
-                    }
-                    Err(err) => {
-                        eprintln!("Warning: Sync failed before consensus: {}", err);
+                let mut sync_attempt = 1_u64;
+                loop {
+                    let sync_result = {
+                        let mut manager = SYNC_MANAGER.lock().unwrap();
+                        if let Some(network) = &p2p_network {
+                            manager.attach_network(Arc::clone(network));
+                        }
+                        manager.start_sync()
+                    };
+                    match sync_result {
+                        Ok(_) => {
+                            let current_height = blockchain
+                                .lock()
+                                .unwrap()
+                                .last()
+                                .map(|b| b.block_index)
+                                .unwrap_or(0);
+                            info!("main", "Sync complete", "height" => current_height);
+                            break;
+                        }
+                        Err(err) if sync_required_before_join => {
+                            let retry_delay_secs = std::cmp::min(30, sync_attempt * 5);
+                            eprintln!(
+                                "State sync before validator join failed on attempt {}; retrying in {} s: {}",
+                                sync_attempt, retry_delay_secs, err
+                            );
+                            info!(
+                                "main",
+                                "State sync before validator join is required; delaying self-registration and consensus",
+                                "attempt" => sync_attempt,
+                                "retry_delay_secs" => retry_delay_secs
+                            );
+                            thread::sleep(Duration::from_secs(retry_delay_secs));
+                            sync_attempt = sync_attempt.saturating_add(1);
+                        }
+                        Err(err) => {
+                            eprintln!("Warning: Sync failed before consensus: {}", err);
+                            break;
+                        }
                     }
                 }
             } else {
@@ -2266,6 +2301,30 @@ mod tests {
         assert!(role_profile_requires_p2p(profile));
         assert!(should_start_p2p(&config, Some(profile)));
         assert!(should_start_sync(&config, Some(profile)));
+    }
+
+    #[test]
+    fn public_auto_register_validator_requires_state_sync_before_join() {
+        let mut config = NodeConfig::default();
+        config.validator.state_sync_before_join = true;
+        config.node.auto_register_validator = true;
+
+        assert!(should_require_state_sync_before_join(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn static_genesis_validator_does_not_block_on_public_join_sync_gate() {
+        let mut config = NodeConfig::default();
+        config.validator.state_sync_before_join = true;
+        config.node.auto_register_validator = false;
+
+        assert!(!should_require_state_sync_before_join(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
     }
 
     #[test]

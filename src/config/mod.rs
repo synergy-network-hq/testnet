@@ -22,6 +22,8 @@ pub struct NodeConfig {
     #[serde(default)]
     pub role: RoleConfig,
     #[serde(default)]
+    pub validator: ValidatorConfig,
+    #[serde(default)]
     pub telemetry: TelemetryConfig,
 }
 
@@ -203,6 +205,16 @@ pub struct NodeSettings {
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default)]
+pub struct ValidatorConfig {
+    #[serde(default)]
+    pub participation: String,
+    #[serde(default)]
+    pub verify_quorum_certificates: bool,
+    #[serde(default)]
+    pub state_sync_before_join: bool,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone, Default)]
 pub struct IdentityConfig {
     #[serde(default)]
     pub node_id: String,
@@ -342,6 +354,7 @@ impl Default for NodeConfig {
             node: NodeSettings::default(),
             identity: IdentityConfig::default(),
             role: RoleConfig::default(),
+            validator: ValidatorConfig::default(),
             telemetry: TelemetryConfig::default(),
         }
     }
@@ -458,6 +471,7 @@ fn merge_configs(mut base: NodeConfig, override_config: NodeConfig) -> NodeConfi
     base.node = override_config.node;
     base.identity = override_config.identity;
     base.role = override_config.role;
+    base.validator = override_config.validator;
     base.telemetry = override_config.telemetry;
     base
 }
@@ -661,6 +675,15 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
         match normalized.as_str() {
             "1" | "true" | "yes" | "on" => config.node.auto_register_validator = true,
             "0" | "false" | "no" | "off" => config.node.auto_register_validator = false,
+            _ => {}
+        }
+    }
+
+    if let Ok(val) = env::var("SYNERGY_VALIDATOR_STATE_SYNC_BEFORE_JOIN") {
+        let normalized = val.trim().to_ascii_lowercase();
+        match normalized.as_str() {
+            "1" | "true" | "yes" | "on" => config.validator.state_sync_before_join = true,
+            "0" | "false" | "no" | "off" => config.validator.state_sync_before_join = false,
             _ => {}
         }
     }
@@ -1008,6 +1031,20 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
 
     if let Some(services) = get_string_array(raw, &["role", "services"]) {
         config.role.services = services;
+    }
+
+    if let Some(participation) = get_string(raw, &["validator", "participation"]) {
+        config.validator.participation = participation;
+    }
+
+    if let Some(verify_quorum_certificates) =
+        get_bool(raw, &["validator", "verify_quorum_certificates"])
+    {
+        config.validator.verify_quorum_certificates = verify_quorum_certificates;
+    }
+
+    if let Some(state_sync_before_join) = get_bool(raw, &["validator", "state_sync_before_join"]) {
+        config.validator.state_sync_before_join = state_sync_before_join;
     }
 }
 
@@ -1513,6 +1550,22 @@ external_addr = "genesisval1.synergynode.xyz:5680"
             config.p2p.discovery_public_address,
             "genesisval1.synergynode.xyz:5680"
         );
+    }
+
+    #[test]
+    fn parses_validator_state_sync_before_join() {
+        let content = r#"
+[validator]
+participation = "active"
+verify_quorum_certificates = true
+state_sync_before_join = true
+"#;
+
+        let config = parse_node_config_content(content, None).expect("config should parse");
+
+        assert_eq!(config.validator.participation, "active");
+        assert!(config.validator.verify_quorum_certificates);
+        assert!(config.validator.state_sync_before_join);
     }
 
     #[test]
