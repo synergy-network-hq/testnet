@@ -925,6 +925,26 @@ mod tests {
     }
 
     #[test]
+    fn reorganize_clusters_splits_ten_validators_into_two_clusters() {
+        let registry = active_registry(10);
+        let mut cluster_sizes: Vec<usize> = registry
+            .clusters
+            .values()
+            .map(|cluster| cluster.validators.len())
+            .collect();
+        cluster_sizes.sort_unstable();
+
+        assert_eq!(registry.clusters.len(), 2);
+        assert_eq!(
+            cluster_sizes,
+            vec![
+                TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
+                TESTNET_BETA_VALIDATOR_CLUSTER_SIZE
+            ]
+        );
+    }
+
+    #[test]
     fn reorganize_clusters_adds_a_new_cluster_every_five_validators() {
         let registry = active_registry(16);
         let mut cluster_sizes: Vec<usize> = registry
