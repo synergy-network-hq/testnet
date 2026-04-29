@@ -23,6 +23,8 @@ use hex;
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -105,6 +107,12 @@ lazy_static::lazy_static! {
         Arc::new(Mutex::new((0, Vec::new(), 0, Vec::new()))); // (epoch, top_k_validators, current_index, candidate_set)
     static ref EPHEMERAL_LEADER_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    static ref PROPOSAL_CACHE_LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+}
+
+#[cfg(test)]
+lazy_static::lazy_static! {
+    static ref TEST_PROPOSAL_CACHE_DIR: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
 }
 
 impl ProofOfSynergy {
@@ -828,6 +836,7 @@ impl ProofOfSynergy {
                                     chain_guard.add_block(new_block.clone());
                                     chain_guard.save_to_file(&get_chain_path());
                                 }
+                                Self::prune_cached_block_proposals(new_block.block_index);
 
                                 // Apply state transitions for included transactions (token transfers, staking, etc.)
                                 let token_manager = TOKEN_MANAGER.clone();
@@ -1520,6 +1529,17 @@ impl ProofOfSynergy {
         transactions: Vec<crate::transaction::Transaction>,
         pqc_manager: &Arc<Mutex<PQCManager>>,
     ) -> Block {
+        if let Some(block) = Self::load_cached_block_proposal(previous_block, leader) {
+            info!(
+                "consensus",
+                "Reusing cached block proposal for retry",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "validator" => leader.address.clone()
+            );
+            return block;
+        }
+
         // Create block and attach a real FN-DSA signature over the block hash.
         let mut block = Block::new(
             previous_block.block_index + 1,
@@ -1539,7 +1559,134 @@ impl ProofOfSynergy {
             block.block_signature_algorithm = "fndsa".to_string();
         }
 
+        if let Err(error) = Self::persist_cached_block_proposal(&block) {
+            warn!(
+                "consensus",
+                "Failed to persist block proposal for retry",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => error.to_string()
+            );
+        }
+
         block
+    }
+
+    fn proposal_cache_dir() -> PathBuf {
+        #[cfg(test)]
+        if let Some(path) = TEST_PROPOSAL_CACHE_DIR
+            .lock()
+            .expect("test proposal cache lock should succeed")
+            .clone()
+        {
+            return path;
+        }
+
+        crate::utils::resolve_data_path("data/consensus_proposals")
+    }
+
+    fn proposal_cache_key(block_index: u64, previous_hash: &str, leader_address: &str) -> String {
+        let input = format!("{block_index}:{previous_hash}:{leader_address}");
+        blake3::hash(input.as_bytes()).to_hex().to_string()
+    }
+
+    fn proposal_cache_path(block_index: u64, previous_hash: &str, leader_address: &str) -> PathBuf {
+        Self::proposal_cache_dir().join(format!(
+            "{}.json",
+            Self::proposal_cache_key(block_index, previous_hash, leader_address)
+        ))
+    }
+
+    fn load_cached_block_proposal(previous_block: &Block, leader: &Validator) -> Option<Block> {
+        let _guard = PROPOSAL_CACHE_LOCK
+            .lock()
+            .expect("proposal cache lock should succeed");
+        let path = Self::proposal_cache_path(
+            previous_block.block_index + 1,
+            &previous_block.hash,
+            &leader.address,
+        );
+        let contents = fs::read_to_string(path).ok()?;
+        let block = serde_json::from_str::<Block>(&contents).ok()?;
+        Self::block_matches_proposal_context(&block, previous_block, leader).then_some(block)
+    }
+
+    fn persist_cached_block_proposal(block: &Block) -> Result<(), std::io::Error> {
+        let _guard = PROPOSAL_CACHE_LOCK
+            .lock()
+            .expect("proposal cache lock should succeed");
+        let dir = Self::proposal_cache_dir();
+        fs::create_dir_all(&dir)?;
+        let path = dir.join(format!(
+            "{}.json",
+            Self::proposal_cache_key(block.block_index, &block.previous_hash, &block.validator_id)
+        ));
+        let tmp_path = path.with_extension("json.tmp");
+        let payload = serde_json::to_vec_pretty(block)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
+        fs::write(&tmp_path, payload)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&tmp_path, fs::Permissions::from_mode(0o600))?;
+        }
+        fs::rename(tmp_path, path)?;
+        Ok(())
+    }
+
+    fn prune_cached_block_proposals(committed_height: u64) {
+        let _guard = PROPOSAL_CACHE_LOCK
+            .lock()
+            .expect("proposal cache lock should succeed");
+        let dir = Self::proposal_cache_dir();
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                continue;
+            }
+            let should_remove = fs::read_to_string(&path)
+                .ok()
+                .and_then(|contents| serde_json::from_str::<Block>(&contents).ok())
+                .map(|block| block.block_index <= committed_height)
+                .unwrap_or(false);
+            if should_remove {
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
+
+    fn block_matches_proposal_context(
+        block: &Block,
+        previous_block: &Block,
+        leader: &Validator,
+    ) -> bool {
+        if block.block_index != previous_block.block_index + 1
+            || block.previous_hash != previous_block.hash
+            || block.validator_id != leader.address
+        {
+            return false;
+        }
+
+        let recalculated = Block::new_with_timestamp(
+            block.block_index,
+            block.transactions.clone(),
+            block.previous_hash.clone(),
+            block.validator_id.clone(),
+            block.nonce,
+            block.timestamp,
+        );
+        recalculated.hash == block.hash && recalculated.transactions_root == block.transactions_root
+    }
+
+    #[cfg(test)]
+    fn set_test_proposal_cache_dir(path: Option<PathBuf>) {
+        *TEST_PROPOSAL_CACHE_DIR
+            .lock()
+            .expect("test proposal cache lock should succeed") = path;
     }
 
     fn execute_dual_quorum_consensus(
@@ -1886,7 +2033,27 @@ impl ProofOfSynergy {
 mod tests {
     use super::*;
     use crate::block::{Block, BlockChain};
+    use crate::transaction::Transaction;
     use crate::validator::ValidatorStatus;
+    use std::sync::OnceLock;
+
+    fn proposal_cache_test_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn unique_proposal_cache_dir(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "synergy-{test_name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).expect("test proposal cache dir should be created");
+        dir
+    }
 
     fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {
         let manager = Arc::new(ValidatorManager::new());
@@ -2252,5 +2419,63 @@ mod tests {
             ]
         );
         assert!(!cached_reduced.1.iter().any(|address| address == "synv1c"));
+    }
+
+    #[test]
+    fn leader_reuses_cached_proposal_for_same_height_retry() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("proposal cache test lock should succeed");
+        let cache_dir = unique_proposal_cache_dir("leader-retry");
+        ProofOfSynergy::set_test_proposal_cache_dir(Some(cache_dir.clone()));
+
+        let previous = Block::new_with_timestamp(
+            772,
+            vec![],
+            "previous-parent".to_string(),
+            "synv1previous".to_string(),
+            772,
+            1_777_426_405,
+        );
+        let mut leader = Validator::new(
+            "synv1leader-retry".to_string(),
+            "leader-pubkey".to_string(),
+            "Leader Retry".to_string(),
+            1_000,
+        );
+        leader.status = ValidatorStatus::Active;
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+
+        let first = ProofOfSynergy::create_block_proposal(&previous, &leader, vec![], &pqc_manager);
+        let late_transaction = Transaction::new(
+            "synw1sender".to_string(),
+            "synw1receiver".to_string(),
+            1,
+            0,
+            vec![1, 2, 3],
+            1,
+            21_000,
+            Some("late-mempool-transaction".to_string()),
+            "test".to_string(),
+        );
+        let retry = ProofOfSynergy::create_block_proposal(
+            &previous,
+            &leader,
+            vec![late_transaction],
+            &pqc_manager,
+        );
+
+        assert_eq!(retry.hash, first.hash);
+        assert_eq!(retry.transactions.len(), first.transactions.len());
+        assert!(retry.transactions.is_empty());
+
+        ProofOfSynergy::prune_cached_block_proposals(first.block_index);
+        assert!(fs::read_dir(&cache_dir)
+            .expect("cache dir should remain readable")
+            .next()
+            .is_none());
+
+        ProofOfSynergy::set_test_proposal_cache_dir(None);
+        let _ = fs::remove_dir_all(cache_dir);
     }
 }
