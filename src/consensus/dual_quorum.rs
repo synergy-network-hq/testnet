@@ -10,6 +10,11 @@ use crate::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
 use std::collections::{BTreeSet, HashMap, HashSet};
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -24,6 +29,12 @@ lazy_static::lazy_static! {
         Arc::new(Mutex::new(HashMap::new()));
     static ref PROCESSED_EQUIVOCATION_EVIDENCE: Arc<Mutex<BTreeSet<String>>> =
         Arc::new(Mutex::new(BTreeSet::new()));
+    static ref LOCAL_VOTE_LOCK_FILE_MUTEX: Mutex<()> = Mutex::new(());
+}
+
+#[cfg(test)]
+lazy_static::lazy_static! {
+    static ref TEST_LOCAL_VOTE_LOCK_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +61,19 @@ pub struct VoteEquivocationEvidence {
     pub first_vote: Vote,
     pub conflicting_vote: Vote,
     pub detected_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct LocalVoteLock {
+    validator_address: String,
+    block_hash: String,
+    block_index: u64,
+    epoch_number: u64,
+    first_round_number: u64,
+    latest_round_number: u64,
+    proposer: String,
+    created_at: u64,
+    updated_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -200,6 +224,12 @@ impl DualQuorumConsensus {
             ));
         }
 
+        Self::register_local_vote_intent(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+        )?;
         let local_vote = Self::create_vote_for_validator(
             &local_validator_address,
             proposed_block,
@@ -306,6 +336,12 @@ impl DualQuorumConsensus {
             ));
         }
 
+        Self::register_local_vote_intent(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+        )?;
         let vote = Self::create_vote_for_validator(
             &local_validator_address,
             proposed_block,
@@ -942,13 +978,131 @@ impl DualQuorumConsensus {
         )
     }
 
+    fn local_vote_lock_key(validator_address: &str, epoch_number: u64, block_index: u64) -> String {
+        format!("{epoch_number}:{block_index}:{validator_address}")
+    }
+
+    fn local_vote_lock_path() -> PathBuf {
+        #[cfg(test)]
+        {
+            if let Ok(path) = TEST_LOCAL_VOTE_LOCK_PATH.lock() {
+                if let Some(path) = path.clone() {
+                    return path;
+                }
+            }
+        }
+
+        crate::utils::resolve_data_path("data/consensus_vote_locks.json")
+    }
+
+    fn load_local_vote_locks_unlocked() -> Result<HashMap<String, LocalVoteLock>, String> {
+        let path = Self::local_vote_lock_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let data = fs::read(&path)
+            .map_err(|err| format!("failed to read local vote lock file {:?}: {err}", path))?;
+        if data.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        serde_json::from_slice::<HashMap<String, LocalVoteLock>>(&data)
+            .map_err(|err| format!("failed to parse local vote lock file {:?}: {err}", path))
+    }
+
+    fn persist_local_vote_locks_unlocked(
+        locks: &HashMap<String, LocalVoteLock>,
+    ) -> Result<(), String> {
+        let path = Self::local_vote_lock_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create local vote lock directory: {err}"))?;
+        }
+
+        let tmp_path = path.with_extension("json.tmp");
+        let serialized = serde_json::to_vec_pretty(locks)
+            .map_err(|err| format!("failed to encode local vote locks: {err}"))?;
+
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&tmp_path)
+            .map_err(|err| format!("failed to open local vote lock temp file: {err}"))?;
+        file.write_all(&serialized)
+            .map_err(|err| format!("failed to write local vote lock temp file: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync local vote lock temp file: {err}"))?;
+        drop(file);
+
+        fs::rename(&tmp_path, &path)
+            .map_err(|err| format!("failed to replace local vote lock file: {err}"))
+    }
+
+    fn register_local_vote_intent(
+        validator_address: &str,
+        proposed_block: &Block,
+        epoch_number: u64,
+        round_number: u64,
+    ) -> Result<(), String> {
+        let _guard = LOCAL_VOTE_LOCK_FILE_MUTEX
+            .lock()
+            .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
+        let mut locks = Self::load_local_vote_locks_unlocked()?;
+        let key =
+            Self::local_vote_lock_key(validator_address, epoch_number, proposed_block.block_index);
+        let now = Self::current_timestamp();
+
+        if let Some(existing) = locks.get_mut(&key) {
+            if existing.block_hash == proposed_block.hash {
+                existing.latest_round_number = existing.latest_round_number.max(round_number);
+                existing.updated_at = now;
+                Self::persist_local_vote_locks_unlocked(&locks)?;
+                return Ok(());
+            }
+
+            return Err(format!(
+                "already locally voted for different block at height {}: locked_hash={}, locked_proposer={}, locked_epoch={}, locked_first_round={}, locked_latest_round={}, requested_hash={}, requested_proposer={}, requested_epoch={}, requested_round={}",
+                proposed_block.block_index,
+                existing.block_hash,
+                existing.proposer,
+                existing.epoch_number,
+                existing.first_round_number,
+                existing.latest_round_number,
+                proposed_block.hash,
+                proposed_block.validator_id,
+                epoch_number,
+                round_number
+            ));
+        }
+
+        locks.insert(
+            key,
+            LocalVoteLock {
+                validator_address: validator_address.to_string(),
+                block_hash: proposed_block.hash.clone(),
+                block_index: proposed_block.block_index,
+                epoch_number,
+                first_round_number: round_number,
+                latest_round_number: round_number,
+                proposer: proposed_block.validator_id.clone(),
+                created_at: now,
+                updated_at: now,
+            },
+        );
+
+        Self::persist_local_vote_locks_unlocked(&locks)
+    }
+
     fn vote_observation_key(
         validator_address: &str,
         epoch_number: u64,
         block_index: u64,
-        round_number: u64,
+        _round_number: u64,
     ) -> String {
-        format!("{epoch_number}:{block_index}:{round_number}:{validator_address}")
+        format!("{epoch_number}:{block_index}:{validator_address}")
     }
 
     fn observe_vote(
@@ -1198,6 +1352,13 @@ impl DualQuorumConsensus {
             processed.clear();
         }
     }
+
+    #[cfg(test)]
+    fn set_test_local_vote_lock_path(path: Option<PathBuf>) {
+        if let Ok(mut test_path) = TEST_LOCAL_VOTE_LOCK_PATH.lock() {
+            *test_path = path;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1205,6 +1366,8 @@ mod tests {
     use super::*;
     use crate::crypto::pqc::PQCAlgorithm;
     use crate::validator::{ValidatorRegistration, ValidatorStatus};
+    use std::fs;
+    use std::path::PathBuf;
 
     fn approved_validator_manager(addresses: &[&str]) -> Arc<ValidatorManager> {
         let manager = Arc::new(ValidatorManager::new());
@@ -1246,6 +1409,17 @@ mod tests {
         block.block_signature = signature.signature_data;
         block.block_signature_algorithm = "fndsa".to_string();
         block
+    }
+
+    fn temp_vote_lock_path(test_name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be valid")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!("synergy-{test_name}-{unique}"))
+            .join("data")
+            .join("consensus_vote_locks.json")
     }
 
     #[test]
@@ -1292,20 +1466,19 @@ mod tests {
     }
 
     #[test]
-    fn validator_can_vote_again_in_a_new_round_for_same_height() {
+    fn validator_can_repeat_same_block_vote_in_new_round() {
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
-        let first_block = signed_block(9, 1, "validator1");
-        let next_round_block = signed_block(9, 2, "validator1");
+        let block = signed_block(9, 1, "validator1");
 
         let first_vote =
-            DualQuorumConsensus::create_vote_for_validator("validator2", &first_block, 21, 1)
+            DualQuorumConsensus::create_vote_for_validator("validator2", &block, 21, 1)
                 .expect("round one vote should be created");
         assert!(DualQuorumConsensus::register_vote_observation(&first_vote).is_none());
 
         let next_round_vote =
-            DualQuorumConsensus::create_vote_for_validator("validator2", &next_round_block, 21, 2)
+            DualQuorumConsensus::create_vote_for_validator("validator2", &block, 21, 2)
                 .expect("round two vote should be created");
         assert!(DualQuorumConsensus::register_vote_observation(&next_round_vote).is_none());
 
@@ -1314,6 +1487,87 @@ mod tests {
             .expect("validator should still exist");
         assert_eq!(validator.status, ValidatorStatus::Active);
         assert_eq!(validator.double_signs, 0);
+    }
+
+    #[test]
+    fn validator_conflicting_vote_in_later_round_is_equivocation() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            1,
+            1,
+            8,
+            5,
+        );
+        let first_block = signed_block(10, 1, "validator1");
+        let conflicting_block = signed_block(10, 2, "validator1");
+
+        let first_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &first_block, 22, 1)
+                .expect("round one vote should be created");
+        assert!(DualQuorumConsensus::register_vote_observation(&first_vote).is_none());
+
+        let conflicting_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 22, 2)
+                .expect("round two vote should be created");
+        let evidence = DualQuorumConsensus::register_vote_observation(&conflicting_vote)
+            .expect("conflicting later-round vote should emit equivocation evidence");
+        assert_eq!(evidence.first_vote.round_number, 1);
+        assert_eq!(evidence.conflicting_vote.round_number, 2);
+
+        consensus.apply_recorded_equivocations();
+
+        let validator = validator_manager
+            .get_validator("validator2")
+            .expect("validator should still exist");
+        assert_eq!(validator.status, ValidatorStatus::Slashed);
+        assert_eq!(validator.double_signs, 1);
+        assert_eq!(validator.equivocation_evidence_count, 1);
+    }
+
+    #[test]
+    fn local_vote_intent_persists_same_height_lock_before_signing() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = temp_vote_lock_path("local-vote-intent");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let block = signed_block(13, 1, "validator1");
+        let conflicting_block = signed_block(13, 2, "validator1");
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &block, 40, 1)
+            .expect("first local vote intent should persist");
+        DualQuorumConsensus::register_local_vote_intent("validator2", &block, 40, 2)
+            .expect("same block hash may be repeated in a later round");
+
+        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
+            .expect("persisted vote locks should load");
+        let key = DualQuorumConsensus::local_vote_lock_key("validator2", 40, 13);
+        assert_eq!(locks[&key].block_hash, block.hash);
+        assert_eq!(locks[&key].first_round_number, 1);
+        assert_eq!(locks[&key].latest_round_number, 2);
+
+        let error = DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            3,
+        )
+        .expect_err("conflicting local vote intent should be rejected");
+        assert!(
+            error.contains("already locally voted for different block"),
+            "unexpected local vote lock error: {error}"
+        );
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]
