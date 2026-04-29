@@ -9,7 +9,7 @@ use crate::validator::{
 use crate::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -88,6 +88,7 @@ pub struct DualQuorumConsensus {
     pub current_round_by_height: HashMap<u64, u64>,
     pub votes: HashMap<String, Vec<Vote>>, // block_hash -> votes
     pub quorum_certificates: HashMap<String, QuorumCertificate>, // block_hash -> QC
+    verified_vote_signatures: Mutex<HashSet<String>>,
 }
 
 impl DualQuorumConsensus {
@@ -114,6 +115,7 @@ impl DualQuorumConsensus {
             current_round_by_height: HashMap::new(),
             votes: HashMap::new(),
             quorum_certificates: HashMap::new(),
+            verified_vote_signatures: Mutex::new(HashSet::new()),
         }
     }
 
@@ -385,6 +387,13 @@ impl DualQuorumConsensus {
         round_number: u64,
         pending_votes: Vec<Vote>,
     ) {
+        let mut seen_validators = votes
+            .iter()
+            .map(|vote| vote.validator_address.clone())
+            .collect::<BTreeSet<_>>();
+        let mut cached_votes = Vec::new();
+        let mut uncached_votes = Vec::new();
+
         for vote in pending_votes {
             if vote.block_hash != block_hash
                 || vote.epoch_number != epoch_number
@@ -415,13 +424,40 @@ impl DualQuorumConsensus {
             if !self.vote_is_eligible(&vote) {
                 continue;
             }
-            if votes
-                .iter()
-                .any(|existing| existing.validator_address == vote.validator_address)
-            {
+            if !seen_validators.insert(vote.validator_address.clone()) {
                 continue;
             }
-            if let Err(error) = self.verify_vote_signature(&vote) {
+
+            let cache_key = Self::vote_signature_cache_key(&vote);
+            if self.vote_signature_cache_contains(&cache_key) {
+                cached_votes.push(vote);
+            } else {
+                uncached_votes.push((vote, cache_key));
+            }
+        }
+
+        votes.extend(cached_votes);
+
+        let mut handles = Vec::new();
+        for (vote, cache_key) in uncached_votes {
+            handles.push(Self::spawn_vote_signature_verification_with_key(
+                vote, cache_key,
+            ));
+        }
+
+        for handle in handles {
+            let Ok((vote, cache_key, verification)) = handle.join() else {
+                warn!(
+                    "consensus",
+                    "Remote vote verification worker panicked",
+                    "block_hash" => block_hash.to_string(),
+                    "epoch" => epoch_number,
+                    "round" => round_number
+                );
+                continue;
+            };
+
+            if let Err(error) = verification {
                 warn!(
                     "consensus",
                     "Discarding invalid remote vote",
@@ -433,8 +469,20 @@ impl DualQuorumConsensus {
                 );
                 continue;
             }
+
+            self.cache_verified_vote_signature(cache_key);
             votes.push(vote);
         }
+    }
+
+    fn spawn_vote_signature_verification_with_key(
+        vote: Vote,
+        cache_key: String,
+    ) -> thread::JoinHandle<(Vote, String, Result<(), String>)> {
+        thread::spawn(move || {
+            let verification = Self::verify_vote_signature_uncached(&vote);
+            (vote, cache_key, verification)
+        })
     }
 
     fn check_quorums_and_commit(
@@ -810,6 +858,17 @@ impl DualQuorumConsensus {
     }
 
     fn verify_vote_signature(&self, vote: &Vote) -> Result<(), String> {
+        let cache_key = Self::vote_signature_cache_key(vote);
+        if self.vote_signature_cache_contains(&cache_key) {
+            return Ok(());
+        }
+
+        Self::verify_vote_signature_uncached(vote)?;
+        self.cache_verified_vote_signature(cache_key);
+        Ok(())
+    }
+
+    fn verify_vote_signature_uncached(vote: &Vote) -> Result<(), String> {
         let message = Self::vote_signature_payload(
             &vote.validator_address,
             &vote.block_hash,
@@ -824,12 +883,10 @@ impl DualQuorumConsensus {
             created_at: vote.timestamp,
         };
 
-        let valid = {
-            let pqc_manager = self.pqc_manager.lock().unwrap();
-            pqc_manager
-                .verify(&public_key, &vote.signature, message.as_bytes())
-                .map_err(|err| format!("vote signature verify error: {err}"))?
-        };
+        let pqc_manager = PQCManager::new();
+        let valid = pqc_manager
+            .verify(&public_key, &vote.signature, message.as_bytes())
+            .map_err(|err| format!("vote signature verify error: {err}"))?;
 
         if valid {
             Ok(())
@@ -839,6 +896,37 @@ impl DualQuorumConsensus {
                 vote.validator_address
             ))
         }
+    }
+
+    fn vote_signature_cache_contains(&self, cache_key: &str) -> bool {
+        self.verified_vote_signatures
+            .lock()
+            .map(|cache| cache.contains(cache_key))
+            .unwrap_or(false)
+    }
+
+    fn cache_verified_vote_signature(&self, cache_key: String) {
+        if let Ok(mut cache) = self.verified_vote_signatures.lock() {
+            if cache.len() > 8192 {
+                cache.clear();
+            }
+            cache.insert(cache_key);
+        }
+    }
+
+    fn vote_signature_cache_key(vote: &Vote) -> String {
+        let mut hasher = Sha3_512::new();
+        hasher.update(vote.validator_address.as_bytes());
+        hasher.update(vote.block_hash.as_bytes());
+        hasher.update(vote.block_index.to_be_bytes());
+        hasher.update(vote.epoch_number.to_be_bytes());
+        hasher.update(vote.round_number.to_be_bytes());
+        hasher.update(format!("{:?}", vote.signature.algorithm).as_bytes());
+        hasher.update((vote.signer_public_key.len() as u64).to_be_bytes());
+        hasher.update(&vote.signer_public_key);
+        hasher.update((vote.signature.signature_data.len() as u64).to_be_bytes());
+        hasher.update(&vote.signature.signature_data);
+        hex::encode(hasher.finalize())
     }
 
     fn vote_signature_payload(
@@ -1226,6 +1314,92 @@ mod tests {
             .expect("validator should still exist");
         assert_eq!(validator.status, ValidatorStatus::Active);
         assert_eq!(validator.double_signs, 0);
+    }
+
+    #[test]
+    fn verified_vote_signature_cache_key_binds_signature_material() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            1,
+            1,
+            8,
+            5,
+        );
+
+        let block = signed_block(8, 1, "validator1");
+        let vote = DualQuorumConsensus::create_vote_for_validator("validator2", &block, 12, 1)
+            .expect("vote should be created");
+
+        consensus
+            .verify_vote_signature(&vote)
+            .expect("first verification should succeed");
+        let cache_key = DualQuorumConsensus::vote_signature_cache_key(&vote);
+        assert!(consensus
+            .verified_vote_signatures
+            .lock()
+            .expect("cache lock")
+            .contains(&cache_key));
+
+        let mut tampered_vote = vote.clone();
+        tampered_vote.signature.signature_data.push(0);
+        assert_ne!(
+            cache_key,
+            DualQuorumConsensus::vote_signature_cache_key(&tampered_vote)
+        );
+    }
+
+    #[test]
+    fn merge_remote_votes_accepts_verified_votes_and_caches_signatures() {
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let validator_manager =
+            approved_validator_manager(&["validator1", "validator2", "validator3", "validator4"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            1,
+            1,
+            8,
+            5,
+        );
+
+        let block = signed_block(9, 1, "validator1");
+        let local_vote =
+            DualQuorumConsensus::create_vote_for_validator("validator1", &block, 12, 1)
+                .expect("local vote should be created");
+        let remote_vote_a =
+            DualQuorumConsensus::create_vote_for_validator("validator2", &block, 12, 1)
+                .expect("remote vote should be created");
+        let remote_vote_b =
+            DualQuorumConsensus::create_vote_for_validator("validator3", &block, 12, 1)
+                .expect("remote vote should be created");
+
+        let expected_validators = ["validator1", "validator2", "validator3", "validator4"]
+            .into_iter()
+            .map(String::from)
+            .collect::<BTreeSet<_>>();
+        let remote_cache_key = DualQuorumConsensus::vote_signature_cache_key(&remote_vote_a);
+        let mut votes = vec![local_vote];
+
+        consensus.merge_remote_votes(
+            &mut votes,
+            &expected_validators,
+            &block.hash,
+            12,
+            1,
+            vec![remote_vote_a, remote_vote_b],
+        );
+
+        assert_eq!(votes.len(), 3);
+        assert!(consensus.vote_signature_cache_contains(&remote_cache_key));
     }
 
     #[test]

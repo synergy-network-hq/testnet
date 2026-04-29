@@ -2141,6 +2141,7 @@ fn send_vote_to_requester(
 }
 
 fn handle_vote_request_message(
+    blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
     config: &NodeConfig,
     peer_address: &str,
@@ -2157,6 +2158,22 @@ fn handle_vote_request_message(
             "epoch" => epoch_number,
             "round" => round_number
         );
+        return;
+    }
+
+    let local_tip = vote_request_local_tip(blockchain);
+    if let Err(error) = validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data) {
+        warn!(
+            "p2p",
+            "Refusing vote request",
+            "peer" => peer_address.to_string(),
+            "height" => block_data.block_index,
+            "epoch" => epoch_number,
+            "round" => round_number,
+            "error" => error
+        );
+
+        request_vote_request_parent_sync(local_tip, block_data.block_index);
         return;
     }
 
@@ -2222,6 +2239,70 @@ fn handle_vote_request_message(
             );
         }
     }
+}
+
+fn vote_request_local_tip(blockchain: &BlockchainArc) -> Option<(u64, String)> {
+    blockchain
+        .lock()
+        .ok()
+        .and_then(|chain| chain.last().map(|tip| (tip.block_index, tip.hash.clone())))
+}
+
+fn validate_vote_request_extends_local_tip(
+    local_tip: Option<&(u64, String)>,
+    block_data: &Block,
+) -> Result<(), String> {
+    let Some((tip_height, tip_hash)) = local_tip else {
+        return Err("local chain has no tip to extend".to_string());
+    };
+
+    let expected_height = tip_height.saturating_add(1);
+    if block_data.block_index != expected_height {
+        return Err(format!(
+            "proposal height {} does not extend local tip {}",
+            block_data.block_index, tip_height
+        ));
+    }
+
+    if block_data.previous_hash != *tip_hash {
+        return Err(format!(
+            "proposal parent hash does not match local tip at height {}",
+            tip_height
+        ));
+    }
+
+    Ok(())
+}
+
+fn request_vote_request_parent_sync(local_tip: Option<(u64, String)>, proposal_height: u64) {
+    let Some((tip_height, _)) = local_tip else {
+        return;
+    };
+    let Some((request_start, request_count)) =
+        vote_request_parent_sync_range(tip_height, proposal_height)
+    else {
+        return;
+    };
+
+    if let Some(network) = crate::p2p::get_p2p_network() {
+        network.request_blocks(request_start, request_count);
+    }
+}
+
+fn vote_request_parent_sync_range(tip_height: u64, proposal_height: u64) -> Option<(u64, u32)> {
+    if proposal_height <= tip_height.saturating_add(1) {
+        return None;
+    }
+
+    let request_start = tip_height.saturating_add(1);
+    let request_count = proposal_height
+        .saturating_sub(request_start)
+        .saturating_add(1);
+    if request_count == 0 {
+        return None;
+    }
+
+    Some((request_start, request_count.min(u32::MAX as u64) as u32))
 }
 
 fn handle_vote_message(
@@ -2510,6 +2591,7 @@ fn dispatch_peer_message(
             // critical path. Handle them immediately instead of routing them through
             // the shared background queue with status, ping, and sync traffic.
             handle_vote_request_message(
+                blockchain,
                 connected_peers,
                 config,
                 peer_address,
@@ -3289,6 +3371,7 @@ fn handle_messages(
                         epoch_number,
                         round_number,
                     } => handle_vote_request_message(
+                        &blockchain,
                         &connected_peers,
                         &config,
                         &peer_address,
@@ -4037,11 +4120,11 @@ mod tests {
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
-        validator_status_genesis_grace_remaining_secs,
-        validator_status_genesis_within_grace_window, ConnectionDirection, DialTargetsArc,
-        DuplicateResolution, PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
-        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS,
-        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
+        validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
+        validator_status_genesis_within_grace_window, vote_request_parent_sync_range,
+        ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection, PeerEntryGuard,
+        BACKGROUND_SYNC_POLL_MILLIS, DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
+        NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -4845,6 +4928,56 @@ mod tests {
             best_block_hash: "tip".to_string(),
             genesis_hash: "genesis".to_string(),
         }));
+    }
+
+    #[test]
+    fn vote_request_parent_validation_requires_next_canonical_tip() {
+        let local_tip = (7, "tip-hash".to_string());
+        let valid_proposal = Block::new(
+            8,
+            Vec::new(),
+            "tip-hash".to_string(),
+            "synv1leader".to_string(),
+            1,
+        );
+        assert!(validate_vote_request_extends_local_tip(Some(&local_tip), &valid_proposal).is_ok());
+
+        let future_proposal = Block::new(
+            9,
+            Vec::new(),
+            "tip-hash".to_string(),
+            "synv1leader".to_string(),
+            2,
+        );
+        assert!(
+            validate_vote_request_extends_local_tip(Some(&local_tip), &future_proposal)
+                .expect_err("future proposals should be rejected")
+                .contains("does not extend local tip")
+        );
+
+        let bad_parent = Block::new(
+            8,
+            Vec::new(),
+            "other-parent".to_string(),
+            "synv1leader".to_string(),
+            3,
+        );
+        assert!(
+            validate_vote_request_extends_local_tip(Some(&local_tip), &bad_parent)
+                .expect_err("wrong parents should be rejected")
+                .contains("parent hash")
+        );
+    }
+
+    #[test]
+    fn vote_request_parent_sync_range_ignores_stale_vote_requests() {
+        assert_eq!(vote_request_parent_sync_range(21102, 21102), None);
+        assert_eq!(vote_request_parent_sync_range(21102, 21101), None);
+        assert_eq!(vote_request_parent_sync_range(21102, 21103), None);
+        assert_eq!(
+            vote_request_parent_sync_range(21102, 21110),
+            Some((21103, 8))
+        );
     }
 
     #[test]
