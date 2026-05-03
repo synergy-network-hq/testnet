@@ -1227,15 +1227,16 @@ impl ProofOfSynergy {
     }
 
     fn deterministic_view_offset_for_time(
-        last_block_timestamp: u64,
-        leader_timeout_secs: u64,
-        current_timestamp: u64,
+        _last_block_timestamp: u64,
+        _leader_timeout_secs: u64,
+        _current_timestamp: u64,
     ) -> usize {
-        let timeout_secs = leader_timeout_secs.max(1);
-        current_timestamp
-            .saturating_sub(last_block_timestamp)
-            .checked_div(timeout_secs)
-            .unwrap_or(0) as usize
+        // Do not rotate leaders from each validator's local wall-clock view.
+        // Even with the previous block timestamp as a shared anchor, nodes can
+        // cross a timeout boundary seconds apart and propose competing blocks
+        // at the same height. Keep the primary deterministic leader fixed until
+        // view changes are backed by an explicit network certificate.
+        0
     }
 
     fn handle_epoch_transition(
@@ -2140,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_view_offset_uses_shared_block_time() {
+    fn deterministic_view_offset_stays_on_primary_without_certified_view_change() {
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 4_983),
             0
@@ -2151,11 +2152,11 @@ mod tests {
         );
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_003),
-            1
+            0
         );
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_044),
-            3
+            0
         );
     }
 
