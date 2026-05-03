@@ -347,7 +347,16 @@ fn should_auto_register_validator(config: &NodeConfig, profile: Option<&RoleProf
         return false;
     }
 
-    matches!(profile.map(|value| value.role), Some(NodeRole::Validator))
+    if !matches!(profile.map(|value| value.role), Some(NodeRole::Validator)) {
+        return false;
+    }
+
+    if !config.node.strict_validator_allowlist {
+        return false;
+    }
+
+    let validator_address = resolve_local_validator_address(config);
+    is_validator_allowed(config, &validator_address)
 }
 
 fn should_start_consensus(config: &NodeConfig, profile: Option<&RoleProfile>) -> bool {
@@ -2310,6 +2319,40 @@ mod tests {
         config.node.auto_register_validator = true;
 
         assert!(should_require_state_sync_before_join(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn validator_auto_registration_requires_strict_allowlist() {
+        let mut config = NodeConfig::default();
+        config.node.auto_register_validator = true;
+        config.node.validator_address = "synv1candidate".to_string();
+        config.node.strict_validator_allowlist = false;
+        config.node.allowed_validator_addresses = vec!["synv1candidate".to_string()];
+
+        assert!(!should_auto_register_validator(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn validator_auto_registration_requires_local_address_on_allowlist() {
+        let mut config = NodeConfig::default();
+        config.node.auto_register_validator = true;
+        config.node.validator_address = "synv1candidate".to_string();
+        config.node.strict_validator_allowlist = true;
+        config.node.allowed_validator_addresses = vec!["synv1genesis".to_string()];
+
+        assert!(!should_auto_register_validator(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+
+        config.node.allowed_validator_addresses = vec!["synv1candidate".to_string()];
+        assert!(should_auto_register_validator(
             &config,
             Some(NodeRole::Validator.profile())
         ));

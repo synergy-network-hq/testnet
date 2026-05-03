@@ -469,6 +469,11 @@ impl ProofOfSynergy {
                         if latest_block.block_index != last_committed_height {
                             last_committed_height = latest_block.block_index;
                             last_logged_view_timeout = None;
+                            last_block_time = current_time;
+                            drop(chain_guard);
+                            drop(pool);
+                            thread::sleep(Duration::from_millis(100));
+                            continue;
                         }
 
                         let target_epoch =

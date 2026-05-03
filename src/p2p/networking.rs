@@ -3221,6 +3221,18 @@ fn handle_messages(
                                 continue;
                             }
 
+                            if config.node.auto_register_validator
+                                && !config.node.strict_validator_allowlist
+                            {
+                                debug!(
+                                    "p2p",
+                                    "Skipping unsafe validator auto-registration because strict validator allowlist is disabled",
+                                    "peer" => peer_address.clone(),
+                                    "peer_identity" => peer_identity.clone()
+                                );
+                                continue;
+                            }
+
                             if config.node.auto_register_validator {
                                 let Some(validator_address) = announced_validator_address.clone()
                                 else {

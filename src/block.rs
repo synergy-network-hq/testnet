@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::genesis::canonical_genesis;
 
@@ -213,8 +214,8 @@ impl BlockChain {
     }
 
     fn save_to_file_atomic(&self, path: &str) -> Result<(), String> {
-        let json = serde_json::to_vec_pretty(&self.chain)
-            .map_err(|error| format!("serialize chain: {error}"))?;
+        let json =
+            serde_json::to_vec(&self.chain).map_err(|error| format!("serialize chain: {error}"))?;
         let target = Path::new(path);
         if let Some(parent) = target.parent() {
             fs::create_dir_all(parent).map_err(|error| {
@@ -226,7 +227,12 @@ impl BlockChain {
             .file_name()
             .and_then(|name| name.to_str())
             .ok_or_else(|| format!("invalid chain state path: {}", target.display()))?;
-        let temp_path = target.with_file_name(format!("{file_name}.tmp-{}", std::process::id()));
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
+        let temp_path =
+            target.with_file_name(format!("{file_name}.tmp-{}-{suffix}", std::process::id()));
 
         {
             let mut file = File::create(&temp_path).map_err(|error| {
