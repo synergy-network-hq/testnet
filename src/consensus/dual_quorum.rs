@@ -3,7 +3,7 @@ use crate::crypto::pqc::{
     PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey, PQCSignature,
 };
 use crate::validator::{
-    Validator, ValidatorManager, ValidatorPerformanceUpdate, ValidatorStatus,
+    consensus_membership_validators, Validator, ValidatorManager, ValidatorPerformanceUpdate,
     TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::{debug, warn};
@@ -325,13 +325,13 @@ impl DualQuorumConsensus {
 
         let local_validator_address = Self::resolve_local_validator_address()
             .ok_or_else(|| "Local validator address is not configured for voting".to_string())?;
-        let local_validator_is_active = VALIDATOR_MANAGER
-            .get_active_validators()
-            .into_iter()
-            .any(|validator| validator.address == local_validator_address);
+        let local_validator_is_active =
+            consensus_membership_validators(VALIDATOR_MANAGER.get_active_validators())
+                .into_iter()
+                .any(|validator| validator.address == local_validator_address);
         if !local_validator_is_active {
             return Err(format!(
-                "Local validator {} is not an active validator",
+                "Local validator {} is not an active consensus validator",
                 local_validator_address
             ));
         }
@@ -762,7 +762,8 @@ impl DualQuorumConsensus {
     }
 
     fn collect_live_validators(&self) -> Vec<Validator> {
-        let active_validators = self.validator_manager.get_active_validators();
+        let active_validators =
+            consensus_membership_validators(self.validator_manager.get_active_validators());
         let active_by_address = active_validators
             .into_iter()
             .map(|validator| (validator.address.clone(), validator))
@@ -797,7 +798,8 @@ impl DualQuorumConsensus {
             return from_env;
         }
 
-        let active_validators = VALIDATOR_MANAGER.get_active_validators();
+        let active_validators =
+            consensus_membership_validators(VALIDATOR_MANAGER.get_active_validators());
         if active_validators.len() == 1 {
             active_validators
                 .first()
@@ -809,7 +811,8 @@ impl DualQuorumConsensus {
 
     fn resolve_local_validator_address_for_round(&self) -> Option<String> {
         Self::resolve_local_validator_address().or_else(|| {
-            let active_validators = self.validator_manager.get_active_validators();
+            let active_validators =
+                consensus_membership_validators(self.validator_manager.get_active_validators());
             if active_validators.len() == 1 {
                 active_validators
                     .first()
@@ -1264,12 +1267,9 @@ impl DualQuorumConsensus {
             return false;
         }
 
-        matches!(
-            self.validator_manager
-                .get_validator(&vote.validator_address)
-                .map(|validator| validator.status),
-            Some(ValidatorStatus::Active)
-        )
+        consensus_membership_validators(self.validator_manager.get_active_validators())
+            .into_iter()
+            .any(|validator| validator.address == vote.validator_address)
     }
 
     fn vote_mailbox_key(block_hash: &str, epoch_number: u64, round_number: u64) -> String {

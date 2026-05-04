@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
@@ -7,6 +7,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+use crate::address::generate_cluster_address;
 use crate::block::BlockChain;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
@@ -533,8 +534,51 @@ fn synthesize_validator(
         stake_amount,
         min_stake_required: stake_amount.max(1),
         cluster_id: None,
+        cluster_address: None,
         status: ValidatorStatus::Inactive,
         version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
+
+fn assign_cluster_addresses(validators: &mut [Validator]) {
+    let mut members_by_cluster = BTreeMap::<u64, Vec<String>>::new();
+    let mut existing_by_cluster = HashMap::<u64, String>::new();
+    for validator in validators.iter() {
+        if let Some(cluster_id) = validator.cluster_id {
+            members_by_cluster
+                .entry(cluster_id)
+                .or_default()
+                .push(validator.address.clone());
+            if let Some(cluster_address) = validator.cluster_address.as_deref() {
+                if cluster_address.starts_with("syngrp") {
+                    existing_by_cluster
+                        .entry(cluster_id)
+                        .or_insert_with(|| cluster_address.to_string());
+                }
+            }
+        }
+    }
+
+    let cluster_addresses = members_by_cluster
+        .into_iter()
+        .map(|(cluster_id, mut members)| {
+            let cluster_address = existing_by_cluster
+                .get(&cluster_id)
+                .cloned()
+                .unwrap_or_else(|| {
+                    members.sort();
+                    let group = ((cluster_id % 5) + 1) as u8;
+                    let seed = format!("cluster-{}-{}", cluster_id, members.join("-"));
+                    generate_cluster_address(&seed, group)
+                });
+            (cluster_id, cluster_address)
+        })
+        .collect::<HashMap<_, _>>();
+
+    for validator in validators.iter_mut() {
+        validator.cluster_address = validator
+            .cluster_id
+            .and_then(|cluster_id| cluster_addresses.get(&cluster_id).cloned());
     }
 }
 
@@ -668,6 +712,7 @@ fn network_validator_snapshot(
             validator.reputation_score = 100.0;
         }
     }
+    assign_cluster_addresses(&mut ordered);
 
     ordered
 }
@@ -1446,7 +1491,16 @@ fn handle_json_rpc(
                         &token_manager,
                     ) {
                         Ok(transaction) => {
-                            json!({"success": true, "transaction": transaction, "message": "Staking transaction created successfully"})
+                            let tx_hash = transaction.hash();
+                            if let Ok(mut pool) = tx_pool.lock() {
+                                pool.push(transaction.clone());
+                            }
+
+                            if let Some(p2p) = crate::p2p::get_p2p_network() {
+                                p2p.broadcast_transaction(&transaction);
+                            }
+
+                            json!({"success": true, "tx_hash": tx_hash, "transaction": transaction, "message": "Staking transaction submitted"})
                         }
                         Err(error) => json!({"success": false, "error": error}),
                     }
@@ -2187,6 +2241,7 @@ fn handle_json_rpc(
                     "blocks_produced": validator.total_blocks_produced,
                     "uptime": format!("{:.1}%", validator.uptime_percentage),
                     "cluster_id": validator.cluster_id,
+                    "cluster_address": validator.cluster_address,
                     "stake_amount": validator.stake_amount,
                     "last_active": validator.last_active
                 }));

@@ -14,7 +14,8 @@ use crate::rpc::rpc_server::{
 };
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
-    Validator, ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+    consensus_membership_validators, Validator, ValidatorManager,
+    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 use crate::{info, warn};
@@ -358,7 +359,8 @@ impl ProofOfSynergy {
     }
 
     pub fn initialize(&mut self) {
-        let active_validators = self.validator_manager.get_active_validators();
+        let active_validators =
+            consensus_membership_validators(self.validator_manager.get_active_validators());
         let live_validator_addresses =
             Self::collect_live_validator_addresses(&self.validator_manager);
         let chain = self.chain.lock().unwrap();
@@ -493,9 +495,13 @@ impl ProofOfSynergy {
                             );
                         }
 
-                        // Get active validators
-                        let active_validators = validator_manager.get_active_validators();
-                        let registry_active_count = active_validators.len();
+                        // Get active validators, then reduce them to the shared consensus
+                        // membership before leader or quorum math uses the set.
+                        let registry_active_validators = validator_manager.get_active_validators();
+                        let registry_active_count = registry_active_validators.len();
+                        let active_validators =
+                            consensus_membership_validators(registry_active_validators);
+                        let consensus_active_count = active_validators.len();
                         let live_validator_addresses =
                             Self::collect_live_validator_addresses(&validator_manager);
                         let live_validator_address_set = live_validator_addresses
@@ -510,8 +516,9 @@ impl ProofOfSynergy {
                             })
                             .collect();
                         consensus_log!(
-                            "🔍 Found {} registry-active validators and {} live validator participants",
+                            "🔍 Found {} registry-active validators, {} consensus members, and {} live validator participants",
                             registry_active_count,
+                            consensus_active_count,
                             live_active_validators.len()
                         );
 
@@ -520,8 +527,9 @@ impl ProofOfSynergy {
                             status_sync_grace_since = None;
                             genesis_status_gate_bypassed = false;
                             println!(
-                                "⏳ Insufficient live validators for block production: {} live, {} registry-active, {} required.",
+                                "⏳ Insufficient live validators for block production: {} live, {} consensus-active, {} registry-active, {} required.",
                                 live_active_validators.len(),
+                                consensus_active_count,
                                 registry_active_count,
                                 min_validators
                             );
@@ -533,8 +541,7 @@ impl ProofOfSynergy {
 
                         if let Some(network) = crate::p2p::get_p2p_network() {
                             if status_ready_gate_enabled {
-                                let status_ready_validators =
-                                    network.get_status_ready_validator_count();
+                                let status_ready_validators = live_validator_addresses.len();
                                 let is_genesis_height = latest_block.block_index == 0;
                                 if !is_genesis_height {
                                     genesis_status_gate_bypassed = false;
@@ -673,7 +680,7 @@ impl ProofOfSynergy {
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
                         let next_block_index = latest_block_clone.block_index + 1;
-                        // Rebuild leader rotation from the registry-active validator set.
+                        // Rebuild leader rotation from the shared consensus validator set.
                         // The liveness gate above still decides whether block production is
                         // allowed, but every node must derive the same leader order from the
                         // same validator set for a given height/epoch.
@@ -874,15 +881,15 @@ impl ProofOfSynergy {
                                     p2p.broadcast_block(&new_block);
                                 }
 
-                                // Consensus hotfix: validator health metrics and reward
-                                // payouts are currently node-local bookkeeping. Mutating
+                                // Validator health metrics and reward payouts are currently
+                                // node-local bookkeeping. Mutating
                                 // them here makes persisted state diverge even when every
                                 // validator commits the same block hash. Keep them out of
                                 // the live validator path until they are applied through a
                                 // shared state transition.
                                 info!("consensus", "Skipped local validator bookkeeping",
                                       "validator" => selected_validator.address.clone(),
-                                      "mode" => "consensus-hotfix");
+                                      "mode" => "shared-state-only");
 
                                 // Record vote for cartel detection
                                 Self::record_vote_for_cartel_detection(
@@ -1084,11 +1091,11 @@ impl ProofOfSynergy {
     }
 
     fn collect_live_validator_addresses(validator_manager: &Arc<ValidatorManager>) -> Vec<String> {
-        let active_validator_addresses = validator_manager
-            .get_active_validators()
-            .into_iter()
-            .map(|validator| validator.address)
-            .collect::<HashSet<_>>();
+        let active_validator_addresses =
+            consensus_membership_validators(validator_manager.get_active_validators())
+                .into_iter()
+                .map(|validator| validator.address)
+                .collect::<HashSet<_>>();
         let mut live_validator_addresses = HashSet::new();
 
         if let Some(local_validator_address) = Self::resolve_local_validator_address() {

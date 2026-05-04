@@ -1632,76 +1632,10 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                     if !is_registered && !is_pending {
                         info!(
                             "main",
-                            "Self-registering as validator",
-                            "address" => validator_address.clone()
+                            "Validator self-registration requires the explicit funding and activation workflow",
+                            "address" => validator_address.clone(),
+                            "required_stake_snrg" => 5000u64
                         );
-
-                        let funding_amount: u64 = 1_000_000_000_000;
-                        let stake_amount: u64 = 1_000_000_000_000;
-
-                        let token_manager = TOKEN_MANAGER.clone();
-                        let current_balance = token_manager.get_balance(&validator_address, "SNRG");
-
-                        if current_balance < funding_amount {
-                            match token_manager.mint_tokens(
-                                &validator_address,
-                                "SNRG",
-                                funding_amount,
-                            ) {
-                                Ok(_) => {
-                                    info!(
-                                        "main",
-                                        "Self-funded with 1000 SNRG",
-                                        "address" => validator_address.clone()
-                                    );
-                                }
-                                Err(e) => {
-                                    eprintln!("Warning: Failed to self-fund: {}", e);
-                                }
-                            }
-                        }
-
-                        let registration = ValidatorRegistration {
-                            address: validator_address.clone(),
-                            public_key: validator_address.clone(),
-                            name: format!(
-                                "Validator-{}",
-                                &validator_address[..8.min(validator_address.len())]
-                            ),
-                            stake_amount,
-                            submitted_at: SystemTime::now()
-                                .duration_since(UNIX_EPOCH)
-                                .unwrap()
-                                .as_secs(),
-                            registration_tx_hash: format!("self-reg-{validator_address}"),
-                        };
-
-                        if validator_manager.register_validator(registration).is_ok() {
-                            info!(
-                                "main",
-                                "Validator registration submitted",
-                                "address" => validator_address.clone()
-                            );
-                            if validator_manager
-                                .approve_validator(&validator_address)
-                                .is_ok()
-                            {
-                                info!(
-                                    "main",
-                                    "Validator self-approved and activated",
-                                    "address" => validator_address.clone()
-                                );
-
-                                if let Err(e) = token_manager.stake_tokens(
-                                    &validator_address,
-                                    &validator_address,
-                                    "SNRG",
-                                    stake_amount,
-                                ) {
-                                    eprintln!("Warning: Failed to self-stake: {}", e);
-                                }
-                            }
-                        }
                     }
                 }
             } else {

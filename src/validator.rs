@@ -1,4 +1,5 @@
 use crate::address::generate_cluster_address;
+use crate::genesis::canonical_genesis;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -67,6 +68,8 @@ pub struct Validator {
 
     // Network info
     pub cluster_id: Option<u64>,
+    #[serde(default)]
+    pub cluster_address: Option<String>,
     pub status: ValidatorStatus,
     pub version: String,
 }
@@ -159,6 +162,7 @@ impl Validator {
             stake_amount,
             min_stake_required: stake_amount,
             cluster_id: None,
+            cluster_address: None,
             status: ValidatorStatus::Pending,
             version: "1.0.0".to_string(),
         }
@@ -420,6 +424,7 @@ impl ValidatorRegistry {
 
         for validator in self.validators.values_mut() {
             validator.cluster_id = None;
+            validator.cluster_address = None;
         }
         self.clusters.clear();
 
@@ -461,6 +466,7 @@ impl ValidatorRegistry {
                 .map(|validator| validator.address.clone())
                 .collect();
             let cluster_seed = format!("cluster-{}-{}", cluster_id, validator_addresses.join("-"));
+            let cluster_address = generate_cluster_address(&cluster_seed, cluster_group);
             let total_stake = members.iter().map(|validator| validator.stake_amount).sum();
             let average_synergy_score = members
                 .iter()
@@ -472,7 +478,7 @@ impl ValidatorRegistry {
                 cluster_id,
                 ValidatorCluster {
                     id: cluster_id,
-                    address: generate_cluster_address(&cluster_seed, cluster_group),
+                    address: cluster_address.clone(),
                     validators: validator_addresses.clone(),
                     total_stake,
                     average_synergy_score,
@@ -485,6 +491,7 @@ impl ValidatorRegistry {
             for address in validator_addresses {
                 if let Some(validator) = self.validators.get_mut(&address) {
                     validator.cluster_id = Some(cluster_id);
+                    validator.cluster_address = Some(cluster_address.clone());
                 }
             }
         }
@@ -830,6 +837,68 @@ lazy_static::lazy_static! {
     pub static ref VALIDATOR_MANAGER: Arc<ValidatorManager> = Arc::new(ValidatorManager::new());
 }
 
+fn configured_consensus_order(active_validators: &[Validator]) -> (Option<Vec<String>>, usize) {
+    let config = crate::config::load_node_config(None).ok();
+    let max_validators = config
+        .as_ref()
+        .map(|config| config.consensus.max_validators.max(1))
+        .unwrap_or(usize::MAX);
+    let active_addresses = active_validators
+        .iter()
+        .map(|validator| validator.address.clone())
+        .collect::<HashSet<_>>();
+
+    if let Some(config) = config.as_ref() {
+        if config.node.strict_validator_allowlist
+            && !config.node.allowed_validator_addresses.is_empty()
+        {
+            let mut ordered = config
+                .node
+                .allowed_validator_addresses
+                .iter()
+                .filter(|address| active_addresses.contains(*address))
+                .cloned()
+                .collect::<Vec<_>>();
+            ordered.truncate(max_validators);
+            return (Some(ordered), max_validators);
+        }
+    }
+
+    if let Ok(genesis) = canonical_genesis() {
+        let mut ordered = genesis
+            .validators()
+            .iter()
+            .map(|entry| entry.operator_address.clone())
+            .filter(|address| active_addresses.contains(address))
+            .collect::<Vec<_>>();
+        if !ordered.is_empty() {
+            ordered.truncate(max_validators);
+            return (Some(ordered), max_validators);
+        }
+    }
+
+    (None, max_validators)
+}
+
+pub fn consensus_membership_validators(active_validators: Vec<Validator>) -> Vec<Validator> {
+    let (configured_order, max_validators) = configured_consensus_order(&active_validators);
+    if let Some(ordered_addresses) = configured_order {
+        let validators_by_address = active_validators
+            .into_iter()
+            .map(|validator| (validator.address.clone(), validator))
+            .collect::<HashMap<_, _>>();
+        return ordered_addresses
+            .into_iter()
+            .filter_map(|address| validators_by_address.get(&address).cloned())
+            .collect();
+    }
+
+    let mut fallback_validators = active_validators;
+    fallback_validators.sort_by(|left, right| left.address.cmp(&right.address));
+    fallback_validators.truncate(max_validators);
+    fallback_validators
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -922,6 +991,20 @@ mod tests {
 
         assert_eq!(registry.clusters.len(), 2);
         assert_eq!(cluster_sizes, vec![3, 3]);
+    }
+
+    #[test]
+    fn reorganize_clusters_stores_syngrp_address_on_validators() {
+        let registry = active_registry(5);
+        let validator = registry
+            .get_validator_by_address("validator-0")
+            .expect("validator should exist");
+
+        assert_eq!(validator.cluster_id, Some(0));
+        assert!(validator
+            .cluster_address
+            .as_deref()
+            .is_some_and(|address| address.starts_with("syngrp1")));
     }
 
     #[test]

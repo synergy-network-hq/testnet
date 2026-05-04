@@ -7,9 +7,8 @@ use crate::rpc::rpc_server::{
     prune_transaction_hashes_from_pool, transaction_hashes, SYNC_MANAGER, TX_POOL,
 };
 use crate::sync::SyncState;
-use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
-use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
+use crate::validator::VALIDATOR_MANAGER;
 use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::Resolver;
@@ -3206,9 +3205,8 @@ fn handle_messages(
                             request_status_from_connected_peer(&mut peers, &peer_address);
                         }
 
-                        // Auto-register new validators on testnet-beta (only if enabled in config)
-                        // This automatically registers any node that connects as a validator
-                        // and funds them with 1000 SNRG for staking
+                        // Candidate validators are discovered here, but funding and consensus
+                        // activation must run through the explicit source-level workflow.
                         {
                             // Only auto-register if auto-registration is enabled in config
                             if config.node.bootstrap_only {
@@ -3262,108 +3260,9 @@ fn handle_messages(
                                 if !is_registered && !is_pending {
                                     info!(
                                         "p2p",
-                                        "Auto-registering new validator",
+                                        "Observed candidate validator; explicit 5,000 SNRG funding and activation are required before consensus membership",
                                         "address" => validator_address.clone()
                                     );
-
-                                    // 1000 SNRG in nWei (1 SNRG = 1_000_000_000 nWei)
-                                    let funding_amount: u64 = 1000_000_000_000;
-                                    let stake_amount: u64 = 1000_000_000_000;
-
-                                    // First, mint 1000 SNRG to the new validator
-                                    let token_manager = TOKEN_MANAGER.clone();
-                                    let current_balance =
-                                        token_manager.get_balance(&validator_address, "SNRG");
-
-                                    if current_balance < funding_amount {
-                                        match token_manager.mint_tokens(
-                                            &validator_address,
-                                            "SNRG",
-                                            funding_amount,
-                                        ) {
-                                            Ok(_) => {
-                                                info!(
-                                                    "p2p",
-                                                    "Auto-funded new validator with 1000 SNRG",
-                                                    "address" => validator_address.clone(),
-                                                    "amount" => funding_amount
-                                                );
-                                            }
-                                            Err(e) => {
-                                                warn!(
-                                                    "p2p",
-                                                    "Failed to auto-fund validator",
-                                                    "address" => validator_address.clone(),
-                                                    "error" => e.clone()
-                                                );
-                                            }
-                                        }
-                                    }
-
-                                    // Create and submit validator registration
-                                    let registration = ValidatorRegistration {
-                                        address: validator_address.clone(),
-                                        public_key: validator_address.clone(), // Use address as public key for testnet-beta
-                                        name: format!(
-                                            "Validator-{}",
-                                            &validator_address[..8.min(validator_address.len())]
-                                        ),
-                                        stake_amount,
-                                        submitted_at: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap()
-                                            .as_secs(),
-                                        registration_tx_hash: format!(
-                                            "auto-reg-{}",
-                                            validator_address.clone()
-                                        ),
-                                    };
-
-                                    // Register the validator
-                                    if let Ok(_) =
-                                        validator_manager.register_validator(registration)
-                                    {
-                                        info!(
-                                            "p2p",
-                                            "Validator registration submitted",
-                                            "address" => validator_address.clone()
-                                        );
-
-                                        // Auto-approve the registration for testnet-beta
-                                        if let Ok(_) =
-                                            validator_manager.approve_validator(&validator_address)
-                                        {
-                                            info!(
-                                                "p2p",
-                                                "Validator auto-approved and activated",
-                                                "address" => validator_address.clone()
-                                            );
-
-                                            // Stake the tokens for the validator
-                                            match token_manager.stake_tokens(
-                                                &validator_address,
-                                                &validator_address,
-                                                "SNRG",
-                                                stake_amount,
-                                            ) {
-                                                Ok(_) => {
-                                                    info!(
-                                                        "p2p",
-                                                        "Validator auto-staked 1000 SNRG",
-                                                        "address" => validator_address.clone()
-                                                    );
-                                                }
-                                                Err(e) => {
-                                                    warn!(
-                                                        "p2p",
-                                                        "Failed to auto-stake for validator",
-                                                        "address" => validator_address.clone(),
-                                                        "error" => e.clone()
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
                                 }
                             }
                         }

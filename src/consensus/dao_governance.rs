@@ -570,6 +570,7 @@ impl SynergyOracle {
             registered_at: 0,
             min_stake_required: 0,
             cluster_id: None,
+            cluster_address: None,
             status: crate::validator::ValidatorStatus::Active,
             version: "1.0".to_string(),
             website: None,
