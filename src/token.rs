@@ -481,6 +481,12 @@ impl TokenManager {
         tx_hash: Option<String>,
         block_height: u64,
     ) -> Result<String, String> {
+        if let Some(existing_hash) = tx_hash.as_deref() {
+            if self.transfer_hash_exists(existing_hash) {
+                return Ok(format!("Transfer {} already processed", existing_hash));
+            }
+        }
+
         let current_balance = self.get_balance(from, token_symbol);
         if current_balance < amount + fee {
             return Err("Insufficient balance for transfer and fee".to_string());
@@ -524,6 +530,13 @@ impl TokenManager {
             "Transferred {} {} from {} to {}",
             amount, token_symbol, from, to
         ))
+    }
+
+    fn transfer_hash_exists(&self, tx_hash: &str) -> bool {
+        self.transfers
+            .lock()
+            .map(|transfers| transfers.iter().any(|transfer| transfer.tx_hash == tx_hash))
+            .unwrap_or(false)
     }
 
     pub fn get_balance(&self, address: &str, token_symbol: &str) -> u64 {
@@ -965,6 +978,23 @@ impl TokenManager {
             }
         }
 
+        // Handle native SNRG transfers submitted through the public
+        // synergy_sendTransaction path. These transactions carry the SNRG
+        // amount in the canonical amount field and may not include the legacy
+        // token_transfer data wrapper used by the local faucet helper.
+        if tx.amount > 0 && !tx.receiver.trim().is_empty() {
+            return self.transfer_tokens(&tx.sender, &tx.receiver, "SNRG", tx.amount, tx.get_fee());
+        }
+
+        if tx
+            .data
+            .as_deref()
+            .map(|data| data.starts_with("validator_activation:"))
+            .unwrap_or(false)
+        {
+            return Ok("Validator activation handled by validator registry".to_string());
+        }
+
         Err("Unsupported transaction type".to_string())
     }
 
@@ -1027,6 +1057,27 @@ impl TokenManager {
             }
         }
 
+        if tx.amount > 0 && !tx.receiver.trim().is_empty() {
+            return self.transfer_tokens_with_metadata(
+                &tx.sender,
+                &tx.receiver,
+                "SNRG",
+                tx.amount,
+                tx.get_fee(),
+                tx.hash(),
+                block_height,
+            );
+        }
+
+        if tx
+            .data
+            .as_deref()
+            .map(|data| data.starts_with("validator_activation:"))
+            .unwrap_or(false)
+        {
+            return Ok("Validator activation handled by validator registry".to_string());
+        }
+
         Err("Unsupported transaction type".to_string())
     }
 
@@ -1057,6 +1108,43 @@ impl TokenManager {
         } else {
             Vec::new()
         }
+    }
+
+    pub fn replay_chain_transactions(&self, chain: &crate::block::BlockChain) -> (u64, u64) {
+        let mut applied = 0u64;
+        let mut failed = 0u64;
+
+        for block in &chain.chain {
+            for tx in &block.transactions {
+                let is_token_transfer = tx
+                    .data
+                    .as_deref()
+                    .map(|data| data.starts_with("token_transfer:"))
+                    .unwrap_or(false);
+                let is_native_transfer = tx.amount > 0
+                    && !tx.receiver.trim().is_empty()
+                    && !tx
+                        .data
+                        .as_deref()
+                        .map(|data| data.starts_with("stake:"))
+                        .unwrap_or(false);
+                let is_validator_activation = tx
+                    .data
+                    .as_deref()
+                    .map(|data| data.starts_with("validator_activation:"))
+                    .unwrap_or(false);
+                if !is_token_transfer && !is_native_transfer && !is_validator_activation {
+                    continue;
+                }
+
+                match self.process_transaction_in_block(tx, block.block_index) {
+                    Ok(_) => applied += 1,
+                    Err(_) => failed += 1,
+                }
+            }
+        }
+
+        (applied, failed)
     }
 
     pub fn get_staking_info(&self, address: &str) -> Vec<StakingInfo> {
@@ -1398,6 +1486,14 @@ mod tests {
         root
     }
 
+    fn seed_snrg_balance(manager: &TokenManager, address: &str, amount: u64) {
+        let mut balances = manager.balances.lock().unwrap();
+        let entry = balances
+            .entry(address.to_string())
+            .or_insert_with(HashMap::new);
+        entry.insert("SNRG".to_string(), amount);
+    }
+
     #[test]
     fn profile_allocations_are_disabled_by_default() {
         let _guard = ENV_GUARD.lock().unwrap();
@@ -1432,5 +1528,76 @@ mod tests {
         );
 
         let _ = fs::remove_dir_all(temp_root);
+    }
+
+    #[test]
+    fn native_snrg_transaction_updates_balances_and_transfer_history() {
+        let manager = TokenManager::new();
+        let sender = "synw1sendernative000000000000000000000000";
+        let receiver = "synw1receivernative00000000000000000000";
+        seed_snrg_balance(&manager, sender, 10_000);
+
+        let tx = Transaction::new(
+            sender.to_string(),
+            receiver.to_string(),
+            1_500,
+            0,
+            vec![1, 2, 3],
+            2,
+            10,
+            None,
+            "fndsa".to_string(),
+        );
+
+        manager
+            .process_transaction_in_block(&tx, 77)
+            .expect("native SNRG transaction should apply");
+
+        assert_eq!(manager.get_balance(sender, "SNRG"), 8_480);
+        assert_eq!(manager.get_balance(receiver, "SNRG"), 1_500);
+
+        let history = manager.get_transfer_history(sender, 10);
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].tx_hash, tx.hash());
+        assert_eq!(history[0].block_height, 77);
+
+        manager
+            .process_transaction_in_block(&tx, 77)
+            .expect("replaying same transaction should be idempotent");
+
+        assert_eq!(manager.get_balance(sender, "SNRG"), 8_480);
+        assert_eq!(manager.get_balance(receiver, "SNRG"), 1_500);
+        assert_eq!(manager.get_transfer_history(sender, 10).len(), 1);
+    }
+
+    #[test]
+    fn staking_transaction_is_not_intercepted_as_native_transfer() {
+        let manager = TokenManager::new();
+        let staker = "synw1stakernative000000000000000000000";
+        let validator = "synv1validatornative000000000000000000";
+        seed_snrg_balance(&manager, staker, 10_000);
+
+        let tx = Transaction::new(
+            staker.to_string(),
+            validator.to_string(),
+            3_000,
+            0,
+            vec![1, 2, 3],
+            2,
+            10,
+            Some(format!(
+                "stake:{{\"validator\":\"{}\",\"token\":\"SNRG\",\"amount\":3000}}",
+                validator
+            )),
+            "fndsa".to_string(),
+        );
+
+        manager
+            .process_transaction(&tx)
+            .expect("staking transaction should apply as stake");
+
+        assert_eq!(manager.get_balance(staker, "SNRG"), 7_000);
+        assert_eq!(manager.get_balance(validator, "SNRG"), 0);
+        assert_eq!(manager.get_staked_balance(staker, "SNRG"), 3_000);
     }
 }

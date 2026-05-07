@@ -8,7 +8,9 @@ use crate::rpc::rpc_server::{
 };
 use crate::sync::SyncState;
 use crate::transaction::Transaction;
-use crate::validator::VALIDATOR_MANAGER;
+use crate::validator::{
+    apply_validator_activation_transaction, is_validator_activation_transaction, VALIDATOR_MANAGER,
+};
 use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::Resolver;
@@ -3810,6 +3812,7 @@ fn is_assigned_synergy_dial_address(value: &str) -> bool {
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     let confirmed_hashes = transaction_hashes(&block.transactions);
+    let block_for_state = block.clone();
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
 
@@ -3837,6 +3840,7 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
+    apply_token_state_for_blocks(&[block_for_state]);
 
     true
 }
@@ -3854,10 +3858,11 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
     blocks.sort_by_key(|block| block.block_index);
     blocks.dedup_by(|left, right| left.block_index == right.block_index && left.hash == right.hash);
 
-    let (applied, rollback_height, tip_height, snapshot) = {
+    let (applied, applied_blocks, rollback_height, tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
         let local_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
         let mut rollback_height = None;
+        let mut applied_blocks = Vec::new();
 
         // Late duplicate sync responses should never rewind a chain that has already
         // advanced beyond the batch tip. Only consider rollback when the incoming batch
@@ -3904,6 +3909,7 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
                 break;
             }
 
+            applied_blocks.push(block.clone());
             chain.add_block(block);
             applied += 1;
         }
@@ -3916,7 +3922,13 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
             None
         };
 
-        (applied, rollback_height, tip_height, snapshot)
+        (
+            applied,
+            applied_blocks,
+            rollback_height,
+            tip_height,
+            snapshot,
+        )
     };
 
     if let Some(common_height) = rollback_height {
@@ -3935,8 +3947,77 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
+    apply_token_state_for_blocks(&applied_blocks);
 
     applied
+}
+
+fn apply_token_state_for_blocks(blocks: &[Block]) {
+    if blocks.is_empty() {
+        return;
+    }
+
+    let token_manager = crate::token::TOKEN_MANAGER.clone();
+    let validator_manager = VALIDATOR_MANAGER.clone();
+    let mut applied_txs = 0u64;
+    let mut failed_txs = 0u64;
+
+    for block in blocks {
+        for tx in &block.transactions {
+            match token_manager.process_transaction_in_block(tx, block.block_index) {
+                Ok(_) => applied_txs += 1,
+                Err(error) => {
+                    failed_txs += 1;
+                    warn!(
+                        "p2p",
+                        "Failed to apply synced block transaction state",
+                        "block_height" => block.block_index,
+                        "tx_hash" => tx.hash(),
+                        "error" => error
+                    );
+                }
+            }
+            if is_validator_activation_transaction(tx) {
+                match apply_validator_activation_transaction(tx, &token_manager, &validator_manager)
+                {
+                    Ok(message) => info!(
+                        "p2p",
+                        "Applied synced validator activation",
+                        "block_height" => block.block_index,
+                        "tx_hash" => tx.hash(),
+                        "message" => message
+                    ),
+                    Err(error) => warn!(
+                        "p2p",
+                        "Failed to apply synced validator activation",
+                        "block_height" => block.block_index,
+                        "tx_hash" => tx.hash(),
+                        "error" => error
+                    ),
+                }
+            }
+        }
+    }
+
+    if applied_txs > 0 || failed_txs > 0 {
+        info!(
+            "p2p",
+            "Processed token state for synced blocks",
+            "blocks" => blocks.len(),
+            "applied_transactions" => applied_txs,
+            "failed_transactions" => failed_txs
+        );
+    }
+
+    if applied_txs > 0 {
+        if let Err(error) = token_manager.save_state("data/token_state.json") {
+            warn!(
+                "p2p",
+                "Failed to persist synced token state",
+                "error" => error.to_string()
+            );
+        }
+    }
 }
 
 fn should_persist_chain_tip(tip_height: u64) -> bool {

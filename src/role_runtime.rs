@@ -18,7 +18,6 @@ use crate::consensus::dual_quorum::{EntropyBeacon, ValidatorRotation};
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
-use crate::info;
 use crate::logging::{init_logger, LogLevel};
 use crate::p2p;
 use crate::role_profiles::{resolve_configured_role, NodeRole, RoleProfile};
@@ -32,6 +31,7 @@ use crate::transaction::Transaction;
 use crate::utils;
 use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::wallet;
+use crate::{info, warn};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -1405,6 +1405,27 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                         "No saved token state found (using genesis allocations)",
                         "error" => e.to_string()
                     );
+                }
+                let chain_snapshot = {
+                    let chain_guard = blockchain.lock().unwrap();
+                    chain_guard.clone()
+                };
+                let (replayed, replay_failed) =
+                    token_manager.replay_chain_transactions(&chain_snapshot);
+                if replayed > 0 || replay_failed > 0 {
+                    info!(
+                        "main",
+                        "Replayed chain transactions into token state",
+                        "replayed" => replayed,
+                        "failed" => replay_failed
+                    );
+                    if let Err(e) = token_manager.save_state("data/token_state.json") {
+                        warn!(
+                            "main",
+                            "Failed to persist replayed token state",
+                            "error" => e.to_string()
+                        );
+                    }
                 }
                 if let Err(e) = token_manager.ensure_rewards_pool_funded() {
                     eprintln!("Warning: Failed to initialize rewards pool: {}", e);

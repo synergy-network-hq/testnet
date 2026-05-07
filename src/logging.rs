@@ -338,7 +338,7 @@ macro_rules! trace {
     ($module:expr, $message:expr) => {
         $crate::logging::log($crate::logging::LogLevel::Trace, $module, $message)
     };
-    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {
+    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {{
         let mut metadata = serde_json::Map::new();
         $(
             metadata.insert($key.to_string(), serde_json::Value::from($value));
@@ -349,7 +349,7 @@ macro_rules! trace {
             $message,
             serde_json::Value::Object(metadata)
         )
-    };
+    }};
 }
 
 #[macro_export]
@@ -357,7 +357,7 @@ macro_rules! debug {
     ($module:expr, $message:expr) => {
         $crate::logging::log($crate::logging::LogLevel::Debug, $module, $message)
     };
-    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {
+    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {{
         let mut metadata = serde_json::Map::new();
         $(
             metadata.insert($key.to_string(), serde_json::Value::from($value));
@@ -368,7 +368,7 @@ macro_rules! debug {
             $message,
             serde_json::Value::Object(metadata)
         )
-    };
+    }};
 }
 
 #[macro_export]
@@ -376,7 +376,7 @@ macro_rules! info {
     ($module:expr, $message:expr) => {
         $crate::logging::log($crate::logging::LogLevel::Info, $module, $message)
     };
-    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {
+    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {{
         let mut metadata = serde_json::Map::new();
         $(
             metadata.insert($key.to_string(), serde_json::Value::from($value));
@@ -387,7 +387,7 @@ macro_rules! info {
             $message,
             serde_json::Value::Object(metadata)
         )
-    };
+    }};
 }
 
 #[macro_export]
@@ -395,7 +395,7 @@ macro_rules! warn {
     ($module:expr, $message:expr) => {
         $crate::logging::log($crate::logging::LogLevel::Warn, $module, $message)
     };
-    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {
+    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {{
         let mut metadata = serde_json::Map::new();
         $(
             metadata.insert($key.to_string(), serde_json::Value::from($value));
@@ -406,7 +406,7 @@ macro_rules! warn {
             $message,
             serde_json::Value::Object(metadata)
         )
-    };
+    }};
 }
 
 #[macro_export]
@@ -414,7 +414,7 @@ macro_rules! error {
     ($module:expr, $message:expr) => {
         $crate::logging::log($crate::logging::LogLevel::Error, $module, $message)
     };
-    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {
+    ($module:expr, $message:expr, $($key:expr => $value:expr),*) => {{
         let mut metadata = serde_json::Map::new();
         $(
             metadata.insert($key.to_string(), serde_json::Value::from($value));
@@ -425,5 +425,5 @@ macro_rules! error {
             $message,
             serde_json::Value::Object(metadata)
         )
-    };
+    }};
 }

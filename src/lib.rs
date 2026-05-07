@@ -15,6 +15,7 @@ pub mod role_runtime;
 pub mod rpc;
 pub mod sxcp;
 pub mod sync;
+pub mod synid;
 pub mod telemetry;
 pub mod token;
 pub mod transaction;

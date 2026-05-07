@@ -1,5 +1,7 @@
 use crate::address::generate_cluster_address;
 use crate::genesis::canonical_genesis;
+use crate::token::TokenManager;
+use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
@@ -17,6 +19,7 @@ const MISSED_VOTE_ACCURACY_PENALTY: f64 = 2.0;
 const MISSED_VOTE_REPUTATION_PENALTY: f64 = 4.0;
 const MISSED_VOTE_SLASHING_INCREMENT: f64 = 0.05;
 const VOTE_PARTICIPATION_RECOVERY: f64 = 0.5;
+pub const TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI: u64 = 50_000_000_000_000;
 
 macro_rules! validator_log {
     ($($arg:tt)*) => {
@@ -72,6 +75,8 @@ pub struct Validator {
     pub cluster_address: Option<String>,
     pub status: ValidatorStatus,
     pub version: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub activation_tx_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -165,6 +170,7 @@ impl Validator {
             cluster_address: None,
             status: ValidatorStatus::Pending,
             version: "1.0.0".to_string(),
+            activation_tx_hash: None,
         }
     }
 
@@ -323,6 +329,7 @@ impl ValidatorRegistry {
             // Ensure stake amount is properly set (this was the missing piece)
             validator.stake_amount = registration.stake_amount;
             validator.min_stake_required = registration.stake_amount;
+            validator.activation_tx_hash = Some(registration.registration_tx_hash);
 
             self.validators.insert(address.to_string(), validator);
 
@@ -696,6 +703,13 @@ impl ValidatorManager {
         false
     }
 
+    pub fn minimum_stake_amount(&self) -> u64 {
+        self.registry
+            .lock()
+            .map(|registry| registry.min_stake_amount)
+            .unwrap_or(0)
+    }
+
     pub fn get_validator(&self, address: &str) -> Option<Validator> {
         if let Ok(registry) = self.registry.lock() {
             registry.get_validator_by_address(address).cloned()
@@ -859,6 +873,32 @@ fn configured_consensus_order(active_validators: &[Validator]) -> (Option<Vec<St
                 .filter(|address| active_addresses.contains(*address))
                 .cloned()
                 .collect::<Vec<_>>();
+
+            let mut activated = active_validators
+                .iter()
+                .filter(|validator| !ordered.contains(&validator.address))
+                .filter(|validator| {
+                    validator
+                        .activation_tx_hash
+                        .as_deref()
+                        .map(|hash| hash == "genesis" || hash.starts_with("syntxn-"))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            activated.sort_by(|left, right| {
+                right
+                    .stake_amount
+                    .cmp(&left.stake_amount)
+                    .then_with(|| {
+                        right
+                            .synergy_score
+                            .partial_cmp(&left.synergy_score)
+                            .unwrap_or(Ordering::Equal)
+                    })
+                    .then_with(|| left.address.cmp(&right.address))
+            });
+            ordered.extend(activated.into_iter().map(|validator| validator.address));
             ordered.truncate(max_validators);
             return (Some(ordered), max_validators);
         }
@@ -878,6 +918,123 @@ fn configured_consensus_order(active_validators: &[Validator]) -> (Option<Vec<St
     }
 
     (None, max_validators)
+}
+
+pub fn is_validator_activation_transaction(tx: &Transaction) -> bool {
+    tx.data
+        .as_deref()
+        .map(|data| data.starts_with("validator_activation:"))
+        .unwrap_or(false)
+}
+
+fn parse_validator_activation(tx: &Transaction) -> Result<(String, String, String, u64), String> {
+    let payload = tx
+        .data
+        .as_deref()
+        .and_then(|data| data.strip_prefix("validator_activation:"))
+        .ok_or_else(|| "Transaction is not a validator activation transaction.".to_string())?;
+    let value = serde_json::from_str::<serde_json::Value>(payload)
+        .map_err(|error| format!("Invalid validator activation payload: {error}"))?;
+    let validator = value
+        .get("validator")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Validator activation is missing validator address.".to_string())?
+        .to_string();
+    let public_key = value
+        .get("public_key")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| "Validator activation is missing public key.".to_string())?
+        .to_string();
+    let name = value
+        .get("name")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("Activated Validator")
+        .to_string();
+    let stake_amount = value
+        .get("stake_amount_nwei")
+        .and_then(|value| value.as_u64())
+        .or_else(|| value.get("stake_amount").and_then(|value| value.as_u64()))
+        .ok_or_else(|| "Validator activation is missing stake amount.".to_string())?;
+
+    if tx.sender != validator || tx.receiver != validator {
+        return Err(
+            "Validator activation must be self-signed by the validator address.".to_string(),
+        );
+    }
+
+    Ok((validator, public_key, name, stake_amount))
+}
+
+pub fn apply_validator_activation_transaction(
+    tx: &Transaction,
+    token_manager: &TokenManager,
+    validator_manager: &Arc<ValidatorManager>,
+) -> Result<String, String> {
+    let (validator, public_key, name, _stake_amount) = parse_validator_activation(tx)?;
+    let minimum_stake = validator_manager
+        .minimum_stake_amount()
+        .max(canonical_minimum_validator_stake_nwei());
+    let bonded_stake = token_manager.get_staked_balance(&validator, "SNRG");
+    if bonded_stake < minimum_stake {
+        return Err(format!(
+            "Validator {validator} has {bonded_stake} nWei bonded; {minimum_stake} nWei is required for activation."
+        ));
+    }
+
+    if validator_manager.get_validator(&validator).is_some() {
+        validator_manager.update_validator_stake(&validator, bonded_stake);
+        return Ok(format!(
+            "Validator {validator} already active; stake refreshed."
+        ));
+    }
+
+    let registration = ValidatorRegistration {
+        address: validator.clone(),
+        public_key,
+        name,
+        stake_amount: bonded_stake,
+        submitted_at: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+        registration_tx_hash: tx.hash(),
+    };
+
+    match validator_manager.register_validator(registration) {
+        Ok(_) => {
+            validator_manager.approve_validator(&validator)?;
+            Ok(format!(
+                "Validator {validator} activated from chain transaction."
+            ))
+        }
+        Err(error) if error == "Registration already pending" => {
+            validator_manager.approve_validator(&validator)?;
+            validator_manager.update_validator_stake(&validator, bonded_stake);
+            Ok(format!(
+                "Validator {validator} pending activation approved."
+            ))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn canonical_minimum_validator_stake_nwei() -> u64 {
+    canonical_genesis()
+        .ok()
+        .and_then(|genesis| {
+            genesis
+                .validators()
+                .iter()
+                .map(|validator| validator.stake_nwei)
+                .min()
+        })
+        .unwrap_or(TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI)
 }
 
 pub fn consensus_membership_validators(active_validators: Vec<Validator>) -> Vec<Validator> {
@@ -1005,6 +1162,50 @@ mod tests {
             .cluster_address
             .as_deref()
             .is_some_and(|address| address.starts_with("syngrp1")));
+    }
+
+    #[test]
+    fn chain_activation_registers_bonded_validator_with_activation_hash() {
+        let funding_source = "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh";
+        let validator_address = "synv1activationvalidator000000000000000000";
+        let bonded_stake = TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI;
+        let token_manager = crate::token::TokenManager::new();
+        token_manager
+            .transfer_tokens(funding_source, validator_address, "SNRG", bonded_stake, 0)
+            .expect("test stake balance should fund from genesis allocation");
+        token_manager
+            .stake_tokens(validator_address, validator_address, "SNRG", bonded_stake)
+            .expect("test validator should bond stake");
+
+        let validator_manager = Arc::new(ValidatorManager::new());
+        let tx = Transaction::new(
+            validator_address.to_string(),
+            validator_address.to_string(),
+            0,
+            0,
+            vec![1, 2, 3],
+            1,
+            21_000,
+            Some(format!(
+                "validator_activation:{{\"validator\":\"{}\",\"public_key\":\"{}\",\"name\":\"Outside Validator\",\"stake_amount_nwei\":{}}}",
+                validator_address, "activation-public-key", bonded_stake
+            )),
+            "fndsa".to_string(),
+        );
+
+        let tx_hash = tx.hash();
+        apply_validator_activation_transaction(&tx, &token_manager, &validator_manager)
+            .expect("bonded validator activation should apply");
+
+        let activated = validator_manager
+            .get_validator(validator_address)
+            .expect("validator should be active after activation transaction");
+        assert_eq!(activated.status, ValidatorStatus::Active);
+        assert_eq!(activated.stake_amount, bonded_stake);
+        assert_eq!(
+            activated.activation_tx_hash.as_deref(),
+            Some(tx_hash.as_str())
+        );
     }
 
     #[test]

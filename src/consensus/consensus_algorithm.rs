@@ -14,7 +14,8 @@ use crate::rpc::rpc_server::{
 };
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
-    consensus_membership_validators, Validator, ValidatorManager,
+    apply_validator_activation_transaction, consensus_membership_validators,
+    is_validator_activation_transaction, Validator, ValidatorManager,
     TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
@@ -440,7 +441,12 @@ impl ProofOfSynergy {
         };
 
         thread::spawn(move || {
-            let mut last_block_time = SystemTime::now();
+            let mut last_block_time = chain
+                .lock()
+                .unwrap()
+                .last()
+                .map(|block| Self::system_time_from_unix_timestamp(block.timestamp))
+                .unwrap_or_else(SystemTime::now);
             let mut consecutive_failures = 0;
             let mut current_epoch = chain
                 .lock()
@@ -471,7 +477,8 @@ impl ProofOfSynergy {
                         if latest_block.block_index != last_committed_height {
                             last_committed_height = latest_block.block_index;
                             last_logged_view_timeout = None;
-                            last_block_time = current_time;
+                            last_block_time =
+                                Self::system_time_from_unix_timestamp(latest_block.timestamp);
                             drop(chain_guard);
                             drop(pool);
                             thread::sleep(Duration::from_millis(100));
@@ -869,6 +876,26 @@ impl ProofOfSynergy {
                                             );
                                         }
                                     }
+                                    if is_validator_activation_transaction(tx) {
+                                        match apply_validator_activation_transaction(
+                                            tx,
+                                            &token_manager,
+                                            &validator_manager,
+                                        ) {
+                                            Ok(message) => info!(
+                                                "consensus",
+                                                "Applied validator activation",
+                                                "tx_hash" => tx.hash(),
+                                                "message" => message
+                                            ),
+                                            Err(error) => warn!(
+                                                "consensus",
+                                                "Failed to apply validator activation",
+                                                "tx_hash" => tx.hash(),
+                                                "error" => error
+                                            ),
+                                        }
+                                    }
                                 }
 
                                 // Persist token state for explorer continuity across restarts (best-effort).
@@ -911,7 +938,8 @@ impl ProofOfSynergy {
                                 let pruned_transactions =
                                     prune_transaction_hashes_from_pool(&confirmed_hashes);
 
-                                last_block_time = current_time;
+                                last_block_time =
+                                    Self::system_time_from_unix_timestamp(new_block.timestamp);
                                 consecutive_failures = 0;
 
                                 // Get synergy score components for detailed logging
@@ -1187,6 +1215,10 @@ impl ProofOfSynergy {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
+    }
+
+    fn system_time_from_unix_timestamp(timestamp: u64) -> SystemTime {
+        UNIX_EPOCH + Duration::from_secs(timestamp)
     }
 
     // New PoSy Helper Methods

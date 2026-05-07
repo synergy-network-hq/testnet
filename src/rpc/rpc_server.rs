@@ -537,6 +537,7 @@ fn synthesize_validator(
         cluster_address: None,
         status: ValidatorStatus::Inactive,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        activation_tx_hash: None,
     }
 }
 
@@ -1349,6 +1350,79 @@ fn handle_json_rpc(
             json!(token_manager.get_all_tokens())
         }
 
+        "synergy_resolveSynID" => {
+            if let Some(syn_id) = params.get(0).and_then(|v| v.as_str()) {
+                match crate::synid::resolve_syn_id(syn_id) {
+                    Ok(Some(record)) => json!({
+                        "success": true,
+                        "synId": record.syn_id,
+                        "address": record.address,
+                        "displayName": record.display_name,
+                        "createdAt": record.created_at,
+                        "updatedAt": record.updated_at
+                    }),
+                    Ok(None) => json!(null),
+                    Err(error) => json!({"success": false, "error": error}),
+                }
+            } else {
+                json!({"success": false, "error": "Missing SynID parameter"})
+            }
+        }
+
+        "synergy_reverseResolveSynID" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                match crate::synid::reverse_resolve_syn_id(address) {
+                    Ok(records) => json!({
+                        "success": true,
+                        "address": address,
+                        "records": records
+                    }),
+                    Err(error) => json!({"success": false, "error": error}),
+                }
+            } else {
+                json!({"success": false, "error": "Missing address parameter"})
+            }
+        }
+
+        "synergy_getAddressBook" => {
+            json!({
+                "success": true,
+                "records": crate::synid::list_syn_ids()
+            })
+        }
+
+        "synergy_registerSynID" => {
+            let object = params.get(0).and_then(|v| v.as_object());
+            let syn_id = object
+                .and_then(|obj| obj.get("synId").or_else(|| obj.get("syn_id")))
+                .and_then(|v| v.as_str())
+                .or_else(|| params.get(0).and_then(|v| v.as_str()));
+            let address = object
+                .and_then(|obj| obj.get("address").or_else(|| obj.get("walletAddress")))
+                .and_then(|v| v.as_str())
+                .or_else(|| params.get(1).and_then(|v| v.as_str()));
+            let display_name = object
+                .and_then(|obj| obj.get("displayName").or_else(|| obj.get("name")))
+                .and_then(|v| v.as_str())
+                .or_else(|| params.get(2).and_then(|v| v.as_str()));
+
+            if let (Some(syn_id), Some(address)) = (syn_id, address) {
+                match crate::synid::register_syn_id(syn_id, address, display_name) {
+                    Ok(record) => json!({
+                        "success": true,
+                        "synId": record.syn_id,
+                        "address": record.address,
+                        "displayName": record.display_name,
+                        "createdAt": record.created_at,
+                        "updatedAt": record.updated_at
+                    }),
+                    Err(error) => json!({"success": false, "error": error}),
+                }
+            } else {
+                json!({"success": false, "error": "Missing required parameters: synId, address"})
+            }
+        }
+
         "synergy_createWallet" => {
             if let Ok(mut wallet_manager) = WALLET_MANAGER.lock() {
                 let address = wallet_manager.create_wallet();
@@ -1568,6 +1642,44 @@ fn handle_json_rpc(
                 json!(token_manager.get_staking_info(address))
             } else {
                 json!("Missing address parameter")
+            }
+        }
+
+        "synergy_activateValidator" => {
+            if let (Some(validator), Some(name), Some(amount)) = (
+                params.get(0).and_then(|v| v.as_str()),
+                params.get(1).and_then(|v| v.as_str()),
+                params.get(2).and_then(|v| v.as_u64()),
+            ) {
+                use crate::gas::constants::NWEI_PER_SNRG;
+                let amount_nwei = amount.saturating_mul(NWEI_PER_SNRG as u64);
+
+                if let Ok(mut wallet_manager) = WALLET_MANAGER.lock() {
+                    match wallet_manager.activate_validator(validator, name, amount_nwei) {
+                        Ok(transaction) => {
+                            let tx_hash = transaction.hash();
+                            if let Ok(mut pool) = tx_pool.lock() {
+                                pool.push(transaction.clone());
+                            }
+
+                            if let Some(p2p) = crate::p2p::get_p2p_network() {
+                                p2p.broadcast_transaction(&transaction);
+                            }
+
+                            json!({
+                                "success": true,
+                                "tx_hash": tx_hash,
+                                "transaction": transaction,
+                                "message": "Validator activation transaction submitted"
+                            })
+                        }
+                        Err(error) => json!({"success": false, "error": error}),
+                    }
+                } else {
+                    json!({"success": false, "error": "Failed to access wallet manager"})
+                }
+            } else {
+                json!({"success": false, "error": "Missing required parameters: validator, name, amount"})
             }
         }
 
@@ -3547,17 +3659,18 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getUnstakingPeriod"
         | "synergy_getActiveApprovals"
         | "synergy_getApprovalHistory"
+        | "synergy_resolveSynID"
+        | "synergy_reverseResolveSynID"
+        | "synergy_getAddressBook"
         | "synergy_status" => Some(RpcMethodExposure::PublicRead),
         "synergy_simulateTransaction"
         | "synergy_sendTransaction"
         | "synergy_call"
         | "synergy_estimateGas"
         | "synergy_createApproval"
-        | "synergy_revokeAllApprovals" => Some(RpcMethodExposure::PublicClient),
-        "synergy_resolveSynID"
-        | "synergy_reverseResolveSynID"
-        | "synergy_getAddressBook"
-        | "synergy_createWallet"
+        | "synergy_revokeAllApprovals"
+        | "synergy_registerSynID" => Some(RpcMethodExposure::PublicClient),
+        "synergy_createWallet"
         | "synergy_getWallet"
         | "synergy_createWalletFromKeypair"
         | "synergy_getAllWallets"
@@ -3581,6 +3694,7 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_stakeTokens"
         | "synergy_stakeTokensDirect"
         | "synergy_unstakeTokens"
+        | "synergy_activateValidator"
         | "synergy_registerValidator"
         | "synergy_approveValidator"
         | "synergy_slashValidator"
@@ -4807,6 +4921,25 @@ mod tests {
             .expect("canonical public client method should be allowed");
         enforce_rpc_exposure_policy("synergy_simulateTransaction", &context)
             .expect("simulation should be allowed on the public client surface");
+    }
+
+    #[test]
+    fn public_gateway_allows_synid_resolution_and_registration() {
+        let mut headers = HashMap::new();
+        headers.insert("x-forwarded-for".to_string(), "198.51.100.22".to_string());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        enforce_rpc_exposure_policy("synergy_resolveSynID", &context)
+            .expect("SynID lookup must be public-read for wallet sends");
+        enforce_rpc_exposure_policy("synergy_reverseResolveSynID", &context)
+            .expect("reverse SynID lookup must be public-read");
+        enforce_rpc_exposure_policy("synergy_registerSynID", &context)
+            .expect("wallets must be able to publish their own SynID mapping");
     }
 
     #[test]

@@ -351,6 +351,45 @@ impl WalletManager {
         Ok(tx)
     }
 
+    pub fn activate_validator(
+        &mut self,
+        validator: &str,
+        name: &str,
+        stake_amount_nwei: u64,
+    ) -> Result<Transaction, String> {
+        let wallet = self
+            .get_wallet(validator)
+            .ok_or_else(|| "Validator wallet not found or no private key available".to_string())?;
+        let public_key = wallet.public_key.clone();
+        let nonce = wallet.nonce;
+        let payload = serde_json::json!({
+            "validator": validator,
+            "public_key": public_key,
+            "name": name,
+            "stake_amount_nwei": stake_amount_nwei,
+        });
+
+        let mut tx = Transaction::new(
+            validator.to_string(),
+            validator.to_string(),
+            0,
+            nonce,
+            vec![],
+            1000,
+            21000,
+            Some(format!("validator_activation:{payload}")),
+            "fndsa".to_string(),
+        );
+
+        self.sign_transaction(validator, &mut tx)?;
+
+        if let Some(wallet) = self.wallets.get_mut(validator) {
+            wallet.increment_nonce();
+        }
+
+        Ok(tx)
+    }
+
     pub fn encrypt_payload_with_mlkem1024(
         &self,
         sender: &str,

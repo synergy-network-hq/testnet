@@ -577,6 +577,7 @@ impl SynergyOracle {
             description: None,
             email: None,
             total_transactions_validated: metrics.correct_votes,
+            activation_tx_hash: None,
         }
     }
 
