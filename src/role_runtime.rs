@@ -359,9 +359,28 @@ fn should_auto_register_validator(config: &NodeConfig, profile: Option<&RoleProf
     is_validator_allowed(config, &validator_address)
 }
 
+fn is_validator_profile(profile: Option<&RoleProfile>) -> bool {
+    matches!(profile.map(|value| value.role), Some(NodeRole::Validator))
+}
+
+fn local_validator_is_consensus_authorized(config: &NodeConfig) -> bool {
+    let validator_address = resolve_local_validator_address(config);
+    if config.node.strict_validator_allowlist && is_validator_allowed(config, &validator_address) {
+        return true;
+    }
+
+    VALIDATOR_MANAGER
+        .get_validator(&validator_address)
+        .is_some()
+}
+
 fn should_start_consensus(config: &NodeConfig, profile: Option<&RoleProfile>) -> bool {
     if config.node.bootstrap_only {
         return false;
+    }
+
+    if is_validator_profile(profile) {
+        return local_validator_is_consensus_authorized(config);
     }
 
     match profile {
@@ -378,9 +397,7 @@ fn should_require_state_sync_before_join(
         return false;
     }
 
-    matches!(profile.map(|value| value.role), Some(NodeRole::Validator))
-        && config.node.auto_register_validator
-        && !config.node.bootstrap_only
+    is_validator_profile(profile) && !config.node.bootstrap_only
 }
 
 fn normalize_expected_profile(
@@ -1671,7 +1688,8 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                     "main",
                     "Consensus engine disabled for this node profile",
                     "bootstrap_only" => config.node.bootstrap_only,
-                    "role" => config.identity.role.clone()
+                    "role" => config.identity.role.clone(),
+                    "validator_address" => resolve_local_validator_address(&config)
                 );
                 None
             } else {
@@ -2274,6 +2292,44 @@ mod tests {
         config.node.auto_register_validator = true;
 
         assert!(should_require_state_sync_before_join(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn public_non_genesis_validator_requires_state_sync_before_join() {
+        let mut config = NodeConfig::default();
+        config.validator.state_sync_before_join = true;
+        config.node.auto_register_validator = false;
+
+        assert!(should_require_state_sync_before_join(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn public_non_genesis_validator_does_not_start_consensus_before_activation() {
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1candidate".to_string();
+        config.node.strict_validator_allowlist = true;
+        config.node.allowed_validator_addresses = vec!["synv1genesis".to_string()];
+
+        assert!(!should_start_consensus(
+            &config,
+            Some(NodeRole::Validator.profile())
+        ));
+    }
+
+    #[test]
+    fn allowlisted_genesis_validator_starts_consensus() {
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1genesis".to_string();
+        config.node.strict_validator_allowlist = true;
+        config.node.allowed_validator_addresses = vec!["synv1genesis".to_string()];
+
+        assert!(should_start_consensus(
             &config,
             Some(NodeRole::Validator.profile())
         ));

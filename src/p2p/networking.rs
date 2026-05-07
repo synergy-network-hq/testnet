@@ -41,7 +41,10 @@ const DEFAULT_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
 const TCP_KEEPALIVE_IDLE_SECS: u64 = 300;
 const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
-const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 500;
+const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 64;
+const MAX_STATUS_SYNC_BATCH: u32 = 128;
+const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 160;
+const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 3;
 const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
 const MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
 const VALIDATOR_P2P_PORT: u16 = 5622;
@@ -49,7 +52,7 @@ const VALIDATOR_STATUS_GENESIS_GRACE_SECS: u64 = 30;
 const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
 const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
 const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
-const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 512;
+const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -576,9 +579,9 @@ fn status_sync_batch(block_height: u64, local_height: u64) -> Option<u32> {
 
     let behind = block_height.saturating_sub(local_height);
     Some(if behind > 5000 {
-        2000
+        MAX_STATUS_SYNC_BATCH
     } else if behind > 1000 {
-        1000
+        96
     } else {
         IMMEDIATE_STATUS_SYNC_BATCH
     })
@@ -1966,13 +1969,14 @@ impl P2PNetwork {
                         (local, best)
                     };
                     let behind = best_peer_height.saturating_sub(local_height);
-                    // Request larger batches when far behind.
+                    // Keep background catch-up batches small so a syncing node cannot
+                    // monopolize validator peer locks while consensus is active.
                     let batch = if behind > 5000 {
-                        2000
+                        MAX_STATUS_SYNC_BATCH
                     } else if behind > 1000 {
-                        1000
+                        96
                     } else {
-                        500
+                        IMMEDIATE_STATUS_SYNC_BATCH
                     };
                     if let Some((request_start, request_count)) =
                         block_sync_request_range(local_height, best_peer_height, batch)
@@ -2460,13 +2464,14 @@ fn handle_get_blocks_message(
         "count" => count as u64
     );
 
+    let response_count = count.min(MAX_BLOCK_SYNC_RESPONSE_BLOCKS);
     let blocks = {
         let chain = blockchain.lock().unwrap();
         chain
             .chain
             .iter()
             .filter(|b| b.block_index >= from_height)
-            .take(count as usize)
+            .take(response_count as usize)
             .cloned()
             .collect::<Vec<_>>()
     };
@@ -2475,11 +2480,17 @@ fn handle_get_blocks_message(
     let mut peers = connected_peers.lock().unwrap();
     if let Some(peer) = peers.get_mut(peer_address) {
         if let Some(ref mut stream) = peer.stream {
-            if let Err(e) = send_message(stream, &response) {
+            if let Err(e) = send_message_with_write_timeout(
+                stream,
+                &response,
+                Duration::from_secs(BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS),
+            ) {
                 warn!(
                     "p2p",
                     "Failed to send blocks",
                     "peer" => peer_address.to_string(),
+                    "requested" => count as u64,
+                    "served" => response_count as u64,
                     "error" => e.to_string()
                 );
             } else {
@@ -3386,7 +3397,7 @@ fn handle_messages(
                                 .chain
                                 .iter()
                                 .filter(|block| block.block_index >= start_height)
-                                .take(count.min(500) as usize)
+                                .take(count.min(MAX_BLOCK_SYNC_RESPONSE_BLOCKS as u64) as usize)
                                 .map(|block| block.header())
                                 .collect::<Vec<_>>()
                         };
@@ -3603,6 +3614,23 @@ fn send_message(
     stream.flush()?;
 
     Ok(())
+}
+
+fn send_message_with_write_timeout(
+    stream: &mut TcpStream,
+    message: &NetworkMessage,
+    timeout: Duration,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let previous_timeout = stream.write_timeout()?;
+    stream.set_write_timeout(Some(timeout))?;
+    let send_result = send_message(stream, message);
+    let restore_result = stream.set_write_timeout(previous_timeout);
+
+    match (send_result, restore_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(Box::new(error)),
+        (Ok(_), Ok(_)) => Ok(()),
+    }
 }
 
 fn receive_message(stream: &mut impl Read) -> Result<NetworkMessage, io::Error> {
@@ -4116,7 +4144,8 @@ mod tests {
         validator_status_genesis_within_grace_window, vote_request_parent_sync_range,
         ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection, PeerEntryGuard,
         BACKGROUND_SYNC_POLL_MILLIS, DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
-        NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
+        MAX_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
+        STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -4841,8 +4870,8 @@ mod tests {
     fn status_sync_batch_only_requests_blocks_for_ahead_peer() {
         assert_eq!(status_sync_batch(10, 10), None);
         assert_eq!(status_sync_batch(11, 10), Some(IMMEDIATE_STATUS_SYNC_BATCH));
-        assert_eq!(status_sync_batch(2_500, 1_000), Some(1_000));
-        assert_eq!(status_sync_batch(7_000, 1_000), Some(2_000));
+        assert_eq!(status_sync_batch(2_500, 1_000), Some(96));
+        assert_eq!(status_sync_batch(7_000, 1_000), Some(MAX_STATUS_SYNC_BATCH));
     }
 
     #[test]
@@ -4851,11 +4880,11 @@ mod tests {
         assert_eq!(block_sync_request_range(0, 12, 500), Some((0, 13)));
         assert_eq!(
             block_sync_request_range(20_657, 20_735, 500),
-            Some((20_145, 591))
+            Some((20_649, 87))
         );
         assert_eq!(
             block_sync_request_range(10_000, 20_000, 2_000),
-            Some((9_488, 2_513))
+            Some((9_992, 2_009))
         );
     }
 

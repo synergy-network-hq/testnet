@@ -9,7 +9,8 @@ use crate::p2p::networking::{P2PNetwork, PeerSnapshot};
 use crate::sync::fast_sync;
 use crate::sync::validation;
 
-const SYNC_RECONCILIATION_LOOKBACK: u64 = 512;
+const SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
+const MAX_SYNC_BATCH_BLOCKS: u64 = 128;
 
 /// Represents where the sync engine currently is in the lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,16 +280,12 @@ impl SyncManager {
             }
             let sync_tip = self.local_height;
             let remaining = self.network_height - self.local_height;
-            let batch_size = if remaining > 10000 {
-                2000
-            } else if remaining > 5000 {
-                1000
-            } else if remaining > 2000 {
-                600
-            } else if remaining > 500 {
-                400
+            let batch_size = if remaining > 5000 {
+                MAX_SYNC_BATCH_BLOCKS
+            } else if remaining > 1000 {
+                96
             } else {
-                std::cmp::min(remaining, 200)
+                std::cmp::min(remaining, 64)
             };
             let target_height = std::cmp::min(self.network_height, sync_tip + batch_size);
             let request_start = sync_tip.saturating_sub(SYNC_RECONCILIATION_LOOKBACK);
