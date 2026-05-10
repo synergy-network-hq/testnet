@@ -42,6 +42,13 @@ struct TestnetBetaProfileWallets {
     stake_vault_wallet: TestnetBetaProfileWalletRecord,
 }
 
+#[derive(Debug, Clone)]
+struct TestnetBetaWalletMaterial {
+    address: String,
+    public_key: String,
+    private_key: String,
+}
+
 impl Wallet {
     pub fn new(address: String, public_key: String) -> Self {
         Wallet {
@@ -663,16 +670,19 @@ pub fn init_testbeta_wallets() {
                 continue;
             }
 
-            if let Ok(mut wm) = WALLET_MANAGER.lock() {
-                // Import wallet under the explicit address from the identity file.
-                if wm
-                    .import_wallet(address.clone(), public_key, private_key)
-                    .is_ok()
-                {
-                    imported += 1;
-                }
-            }
+            import_testbeta_wallet_material(
+                TestnetBetaWalletMaterial {
+                    address,
+                    public_key,
+                    private_key,
+                },
+                &mut imported,
+            );
         }
+    }
+
+    for wallet_material in load_testbeta_local_identity_wallets() {
+        import_testbeta_wallet_material(wallet_material, &mut imported);
     }
 
     for wallet_record in load_testbeta_profile_wallet_records() {
@@ -708,19 +718,128 @@ pub fn init_testbeta_wallets() {
             continue;
         }
 
-        if let Ok(mut wm) = WALLET_MANAGER.lock() {
-            if wm
-                .import_wallet(wallet_record.address.clone(), public_key, private_key)
-                .is_ok()
-            {
-                imported += 1;
-            }
-        }
+        import_testbeta_wallet_material(
+            TestnetBetaWalletMaterial {
+                address: wallet_record.address.clone(),
+                public_key,
+                private_key,
+            },
+            &mut imported,
+        );
     }
 
     if imported > 0 {
         info!("wallet", "Imported testnet beta identities", "count" => imported);
     }
+}
+
+fn import_testbeta_wallet_material(wallet_material: TestnetBetaWalletMaterial, imported: &mut u64) {
+    if wallet_material.address.trim().is_empty()
+        || wallet_material.public_key.trim().is_empty()
+        || wallet_material.private_key.trim().is_empty()
+    {
+        return;
+    }
+
+    if let Ok(mut wm) = WALLET_MANAGER.lock() {
+        if wm
+            .import_wallet(
+                wallet_material.address,
+                wallet_material.public_key,
+                wallet_material.private_key,
+            )
+            .is_ok()
+        {
+            *imported += 1;
+        }
+    }
+}
+
+fn load_testbeta_local_identity_wallets() -> Vec<TestnetBetaWalletMaterial> {
+    candidate_testbeta_local_identity_paths()
+        .into_iter()
+        .filter_map(|path| read_testbeta_identity_wallet_material(&path))
+        .collect()
+}
+
+fn read_testbeta_identity_wallet_material(
+    identity_path: &PathBuf,
+) -> Option<TestnetBetaWalletMaterial> {
+    let identity_str = std::fs::read_to_string(identity_path).ok()?;
+    let identity = serde_json::from_str::<serde_json::Value>(&identity_str).ok()?;
+    let key_directory = identity_path.parent()?;
+
+    let address = identity
+        .get("address")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let public_key = identity
+        .get("public_key")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| read_trimmed_file(key_directory.join("public.key")));
+    let private_key = identity
+        .get("private_key")
+        .and_then(|value| value.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .or_else(|| read_trimmed_file(key_directory.join("private.key")));
+
+    match (address.is_empty(), public_key, private_key) {
+        (false, Some(public_key), Some(private_key))
+            if !public_key.is_empty() && !private_key.is_empty() =>
+        {
+            Some(TestnetBetaWalletMaterial {
+                address,
+                public_key,
+                private_key,
+            })
+        }
+        _ => None,
+    }
+}
+
+fn candidate_testbeta_local_identity_paths() -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+
+    if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
+        let root = PathBuf::from(project_root.trim());
+        if !root.as_os_str().is_empty() {
+            candidates.push(root.join("keys").join("identity.json"));
+        }
+    }
+
+    if let Ok(config_path) = std::env::var("SYNERGY_CONFIG_PATH") {
+        let path = PathBuf::from(config_path.trim());
+        if let Some(workspace_root) = path.parent().and_then(|config_dir| config_dir.parent()) {
+            candidates.push(workspace_root.join("keys").join("identity.json"));
+        }
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        candidates.push(current_dir.join("keys").join("identity.json"));
+    }
+
+    let mut deduped = Vec::new();
+    for candidate in candidates {
+        if !deduped.contains(&candidate) {
+            deduped.push(candidate);
+        }
+    }
+
+    deduped
+}
+
+fn read_trimmed_file(path: PathBuf) -> Option<String> {
+    std::fs::read_to_string(path)
+        .ok()
+        .map(|contents| contents.trim().to_string())
+        .filter(|contents| !contents.is_empty())
 }
 
 fn load_testbeta_profile_wallet_records() -> Vec<TestnetBetaProfileWalletRecord> {
@@ -789,6 +908,7 @@ fn parse_signature_algorithm(value: &str) -> Result<PQCAlgorithm, String> {
 mod tests {
     use super::*;
     use crate::transaction::Transaction;
+    use std::fs;
 
     #[test]
     fn wallet_signed_transaction_verifies_with_strict_pqc() {
@@ -845,5 +965,34 @@ mod tests {
             !wallet_manager.verify_signature(&tx),
             "unknown signature algorithm should be rejected"
         );
+    }
+
+    #[test]
+    fn local_identity_loader_uses_sibling_key_files_when_metadata_omits_private_key() {
+        let root = std::env::temp_dir().join(format!(
+            "synergy-wallet-identity-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system time should be valid")
+                .as_nanos()
+        ));
+        let keys = root.join("keys");
+        fs::create_dir_all(&keys).expect("keys directory should be created");
+        let identity_path = keys.join("identity.json");
+        fs::write(
+            &identity_path,
+            r#"{"address":"synv1localidentity","public_key":"public-from-json"}"#,
+        )
+        .expect("identity should write");
+        fs::write(keys.join("private.key"), "private-from-file").expect("private key should write");
+
+        let material = read_testbeta_identity_wallet_material(&identity_path)
+            .expect("local identity should load from identity.json plus private.key");
+
+        assert_eq!(material.address, "synv1localidentity");
+        assert_eq!(material.public_key, "public-from-json");
+        assert_eq!(material.private_key, "private-from-file");
+
+        let _ = fs::remove_dir_all(root);
     }
 }

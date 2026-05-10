@@ -18,8 +18,8 @@ use crate::sync::{SyncManager, SyncState};
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::validator::{
-    Validator, ValidatorManager, ValidatorStatus, INITIAL_VALIDATOR_SYNERGY_SCORE,
-    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+    balanced_validator_cluster_id, Validator, ValidatorManager, ValidatorStatus,
+    INITIAL_VALIDATOR_SYNERGY_SCORE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 // Temporarily disabled for quick compile
@@ -496,8 +496,8 @@ pub fn prune_transaction_hashes_from_pool(confirmed_hashes: &HashSet<String>) ->
     before.saturating_sub(pool.len())
 }
 
-fn default_cluster_id(index: usize) -> Option<u64> {
-    Some((index / TESTNET_BETA_VALIDATOR_CLUSTER_SIZE.max(1)) as u64)
+fn default_cluster_id(index: usize, active_validator_count: usize) -> Option<u64> {
+    balanced_validator_cluster_id(index, active_validator_count)
 }
 
 fn synthesize_validator(
@@ -612,6 +612,7 @@ fn network_validator_snapshot(
         .unwrap_or(0);
 
     if let Ok(genesis) = canonical_genesis() {
+        let genesis_validator_count = genesis.validators().len();
         for (index, entry) in genesis.validators().iter().enumerate() {
             let address = entry.operator_address.clone();
             let validator = validators.entry(address.clone()).or_insert_with(|| {
@@ -636,7 +637,7 @@ fn network_validator_snapshot(
                 validator.min_stake_required = entry.stake_nwei.max(1);
             }
             if validator.cluster_id.is_none() {
-                validator.cluster_id = default_cluster_id(index);
+                validator.cluster_id = default_cluster_id(index, genesis_validator_count);
             }
             if validator.registered_at == 0 {
                 validator.registered_at = genesis.timestamp();
@@ -672,11 +673,12 @@ fn network_validator_snapshot(
 
     let mut ordered = validators.into_values().collect::<Vec<_>>();
     ordered.sort_by(|left, right| left.address.cmp(&right.address));
+    let observed_validator_count = ordered.len();
     for (index, validator) in ordered.iter_mut().enumerate() {
         let is_recently_active = recent_active.contains(&validator.address);
         let has_observed_activity = validator.total_blocks_produced > 0;
         if validator.cluster_id.is_none() {
-            validator.cluster_id = default_cluster_id(index);
+            validator.cluster_id = default_cluster_id(index, observed_validator_count);
         }
         if validator.min_stake_required == 0 {
             validator.min_stake_required = validator.stake_amount.max(1);

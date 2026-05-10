@@ -1306,16 +1306,27 @@ impl ProofOfSynergy {
         // 3. Recalculate synergy scores
         Self::recalculate_all_synergy_scores(validator_manager, synergy_calculator);
 
-        // 4. Detect cartels and apply penalties
+        // 4. Rebalance validator clusters deterministically for this epoch.
+        validator_manager.reorganize_clusters_for_epoch(*current_epoch);
+        if let Err(error) = validator_manager.save_registry(VALIDATOR_REGISTRY_PATH) {
+            warn!(
+                "consensus",
+                "Failed to save validator registry after epoch cluster shuffle",
+                "epoch" => *current_epoch,
+                "error" => error.to_string()
+            );
+        }
+
+        // 5. Detect cartels and apply penalties
         let mut cartel_engine = cartel_detection.lock().unwrap();
         let cartel_penalties = cartel_engine.detect_cartels(*current_epoch);
         cartel_engine.apply_cartel_penalties(&cartel_penalties);
 
-        // 5. Update governance proposals
+        // 6. Update governance proposals
         let mut governance = dao_governance.lock().unwrap();
         Self::update_governance_proposals(&mut governance, *current_epoch);
 
-        // 6. Reset dual quorum consensus state
+        // 7. Reset dual quorum consensus state
         let mut consensus = dual_quorum_consensus.lock().unwrap();
         consensus.current_epoch = *current_epoch;
 

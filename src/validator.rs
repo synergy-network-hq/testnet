@@ -3,6 +3,7 @@ use crate::genesis::canonical_genesis;
 use crate::token::TokenManager;
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
+use sha3::{Digest, Sha3_256};
 use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -10,7 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERBOSE_VALIDATOR_LOGS: bool = false;
 pub const INITIAL_VALIDATOR_SYNERGY_SCORE: f64 = 100.0;
-pub const TESTNET_BETA_VALIDATOR_CLUSTER_SIZE: usize = 5;
+pub const TESTNET_BETA_VALIDATOR_CLUSTER_SIZE: usize = 7;
+pub const TESTNET_BETA_FIRST_CLUSTER_SPLIT_THRESHOLD: usize = 6;
 pub const MISSED_VOTE_JAIL_THRESHOLD: u64 = 3;
 pub const MISSED_VOTE_SLASH_THRESHOLD: u64 = 6;
 const MISSED_VOTE_WINDOW_DECAY: u64 = 1;
@@ -27,6 +29,38 @@ macro_rules! validator_log {
             println!($($arg)*);
         }
     };
+}
+
+pub fn target_validator_cluster_count(active_validator_count: usize) -> usize {
+    if active_validator_count == 0 {
+        0
+    } else if active_validator_count < TESTNET_BETA_FIRST_CLUSTER_SPLIT_THRESHOLD {
+        1
+    } else {
+        2.max(active_validator_count.div_ceil(TESTNET_BETA_VALIDATOR_CLUSTER_SIZE))
+    }
+}
+
+pub fn balanced_validator_cluster_id(index: usize, active_validator_count: usize) -> Option<u64> {
+    let cluster_count = target_validator_cluster_count(active_validator_count);
+    if cluster_count == 0 || index >= active_validator_count {
+        return None;
+    }
+
+    let base_cluster_size = active_validator_count / cluster_count;
+    let extra_members = active_validator_count % cluster_count;
+    let mut start = 0usize;
+
+    for cluster_index in 0..cluster_count {
+        let size = base_cluster_size + usize::from(cluster_index < extra_members);
+        let end = start + size;
+        if index < end {
+            return Some(cluster_index as u64);
+        }
+        start = end;
+    }
+
+    None
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -425,7 +459,11 @@ impl ValidatorRegistry {
     }
 
     pub fn reorganize_clusters(&mut self) {
-        let cluster_size = self.cluster_size.max(1);
+        self.reorganize_clusters_for_epoch(self.current_epoch);
+    }
+
+    pub fn reorganize_clusters_for_epoch(&mut self, epoch: u64) {
+        self.current_epoch = epoch;
         let mut active_validators: Vec<Validator> =
             self.get_active_validators().into_iter().cloned().collect();
 
@@ -440,13 +478,12 @@ impl ValidatorRegistry {
         }
 
         active_validators.sort_by(|a, b| {
-            b.synergy_score
-                .partial_cmp(&a.synergy_score)
-                .unwrap_or(Ordering::Equal)
+            epoch_cluster_rank(epoch, &a.address)
+                .cmp(&epoch_cluster_rank(epoch, &b.address))
                 .then_with(|| a.address.cmp(&b.address))
         });
 
-        let cluster_count = active_validators.len().div_ceil(cluster_size);
+        let cluster_count = target_validator_cluster_count(active_validators.len());
         let base_cluster_size = active_validators.len() / cluster_count;
         let extra_members = active_validators.len() % cluster_count;
         let target_sizes: Vec<usize> = (0..cluster_count)
@@ -620,6 +657,13 @@ impl ValidatorRegistry {
     }
 }
 
+fn epoch_cluster_rank(epoch: u64, address: &str) -> [u8; 32] {
+    let mut hasher = Sha3_256::new();
+    hasher.update(epoch.to_be_bytes());
+    hasher.update(address.as_bytes());
+    hasher.finalize().into()
+}
+
 #[derive(Debug, Clone)]
 pub struct ValidatorPerformanceUpdate {
     pub validator_address: String,
@@ -778,6 +822,12 @@ impl ValidatorManager {
             registry.clusters.len()
         } else {
             0
+        }
+    }
+
+    pub fn reorganize_clusters_for_epoch(&self, epoch: u64) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.reorganize_clusters_for_epoch(epoch);
         }
     }
 
@@ -1219,18 +1269,12 @@ mod tests {
         cluster_sizes.sort_unstable();
 
         assert_eq!(registry.clusters.len(), 2);
-        assert_eq!(
-            cluster_sizes,
-            vec![
-                TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
-                TESTNET_BETA_VALIDATOR_CLUSTER_SIZE
-            ]
-        );
+        assert_eq!(cluster_sizes, vec![5, 5]);
     }
 
     #[test]
-    fn reorganize_clusters_adds_a_new_cluster_every_five_validators() {
-        let registry = active_registry(16);
+    fn reorganize_clusters_keeps_fourteen_validators_in_two_balanced_clusters() {
+        let registry = active_registry(14);
         let mut cluster_sizes: Vec<usize> = registry
             .clusters
             .values()
@@ -1238,11 +1282,43 @@ mod tests {
             .collect();
         cluster_sizes.sort_unstable();
 
-        assert_eq!(registry.clusters.len(), 4);
-        assert_eq!(cluster_sizes, vec![4, 4, 4, 4]);
-        assert!(cluster_sizes
+        assert_eq!(registry.clusters.len(), 2);
+        assert_eq!(cluster_sizes, vec![7, 7]);
+    }
+
+    #[test]
+    fn reorganize_clusters_adds_third_cluster_at_fifteen_validators() {
+        let registry = active_registry(15);
+        let mut cluster_sizes: Vec<usize> = registry
+            .clusters
+            .values()
+            .map(|cluster| cluster.validators.len())
+            .collect();
+        cluster_sizes.sort_unstable();
+
+        assert_eq!(registry.clusters.len(), 3);
+        assert_eq!(cluster_sizes, vec![5, 5, 5]);
+    }
+
+    #[test]
+    fn reorganize_clusters_shuffles_assignments_by_epoch() {
+        let mut registry = active_registry(12);
+        let epoch_zero_assignments: HashMap<String, Option<u64>> = registry
+            .validators
             .iter()
-            .all(|size| *size <= TESTNET_BETA_VALIDATOR_CLUSTER_SIZE));
+            .map(|(address, validator)| (address.clone(), validator.cluster_id))
+            .collect();
+
+        registry.reorganize_clusters_for_epoch(1);
+
+        let moved = registry.validators.iter().any(|(address, validator)| {
+            epoch_zero_assignments.get(address).copied().flatten() != validator.cluster_id
+        });
+
+        assert!(
+            moved,
+            "at least one validator should move clusters after an epoch shuffle"
+        );
     }
 
     #[test]
