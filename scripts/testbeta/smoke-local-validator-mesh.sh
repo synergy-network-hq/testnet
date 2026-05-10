@@ -11,11 +11,11 @@ WORKDIR=""
 CREATED_WORKDIR="false"
 
 VALIDATOR_ADDRESSES=(
-  "synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra"
-  "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu"
-  "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
-  "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49"
-  "synv11mvlgy72uq7kuh200qnxv67zrqjugz267k46"
+  "synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs"
+  "synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt"
+  "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re"
+  "synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5"
+  "synv11kguave5fpdpm9hru4acfvw0hcp4fcc7zv9f"
 )
 P2P_PORTS=(5722 5723 5724 5725 5726)
 RPC_PORTS=(5740 5741 5742 5743 5744)
@@ -335,7 +335,7 @@ epoch_length = 1000
 min_validators = 3
 validator_cluster_size = 5
 validator_vote_threshold = 2
-max_validators = 5
+max_validators = 100
 status_ready_gate_enabled = true
 status_ready_min_validators = 2
 status_ready_genesis_grace_secs = 60

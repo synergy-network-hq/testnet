@@ -1468,9 +1468,9 @@ additional_dial_targets = ["62.146.182.208:39638"]
     fn preserves_explicit_p2p_public_address_for_genesis_validator_configs() {
         let content = r#"
 [identity]
-node_id = "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
+node_id = "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re"
 role = "validator"
-address = "synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu"
+address = "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re"
 label = "Genesis Validator 3 Node"
 
 [network]
@@ -1638,14 +1638,14 @@ state_sync_before_join = true
         let _lock = ENV_MUTEX.lock().expect("env mutex should lock");
         let _validator = EnvVarGuard::set(
             "SYNERGY_VALIDATOR_ADDRESS",
-            "synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu",
+            "synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt",
         );
         let _node_address = EnvVarGuard::clear("NODE_ADDRESS");
         let _config_path = EnvVarGuard::clear("SYNERGY_CONFIG_PATH");
 
         assert_eq!(
             resolve_runtime_validator_address().as_deref(),
-            Some("synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu")
+            Some("synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt")
         );
     }
 
@@ -1729,7 +1729,7 @@ enable_pruning = false
 pruning_interval = 86400
 
 [node]
-validator_address = "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49"
+validator_address = "synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5"
 "#,
         )
         .expect("config should write");
@@ -1740,7 +1740,7 @@ validator_address = "synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49"
 
         assert_eq!(
             resolve_runtime_validator_address().as_deref(),
-            Some("synv118u0v2gxn4zew5j886hwz32tkaujsvhykf49")
+            Some("synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5")
         );
 
         fs::remove_file(&config_path).ok();

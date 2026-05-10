@@ -245,7 +245,7 @@ for bundle in bootnode1 bootnode2 bootnode3; do
     echo "[$bundle] validator_cluster_size must be 5" >&2
     failures=$((failures + 1))
   fi
-  if ! rg -q '^max_validators = 5$' "$node_config"; then
+  if ! rg -q '^max_validators = 100$' "$node_config"; then
     echo "[$bundle] max_validators must be 5" >&2
     failures=$((failures + 1))
   fi

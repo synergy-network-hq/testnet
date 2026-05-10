@@ -3328,12 +3328,51 @@ fn handle_messages(
                         }
 
                         let tx_hash = transaction_data.hash();
-                        let mut pool = TX_POOL.lock().unwrap();
-                        if !pool.iter().any(|t| t.hash() == tx_hash) {
-                            pool.push(transaction_data);
-                            info!("p2p", "Transaction added to pool", "tx_hash" => tx_hash);
-                        } else {
-                            debug!("p2p", "Duplicate transaction ignored", "tx_hash" => tx_hash);
+                        let should_forward = {
+                            let mut pool = TX_POOL.lock().unwrap();
+                            if !pool.iter().any(|t| t.hash() == tx_hash) {
+                                pool.push(transaction_data.clone());
+                                info!("p2p", "Transaction added to pool", "tx_hash" => tx_hash.clone());
+                                true
+                            } else {
+                                debug!("p2p", "Duplicate transaction ignored", "tx_hash" => tx_hash.clone());
+                                false
+                            }
+                        };
+
+                        if should_forward {
+                            let message = NetworkMessage::Transaction { transaction_data };
+                            let mut peers = connected_peers.lock().unwrap();
+                            let mut forwarded_peers = 0u64;
+
+                            for (address, peer) in peers.iter_mut() {
+                                if address == &peer_address {
+                                    continue;
+                                }
+
+                                if let Some(ref mut stream) = peer.stream {
+                                    if let Err(error) = send_message(stream, &message) {
+                                        warn!(
+                                            "p2p",
+                                            "Failed to forward transaction",
+                                            "peer" => address.clone(),
+                                            "tx_hash" => tx_hash.clone(),
+                                            "error" => error.to_string()
+                                        );
+                                    } else {
+                                        peer.txs_sent += 1;
+                                        forwarded_peers += 1;
+                                    }
+                                }
+                            }
+
+                            info!(
+                                "p2p",
+                                "Transaction forwarded",
+                                "tx_hash" => tx_hash,
+                                "from_peer" => peer_address.clone(),
+                                "peers" => forwarded_peers
+                            );
                         }
                     }
                     NetworkMessage::GetBlocks { from_height, count } => {
@@ -4269,8 +4308,8 @@ mod tests {
 
     #[test]
     fn validator_duplicate_resolution_prefers_opposite_directions_on_each_side() {
-        let local_a = "validator:synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra";
-        let local_b = "validator:synv11v2r4gnp5py3ae5ft6646lxpqphdv58k8tyu";
+        let local_a = "validator:synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs";
+        let local_b = "validator:synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re";
 
         let decision_a = resolve_duplicate_connection(
             local_a,
@@ -4645,7 +4684,7 @@ mod tests {
                 address: "62.146.182.208:5622".to_string(),
                 direction: ConnectionDirection::Incoming,
                 public_address: Some("genesisval2.synergynode.xyz:5622".to_string()),
-                validator_address: Some("synv11wrj74dnkc802jfl4e7j7jd2azj2zk2eqvgu".to_string()),
+                validator_address: Some("synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt".to_string()),
                 connected_at: 0,
                 last_seen: 0,
                 blocks_sent: 0,
