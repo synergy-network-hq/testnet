@@ -49,6 +49,38 @@ macro_rules! consensus_log {
     };
 }
 
+fn staking_payload(tx: &crate::transaction::Transaction) -> Option<serde_json::Value> {
+    let data = tx.data.as_deref()?;
+    let payload = data.strip_prefix("stake:")?;
+    serde_json::from_str::<serde_json::Value>(payload).ok()
+}
+
+fn staking_validator_address(tx: &crate::transaction::Transaction) -> Option<String> {
+    staking_payload(tx)?
+        .get("validator")
+        .and_then(|value| value.as_str())
+        .map(str::to_string)
+}
+
+fn staking_amount_nwei(tx: &crate::transaction::Transaction) -> Option<u64> {
+    staking_payload(tx)?
+        .get("amount")
+        .and_then(|value| value.as_u64())
+}
+
+fn snrg_balance_required_for_transaction(tx: &crate::transaction::Transaction) -> u64 {
+    if tx
+        .data
+        .as_deref()
+        .map(|data| data.starts_with("stake:"))
+        .unwrap_or(false)
+    {
+        return staking_amount_nwei(tx).unwrap_or(tx.amount);
+    }
+
+    tx.amount.saturating_add(tx.get_fee())
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SynergyScores {
     pub scores: HashMap<String, f64>,
@@ -1779,6 +1811,41 @@ impl ProofOfSynergy {
         tx: &crate::transaction::Transaction,
         pqc_manager: &Arc<Mutex<PQCManager>>,
     ) -> bool {
+        if !crate::address::is_valid_address(&tx.sender) {
+            warn!(
+                "consensus",
+                "Rejecting transaction with invalid sender address",
+                "tx_hash" => tx.hash(),
+                "sender" => tx.sender.clone()
+            );
+            return false;
+        }
+
+        if !tx.receiver.trim().is_empty()
+            && !tx.receiver.starts_with("contract_")
+            && !crate::address::is_valid_address(&tx.receiver)
+        {
+            warn!(
+                "consensus",
+                "Rejecting transaction with invalid receiver address",
+                "tx_hash" => tx.hash(),
+                "receiver" => tx.receiver.clone()
+            );
+            return false;
+        }
+
+        if let Some(validator) = staking_validator_address(tx) {
+            if !crate::address::is_valid_address(&validator) {
+                warn!(
+                    "consensus",
+                    "Rejecting staking transaction with invalid validator address",
+                    "tx_hash" => tx.hash(),
+                    "validator" => validator
+                );
+                return false;
+            }
+        }
+
         // 1. Verify transaction signature (best-effort)
         // NOTE: Testnet Beta currently allows transactions even if the sender public key
         // isn't known locally (remote wallets). If a public key is available, we verify.
@@ -1816,7 +1883,7 @@ impl ProofOfSynergy {
 
         // 2. Verify sender balance via token manager to reflect on-chain state
         let token_manager = TOKEN_MANAGER.clone();
-        let required = tx.amount.saturating_add(tx.get_fee());
+        let required = snrg_balance_required_for_transaction(tx);
         if token_manager.get_balance(&tx.sender, "SNRG") < required {
             return false;
         }

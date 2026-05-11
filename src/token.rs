@@ -563,6 +563,13 @@ impl TokenManager {
         token_symbol: &str,
         amount: u64,
     ) -> Result<String, String> {
+        if !crate::address::is_valid_address(staker) {
+            return Err("Invalid staker Synergy address".to_string());
+        }
+        if !crate::address::is_valid_address(validator) {
+            return Err("Invalid validator Synergy address".to_string());
+        }
+
         let current_balance = self.get_balance(staker, token_symbol);
         if current_balance < amount {
             return Err("Insufficient balance for staking".to_string());

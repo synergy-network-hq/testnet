@@ -280,6 +280,13 @@ impl WalletManager {
         memo: Option<&str>,
         token_manager: &crate::token::TokenManager,
     ) -> Result<Transaction, String> {
+        if !crate::address::is_valid_address(from) {
+            return Err("Invalid sender Synergy address".to_string());
+        }
+        if !crate::address::is_valid_address(to) {
+            return Err("Invalid receiver Synergy address".to_string());
+        }
+
         // Check balance
         let balance = token_manager.get_balance(from, token_symbol);
         if balance < amount {
@@ -325,6 +332,13 @@ impl WalletManager {
         amount: u64,
         token_manager: &crate::token::TokenManager,
     ) -> Result<Transaction, String> {
+        if !crate::address::is_valid_address(staker) {
+            return Err("Invalid staker Synergy address".to_string());
+        }
+        if !crate::address::is_valid_address(validator) {
+            return Err("Invalid validator Synergy address".to_string());
+        }
+
         // Check balance
         let balance = token_manager.get_balance(staker, token_symbol);
         if balance < amount {
@@ -364,6 +378,10 @@ impl WalletManager {
         name: &str,
         stake_amount_nwei: u64,
     ) -> Result<Transaction, String> {
+        if !crate::address::is_valid_address(validator) {
+            return Err("Invalid validator Synergy address".to_string());
+        }
+
         let wallet = self
             .get_wallet(validator)
             .ok_or_else(|| "Validator wallet not found or no private key available".to_string())?;
