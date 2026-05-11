@@ -1725,12 +1725,11 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 );
                 Some(spawn_consensus_engine())
             };
-            let watch_for_activation_consensus =
-                should_watch_for_validator_activation_consensus(
-                    &config,
-                    role_profile,
-                    consensus_enabled,
-                );
+            let watch_for_activation_consensus = should_watch_for_validator_activation_consensus(
+                &config,
+                role_profile,
+                consensus_enabled,
+            );
 
             let running = Arc::new(AtomicBool::new(true));
             let role_services = start_role_local_services(role_profile, &config, &running);
@@ -2441,7 +2440,8 @@ mod tests {
         config.node.strict_validator_allowlist = true;
         config.node.allowed_validator_addresses = vec!["synv1genesis".to_string()];
 
-        let consensus_enabled = should_start_consensus(&config, Some(NodeRole::Validator.profile()));
+        let consensus_enabled =
+            should_start_consensus(&config, Some(NodeRole::Validator.profile()));
         assert!(!consensus_enabled);
         assert!(should_watch_for_validator_activation_consensus(
             &config,

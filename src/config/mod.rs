@@ -117,15 +117,15 @@ fn default_allow_genesis_status_bypass() -> bool {
 }
 
 fn default_mesh_settle_secs() -> u64 {
-    3
+    1
 }
 
 fn default_vote_timeout_secs() -> u64 {
-    8
+    2
 }
 
 fn default_block_timeout_secs() -> u64 {
-    5
+    6
 }
 
 fn default_penalization_enabled() -> bool {
@@ -293,7 +293,7 @@ impl Default for NodeConfig {
                 block_time_secs: 2,
                 epoch_length: 1000,
                 min_validators: default_min_validators(),
-                validator_cluster_size: 5,
+                validator_cluster_size: 7,
                 validator_vote_threshold: default_validator_vote_threshold(),
                 max_validators: default_max_validators(),
                 status_ready_gate_enabled: default_status_ready_gate_enabled(),
@@ -1368,7 +1368,7 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 5
+validator_cluster_size = 7
 validator_vote_threshold = 3
 max_validators = 100
 synergy_score_decay_rate = 0.05
@@ -1682,7 +1682,7 @@ chain_id = 338639
 algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
-validator_cluster_size = 5
+validator_cluster_size = 7
 validator_vote_threshold = 3
 max_validators = 100
 synergy_score_decay_rate = 0.05

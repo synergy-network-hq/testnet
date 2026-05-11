@@ -665,12 +665,59 @@ impl TokenManager {
     }
 
     pub fn get_staked_balance(&self, address: &str, token_symbol: &str) -> u64 {
+        if address == "*" {
+            let direct_total = self
+                .staked_balances
+                .lock()
+                .ok()
+                .map(|staked| {
+                    staked
+                        .values()
+                        .filter_map(|balances| balances.get(token_symbol))
+                        .copied()
+                        .sum::<u64>()
+                })
+                .unwrap_or(0);
+            if direct_total > 0 {
+                return direct_total;
+            }
+
+            return self
+                .stakes
+                .lock()
+                .ok()
+                .map(|stakes| {
+                    stakes
+                        .values()
+                        .flatten()
+                        .filter(|stake| stake.is_active)
+                        .map(|stake| stake.amount)
+                        .sum::<u64>()
+                })
+                .unwrap_or(0);
+        }
+
         if let Ok(staked) = self.staked_balances.lock() {
             if let Some(address_staked) = staked.get(address) {
-                return address_staked.get(token_symbol).unwrap_or(&0).clone();
+                let direct = address_staked.get(token_symbol).copied().unwrap_or(0);
+                if direct > 0 {
+                    return direct;
+                }
             }
         }
-        0
+
+        self.stakes
+            .lock()
+            .ok()
+            .map(|stakes| {
+                stakes
+                    .values()
+                    .flatten()
+                    .filter(|stake| stake.is_active && stake.staker_address == address)
+                    .map(|stake| stake.amount)
+                    .sum::<u64>()
+            })
+            .unwrap_or(0)
     }
 
     /// Distribute rewards to a cluster, then to validators in that cluster based on normalized synergy scores
@@ -1606,5 +1653,28 @@ mod tests {
         assert_eq!(manager.get_balance(staker, "SNRG"), 7_000);
         assert_eq!(manager.get_balance(validator, "SNRG"), 0);
         assert_eq!(manager.get_staked_balance(staker, "SNRG"), 3_000);
+    }
+
+    #[test]
+    fn staked_balance_falls_back_to_active_stake_entries() {
+        let manager = TokenManager::new();
+        let staker = "synw1stakerfallback00000000000000000000";
+        let validator = "synv1validatorfallback0000000000000000";
+
+        manager.stakes.lock().unwrap().insert(
+            validator.to_string(),
+            vec![StakingInfo {
+                validator_address: validator.to_string(),
+                staker_address: staker.to_string(),
+                amount: 50_000,
+                stake_start: 1,
+                stake_end: None,
+                rewards_earned: 0,
+                is_active: true,
+            }],
+        );
+
+        assert_eq!(manager.get_staked_balance(staker, "SNRG"), 50_000);
+        assert_eq!(manager.get_staked_balance("*", "SNRG"), 50_000);
     }
 }

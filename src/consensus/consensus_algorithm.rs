@@ -431,7 +431,7 @@ impl ProofOfSynergy {
         println!(
             "🔧 Mesh settle/window timeouts: settle_secs={}, leader_timeout_secs={}, vote_timeout_secs={}, block_timeout_secs={}",
             self.mesh_settle_secs,
-            self.leader_timeout_secs.max((self.block_time.max(1)) * 3).max(15),
+            self.effective_leader_timeout_secs(),
             self.vote_timeout_secs,
             self.block_timeout_secs
         );
@@ -466,11 +466,7 @@ impl ProofOfSynergy {
         let allow_genesis_status_bypass = self.allow_genesis_status_bypass;
         let mesh_settle_secs = self.mesh_settle_secs;
         let penalization_enabled = self.penalization_enabled;
-        let leader_timeout_secs = if self.leader_timeout_secs == 0 {
-            (block_time_secs * 3).max(15)
-        } else {
-            self.leader_timeout_secs.max(block_time_secs)
-        };
+        let leader_timeout_secs = self.effective_leader_timeout_secs();
 
         thread::spawn(move || {
             let mut last_block_time = chain
@@ -775,7 +771,6 @@ impl ProofOfSynergy {
                             }
                             drop(chain_guard);
                             drop(pool);
-                            last_block_time = current_time;
                             thread::sleep(Duration::from_millis(250));
                             continue;
                         }
@@ -1251,6 +1246,15 @@ impl ProofOfSynergy {
 
     fn system_time_from_unix_timestamp(timestamp: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
+
+    fn effective_leader_timeout_secs(&self) -> u64 {
+        let block_time_secs = self.block_time.max(1);
+        if self.leader_timeout_secs == 0 {
+            (block_time_secs * 2).max(3)
+        } else {
+            self.leader_timeout_secs.max(block_time_secs)
+        }
     }
 
     // New PoSy Helper Methods
