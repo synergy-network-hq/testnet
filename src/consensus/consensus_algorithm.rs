@@ -142,6 +142,8 @@ lazy_static::lazy_static! {
     static ref EPHEMERAL_LEADER_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
         Arc::new(Mutex::new(HashMap::new()));
     static ref PROPOSAL_CACHE_LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
+    static ref LAST_CONSENSUS_CHAIN_PERSIST: Arc<Mutex<Option<(u64, Instant)>>> =
+        Arc::new(Mutex::new(None));
 }
 
 #[cfg(test)]
@@ -880,7 +882,14 @@ impl ProofOfSynergy {
                                 {
                                     let mut chain_guard = chain.lock().unwrap();
                                     chain_guard.add_block(new_block.clone());
-                                    chain_guard.save_to_file(&get_chain_path());
+                                    let tip_height = chain_guard
+                                        .last()
+                                        .map(|block| block.block_index)
+                                        .unwrap_or(new_block.block_index);
+                                    if Self::should_persist_consensus_chain_tip(tip_height) {
+                                        chain_guard.save_to_file(&get_chain_path());
+                                        Self::note_consensus_chain_persist(tip_height);
+                                    }
                                 }
                                 Self::prune_cached_block_proposals(new_block.block_index);
 
@@ -1246,6 +1255,26 @@ impl ProofOfSynergy {
 
     fn system_time_from_unix_timestamp(timestamp: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
+
+    fn should_persist_consensus_chain_tip(tip_height: u64) -> bool {
+        if tip_height <= 32 {
+            return true;
+        }
+
+        let state = LAST_CONSENSUS_CHAIN_PERSIST.lock().unwrap();
+        match *state {
+            Some((last_height, last_at)) => {
+                tip_height.saturating_sub(last_height) >= 25
+                    || last_at.elapsed() >= Duration::from_secs(30)
+            }
+            None => tip_height % 25 == 0,
+        }
+    }
+
+    fn note_consensus_chain_persist(tip_height: u64) {
+        let mut state = LAST_CONSENSUS_CHAIN_PERSIST.lock().unwrap();
+        *state = Some((tip_height, Instant::now()));
     }
 
     fn effective_leader_timeout_secs(&self) -> u64 {
