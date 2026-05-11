@@ -32,6 +32,9 @@ lazy_static::lazy_static! {
     static ref LOCAL_VOTE_LOCK_FILE_MUTEX: Mutex<()> = Mutex::new(());
 }
 
+const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
+const QUORUM_COMPARISON_EPSILON: f64 = 0.000_000_001;
+
 #[cfg(test)]
 lazy_static::lazy_static! {
     static ref TEST_LOCAL_VOTE_LOCK_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
@@ -131,7 +134,7 @@ impl DualQuorumConsensus {
             penalization_enabled,
             minimum_validator_count: minimum_validator_count.max(1),
             validator_vote_threshold: validator_vote_threshold.max(1),
-            validation_quorum_threshold: 0.67,
+            validation_quorum_threshold: TWO_THIRDS_QUORUM_THRESHOLD,
             cooperation_quorum_threshold: 0.51,
             vote_timeout: vote_timeout_secs.max(1),
             block_timeout: block_timeout_secs.max(1),
@@ -555,11 +558,13 @@ impl DualQuorumConsensus {
         } else {
             0.0
         };
-        let validation_quorum_met = validation_ratio >= self.validation_quorum_threshold;
+        let validation_quorum_met =
+            validation_ratio + QUORUM_COMPARISON_EPSILON >= self.validation_quorum_threshold;
 
         // Check cooperation quorum using a BFT-style supermajority count.
         let cooperation_ratio = validator_count as f64 / total_validators as f64;
-        let cooperation_quorum_met = cooperation_ratio >= self.cooperation_quorum_threshold
+        let cooperation_quorum_met = cooperation_ratio + QUORUM_COMPARISON_EPSILON
+            >= self.cooperation_quorum_threshold
             && validator_count >= required_validator_votes;
 
         if validation_quorum_met && cooperation_quorum_met {
@@ -619,7 +624,8 @@ impl DualQuorumConsensus {
         }
 
         let cumulative_weight = self.calculate_cumulative_vote_weight(votes);
-        (cumulative_weight / total_live_weight) >= self.validation_quorum_threshold
+        (cumulative_weight / total_live_weight) + QUORUM_COMPARISON_EPSILON
+            >= self.validation_quorum_threshold
     }
 
     fn record_missed_vote_timeouts(&self, live_validators: &[Validator], votes: &[Vote]) {
@@ -1746,6 +1752,54 @@ mod tests {
             before.consecutive_missed_votes
         );
         assert_eq!(after.status, ValidatorStatus::Active);
+    }
+
+    #[test]
+    fn four_of_six_equal_weight_votes_satisfy_two_thirds_validation_quorum() {
+        let validator_manager = approved_validator_manager(&[
+            "validator1",
+            "validator2",
+            "validator3",
+            "validator4",
+            "validator5",
+            "validator6",
+        ]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            false,
+            3,
+            4,
+            2,
+            6,
+        );
+        let active_validators =
+            consensus_membership_validators(validator_manager.get_active_validators());
+        let votes = ["validator1", "validator2", "validator3", "validator4"]
+            .into_iter()
+            .map(|validator_address| Vote {
+                validator_address: validator_address.to_string(),
+                block_hash: "block-hash".to_string(),
+                block_index: 42,
+                epoch_number: 1,
+                round_number: 1,
+                signature: PQCSignature {
+                    algorithm: PQCAlgorithm::FNDSA,
+                    signature_data: Vec::new(),
+                    message_hash: Vec::new(),
+                    public_key_id: String::new(),
+                    created_at: 0,
+                },
+                signer_public_key: Vec::new(),
+                timestamp: 0,
+            })
+            .collect::<Vec<_>>();
+
+        assert!(
+            consensus.has_commit_quorum(&active_validators, &votes),
+            "4 of 6 equal-weight votes is exactly two thirds and must not wait for a fifth vote"
+        );
     }
 
     #[test]

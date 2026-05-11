@@ -45,6 +45,7 @@ const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 64;
 const MAX_STATUS_SYNC_BATCH: u32 = 128;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 160;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 3;
+const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
 const MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
 const VALIDATOR_P2P_PORT: u16 = 5622;
@@ -1626,17 +1627,30 @@ impl P2PNetwork {
         };
 
         let mut peers = self.connected_peers.lock().unwrap();
+        let mut sent = 0usize;
+        let mut failed_peers = Vec::new();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_consensus_message(stream, &message) {
                     warn!("p2p", "Failed to send block", "peer" => address.clone(), "error" => e.to_string());
+                    failed_peers.push(address.clone());
                 } else {
                     peer.blocks_sent += 1;
+                    sent += 1;
                 }
             }
         }
+        for address in &failed_peers {
+            peers.remove(address);
+        }
 
-        info!("p2p", "Block broadcast", "peers" => peers.len() as u64, "height" => block.block_index);
+        info!(
+            "p2p",
+            "Block broadcast",
+            "peers" => sent as u64,
+            "dropped_peers" => failed_peers.len() as u64,
+            "height" => block.block_index
+        );
     }
 
     pub fn broadcast_vote_request(
@@ -1652,29 +1666,35 @@ impl P2PNetwork {
         };
 
         let mut recipients = 0usize;
+        let mut failed_peers = Vec::new();
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
             if peer.validator_address.is_none() {
                 continue;
             }
             if let Some(ref mut stream) = peer.stream {
-                if let Err(error) = send_message(stream, &message) {
+                if let Err(error) = send_consensus_message(stream, &message) {
                     warn!(
                         "p2p",
                         "Failed to send vote request",
                         "peer" => address.clone(),
                         "error" => error.to_string()
                     );
+                    failed_peers.push(address.clone());
                 } else {
                     recipients += 1;
                 }
             }
+        }
+        for address in &failed_peers {
+            peers.remove(address);
         }
 
         info!(
             "p2p",
             "Vote request broadcast",
             "peers" => recipients as u64,
+            "dropped_peers" => failed_peers.len() as u64,
             "height" => block.block_index,
             "epoch" => epoch_number,
             "round" => round_number
@@ -2113,11 +2133,19 @@ fn send_vote_to_requester(
     proposer_validator_address: &str,
     response: &NetworkMessage,
 ) -> Result<String, String> {
+    let mut failed_peers = Vec::new();
     if let Some(peer) = peers.get_mut(request_peer_address) {
         if let Some(ref mut stream) = peer.stream {
-            send_message(stream, response).map_err(|error| error.to_string())?;
-            return Ok(request_peer_address.to_string());
+            match send_consensus_message(stream, response) {
+                Ok(()) => return Ok(request_peer_address.to_string()),
+                Err(error) => {
+                    failed_peers.push((request_peer_address.to_string(), error.to_string()))
+                }
+            }
         }
+    }
+    for (failed_peer, _) in &failed_peers {
+        peers.remove(failed_peer);
     }
 
     let fallback_peer_key = peers
@@ -2133,10 +2161,20 @@ fn send_vote_to_requester(
     if let Some(fallback_peer_key) = fallback_peer_key {
         if let Some(peer) = peers.get_mut(&fallback_peer_key) {
             if let Some(ref mut stream) = peer.stream {
-                send_message(stream, response).map_err(|error| error.to_string())?;
-                return Ok(fallback_peer_key);
+                match send_consensus_message(stream, response) {
+                    Ok(()) => return Ok(fallback_peer_key),
+                    Err(error) => {
+                        let error = error.to_string();
+                        peers.remove(&fallback_peer_key);
+                        return Err(error);
+                    }
+                }
             }
         }
+    }
+
+    if let Some((failed_peer, error)) = failed_peers.into_iter().next() {
+        return Err(format!("failed to write vote to {failed_peer}: {error}"));
     }
 
     Err(format!(
@@ -3653,6 +3691,17 @@ fn send_message(
     stream.flush()?;
 
     Ok(())
+}
+
+fn send_consensus_message(
+    stream: &mut TcpStream,
+    message: &NetworkMessage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    send_message_with_write_timeout(
+        stream,
+        message,
+        Duration::from_millis(CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS),
+    )
 }
 
 fn send_message_with_write_timeout(
