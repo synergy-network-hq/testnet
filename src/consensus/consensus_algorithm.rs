@@ -846,6 +846,12 @@ impl ProofOfSynergy {
                         consensus_log!("Block proposal created!");
                         io::stdout().flush().unwrap();
 
+                        // The vote wait can run for multiple seconds on a public mesh.
+                        // Release local chain and pool locks before that wait so the P2P
+                        // path can apply parent blocks and answer vote requests in time.
+                        drop(chain_guard);
+                        drop(pool);
+
                         // Phase 3: Dual-quorum consensus
                         consensus_log!("Starting dual-quorum consensus...");
                         io::stdout().flush().unwrap();
@@ -876,8 +882,6 @@ impl ProofOfSynergy {
                                 // Reset view-change state: the chain has advanced, so the next
                                 // block starts with the primary scheduled leader again.
                                 last_logged_view_timeout = None;
-                                drop(chain_guard);
-                                drop(pool);
 
                                 {
                                     let mut chain_guard = chain.lock().unwrap();

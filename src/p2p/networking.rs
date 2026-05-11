@@ -18,7 +18,7 @@ use lazy_static::lazy_static;
 use serde::Deserialize;
 use serde_json;
 use socket2::{SockRef, TcpKeepalive};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
@@ -46,6 +46,10 @@ const MAX_STATUS_SYNC_BATCH: u32 = 128;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 160;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 3;
 const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
+const VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS: u64 = 900;
+const VOTE_REQUEST_PARENT_SYNC_POLL_MILLIS: u64 = 25;
+const MAX_PENDING_BLOCK_HEIGHTS: usize = 256;
+const MAX_PENDING_BLOCKS_PER_HEIGHT: usize = 4;
 const OUTBOUND_DIAL_COOLDOWN_SECS: u64 = 3;
 const MAX_PENDING_INCOMING_CONNECTIONS_PER_HOST: usize = 2;
 const VALIDATOR_P2P_PORT: u16 = 5622;
@@ -69,6 +73,7 @@ struct DialReservation {
 
 lazy_static! {
     static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
+    static ref PENDING_BLOCKS: Mutex<BTreeMap<u64, Vec<Block>>> = Mutex::new(BTreeMap::new());
 }
 
 pub struct P2PNetwork {
@@ -2204,7 +2209,16 @@ fn handle_vote_request_message(
         return;
     }
 
-    let local_tip = vote_request_local_tip(blockchain);
+    let mut local_tip = vote_request_local_tip(blockchain);
+    if validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data).is_err() {
+        request_vote_request_parent_sync(local_tip.clone(), block_data.block_index);
+        if vote_request_can_wait_for_parent(local_tip.as_ref(), &block_data)
+            && wait_for_vote_request_parent(blockchain, &block_data)
+        {
+            local_tip = vote_request_local_tip(blockchain);
+        }
+    }
+
     if let Err(error) = validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data) {
         warn!(
             "p2p",
@@ -2215,7 +2229,6 @@ fn handle_vote_request_message(
             "round" => round_number,
             "error" => error
         );
-
         request_vote_request_parent_sync(local_tip, block_data.block_index);
         return;
     }
@@ -2317,6 +2330,31 @@ fn validate_vote_request_extends_local_tip(
     Ok(())
 }
 
+fn vote_request_can_wait_for_parent(local_tip: Option<&(u64, String)>, block_data: &Block) -> bool {
+    let Some((tip_height, _)) = local_tip else {
+        return false;
+    };
+
+    block_data.block_index > tip_height.saturating_add(1)
+}
+
+fn wait_for_vote_request_parent(blockchain: &BlockchainArc, block_data: &Block) -> bool {
+    let deadline = Instant::now() + Duration::from_millis(VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS);
+    while Instant::now() < deadline {
+        if validate_vote_request_extends_local_tip(
+            vote_request_local_tip(blockchain).as_ref(),
+            block_data,
+        )
+        .is_ok()
+        {
+            return true;
+        }
+        thread::sleep(Duration::from_millis(VOTE_REQUEST_PARENT_SYNC_POLL_MILLIS));
+    }
+
+    false
+}
+
 fn request_vote_request_parent_sync(local_tip: Option<(u64, String)>, proposal_height: u64) {
     let Some((tip_height, _)) = local_tip else {
         return;
@@ -2338,9 +2376,7 @@ fn vote_request_parent_sync_range(tip_height: u64, proposal_height: u64) -> Opti
     }
 
     let request_start = tip_height.saturating_add(1);
-    let request_count = proposal_height
-        .saturating_sub(request_start)
-        .saturating_add(1);
+    let request_count = proposal_height.saturating_sub(request_start);
     if request_count == 0 {
         return None;
     }
@@ -3927,27 +3963,55 @@ fn is_assigned_synergy_dial_address(value: &str) -> bool {
 }
 
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
-    let confirmed_hashes = transaction_hashes(&block.transactions);
-    let block_for_state = block.clone();
+    let mut applied_blocks = Vec::new();
+    let mut confirmed_hashes = HashSet::new();
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
+        let mut candidate = Some(block);
+        let mut final_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
 
-        // Only accept blocks that extend the tip (dedup is implicit: wrong index = rejected).
-        if let Some(tip) = chain.last() {
-            if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
-                return false;
+        while let Some(next_block) = candidate {
+            let Some(tip) = chain.last() else {
+                confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
+                chain.add_block(next_block.clone());
+                final_tip_height = next_block.block_index;
+                applied_blocks.push(next_block);
+                break;
+            };
+
+            if next_block.block_index <= tip.block_index {
+                break;
             }
+
+            if next_block.block_index > tip.block_index.saturating_add(1) {
+                cache_pending_block(next_block);
+                break;
+            }
+
+            if next_block.previous_hash != tip.hash {
+                break;
+            }
+
+            confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
+            chain.add_block(next_block.clone());
+            final_tip_height = next_block.block_index;
+            applied_blocks.push(next_block);
+
+            let next_tip = chain.last().cloned();
+            candidate = next_tip.as_ref().and_then(take_pending_block_extending_tip);
         }
 
-        chain.add_block(block);
-        let tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
-        let snapshot = if should_persist_chain_tip(tip_height) {
+        let snapshot = if !applied_blocks.is_empty() && should_persist_chain_tip(final_tip_height) {
             Some(chain.clone())
         } else {
             None
         };
-        (tip_height, snapshot)
+        (final_tip_height, snapshot)
     };
+
+    if applied_blocks.is_empty() {
+        return false;
+    }
 
     if let Some(snapshot) = snapshot {
         let chain_path = crate::utils::resolve_data_path("data/chain.json");
@@ -3956,9 +4020,46 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
-    apply_token_state_for_blocks(&[block_for_state]);
+    apply_token_state_for_blocks(&applied_blocks);
 
     true
+}
+
+fn cache_pending_block(block: Block) {
+    let Ok(mut pending) = PENDING_BLOCKS.lock() else {
+        return;
+    };
+
+    if pending.len() >= MAX_PENDING_BLOCK_HEIGHTS && !pending.contains_key(&block.block_index) {
+        if let Some(oldest_height) = pending.keys().next().copied() {
+            pending.remove(&oldest_height);
+        }
+    }
+
+    let entry = pending.entry(block.block_index).or_default();
+    if entry.iter().any(|candidate| candidate.hash == block.hash) {
+        return;
+    }
+    if entry.len() >= MAX_PENDING_BLOCKS_PER_HEIGHT {
+        entry.remove(0);
+    }
+    entry.push(block);
+}
+
+fn take_pending_block_extending_tip(tip: &Block) -> Option<Block> {
+    let Ok(mut pending) = PENDING_BLOCKS.lock() else {
+        return None;
+    };
+    let next_height = tip.block_index.saturating_add(1);
+    let entry = pending.get_mut(&next_height)?;
+    let position = entry
+        .iter()
+        .position(|candidate| candidate.previous_hash == tip.hash)?;
+    let block = entry.remove(position);
+    if entry.is_empty() {
+        pending.remove(&next_height);
+    }
+    Some(block)
 }
 
 fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 {
@@ -4217,23 +4318,23 @@ fn dial_peer_async(
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_block_batch, background_poll_interval, best_connected_validator_height,
-        block_sync_request_range, bypasses_shared_message_queue, cache_peer_state,
-        canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
-        current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
-        dispatch_peer_message, ensure_peer_status_allows_chain_data, handle_status_message,
-        hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
-        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
-        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
-        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        apply_block_batch, apply_block_if_new, background_poll_interval,
+        best_connected_validator_height, block_sync_request_range, bypasses_shared_message_queue,
+        cache_peer_state, canonical_genesis_hash, collect_known_peer_addresses,
+        connected_validator_participants, current_bootstrap_refresh_interval, current_timestamp,
+        dial_with_timeout, dispatch_peer_message, ensure_peer_status_allows_chain_data,
+        handle_status_message, hydrate_peer_from_cache, local_peer_identity,
+        merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
+        peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
+        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
         validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, vote_request_parent_sync_range,
         ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection, PeerEntryGuard,
         BACKGROUND_SYNC_POLL_MILLIS, DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
-        MAX_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, STALE_UNIDENTIFIED_PEER_SECS,
-        STALE_VALIDATOR_STATUS_SECS,
+        MAX_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
+        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -5085,8 +5186,51 @@ mod tests {
         assert_eq!(vote_request_parent_sync_range(21102, 21103), None);
         assert_eq!(
             vote_request_parent_sync_range(21102, 21110),
-            Some((21103, 8))
+            Some((21103, 7))
         );
+    }
+
+    #[test]
+    fn future_blocks_are_cached_and_applied_when_parent_arrives() {
+        PENDING_BLOCKS.lock().unwrap().clear();
+
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let block_one = Block::new_with_timestamp(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let block_two = Block::new_with_timestamp(
+            2,
+            Vec::new(),
+            block_one.hash.clone(),
+            "synv1leader".to_string(),
+            2,
+            104,
+        );
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        assert!(!apply_block_if_new(&blockchain, block_two.clone()));
+        assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
+
+        assert!(apply_block_if_new(&blockchain, block_one));
+        let chain = blockchain.lock().unwrap();
+        assert_eq!(chain.last().unwrap().block_index, 2);
+        assert_eq!(chain.last().unwrap().hash, block_two.hash);
+
+        PENDING_BLOCKS.lock().unwrap().clear();
     }
 
     #[test]
