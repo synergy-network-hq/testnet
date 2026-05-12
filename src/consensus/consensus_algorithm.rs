@@ -19,7 +19,7 @@ use crate::validator::{
     TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
-use crate::{info, warn};
+use crate::{debug, info, warn};
 use base64::{engine::general_purpose, Engine as _};
 use hex;
 use serde::{Deserialize, Serialize};
@@ -27,6 +27,7 @@ use sha3::{Digest, Sha3_512};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -144,6 +145,7 @@ lazy_static::lazy_static! {
     static ref PROPOSAL_CACHE_LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
     static ref LAST_CONSENSUS_CHAIN_PERSIST: Arc<Mutex<Option<(u64, Instant)>>> =
         Arc::new(Mutex::new(None));
+    static ref CONSENSUS_CHAIN_PERSIST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 }
 
 #[cfg(test)]
@@ -883,7 +885,7 @@ impl ProofOfSynergy {
                                 // block starts with the primary scheduled leader again.
                                 last_logged_view_timeout = None;
 
-                                {
+                                let persist_snapshot = {
                                     let mut chain_guard = chain.lock().unwrap();
                                     chain_guard.add_block(new_block.clone());
                                     let tip_height = chain_guard
@@ -891,9 +893,15 @@ impl ProofOfSynergy {
                                         .map(|block| block.block_index)
                                         .unwrap_or(new_block.block_index);
                                     if Self::should_persist_consensus_chain_tip(tip_height) {
-                                        chain_guard.save_to_file(&get_chain_path());
+                                        let snapshot = chain_guard.clone();
                                         Self::note_consensus_chain_persist(tip_height);
+                                        Some((snapshot, tip_height))
+                                    } else {
+                                        None
                                     }
+                                };
+                                if let Some((snapshot, tip_height)) = persist_snapshot {
+                                    Self::persist_consensus_chain_tip_async(snapshot, tip_height);
                                 }
                                 Self::prune_cached_block_proposals(new_block.block_index);
 
@@ -1279,6 +1287,26 @@ impl ProofOfSynergy {
     fn note_consensus_chain_persist(tip_height: u64) {
         let mut state = LAST_CONSENSUS_CHAIN_PERSIST.lock().unwrap();
         *state = Some((tip_height, Instant::now()));
+    }
+
+    fn persist_consensus_chain_tip_async(snapshot: BlockChain, tip_height: u64) {
+        if CONSENSUS_CHAIN_PERSIST_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            debug!(
+                "consensus",
+                "Skipping chain persistence because a previous save is still running",
+                "height" => tip_height
+            );
+            return;
+        }
+
+        let chain_path = get_chain_path();
+        thread::spawn(move || {
+            snapshot.save_to_file(&chain_path);
+            CONSENSUS_CHAIN_PERSIST_IN_FLIGHT.store(false, Ordering::SeqCst);
+        });
     }
 
     fn effective_leader_timeout_secs(&self) -> u64 {

@@ -23,6 +23,7 @@ use std::fs;
 use std::io::{self, BufReader, BufWriter, Read, Write};
 use std::net::{Shutdown, TcpListener, TcpStream, ToSocketAddrs};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -74,6 +75,7 @@ struct DialReservation {
 lazy_static! {
     static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
     static ref PENDING_BLOCKS: Mutex<BTreeMap<u64, Vec<Block>>> = Mutex::new(BTreeMap::new());
+    static ref CHAIN_PERSIST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 }
 
 pub struct P2PNetwork {
@@ -4015,8 +4017,7 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
 
     if let Some(snapshot) = snapshot {
         let chain_path = crate::utils::resolve_data_path("data/chain.json");
-        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
-        note_chain_persist(tip_height);
+        persist_chain_snapshot_async(snapshot, chain_path, tip_height);
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
@@ -4159,8 +4160,7 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
 
     if let Some(snapshot) = snapshot {
         let chain_path = crate::utils::resolve_data_path("data/chain.json");
-        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
-        note_chain_persist(tip_height);
+        persist_chain_snapshot_async(snapshot, chain_path, tip_height);
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
@@ -4264,6 +4264,30 @@ fn should_persist_chain_tip(tip_height: u64) -> bool {
 fn note_chain_persist(tip_height: u64) {
     let mut state = LAST_CHAIN_PERSIST.lock().unwrap();
     *state = Some((tip_height, Instant::now()));
+}
+
+fn persist_chain_snapshot_async(
+    snapshot: BlockChain,
+    chain_path: std::path::PathBuf,
+    tip_height: u64,
+) {
+    note_chain_persist(tip_height);
+    if CHAIN_PERSIST_IN_FLIGHT
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        debug!(
+            "p2p",
+            "Skipping chain persistence because a previous save is still running",
+            "height" => tip_height
+        );
+        return;
+    }
+
+    thread::spawn(move || {
+        snapshot.save_to_file(chain_path.to_str().unwrap_or("data/chain.json"));
+        CHAIN_PERSIST_IN_FLIGHT.store(false, Ordering::SeqCst);
+    });
 }
 
 /// Best-effort dial for a discovered peer.
