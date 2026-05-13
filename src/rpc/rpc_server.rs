@@ -587,7 +587,7 @@ fn recent_active_validator_addresses(
     chain: &BlockChain,
     total_known_validators: usize,
 ) -> HashSet<String> {
-    let window = total_known_validators.max(1).saturating_mul(4);
+    let window = total_known_validators.max(10).saturating_mul(12);
     chain
         .chain
         .iter()
@@ -596,6 +596,18 @@ fn recent_active_validator_addresses(
         .take(window)
         .map(|block| block.validator_id.clone())
         .collect()
+}
+
+fn canonical_genesis_validator_addresses() -> HashSet<String> {
+    canonical_genesis()
+        .map(|genesis| {
+            genesis
+                .validators()
+                .iter()
+                .map(|entry| entry.operator_address.clone())
+                .collect::<HashSet<_>>()
+        })
+        .unwrap_or_default()
 }
 
 fn network_validator_snapshot(
@@ -651,6 +663,7 @@ fn network_validator_snapshot(
         .filter(|block| block.block_index > 0)
         .count() as u64;
     let recent_active = recent_active_validator_addresses(chain, validators.len());
+    let genesis_addresses = canonical_genesis_validator_addresses();
 
     for block in chain.chain.iter().filter(|block| block.block_index > 0) {
         let address = block.validator_id.clone();
@@ -676,7 +689,16 @@ fn network_validator_snapshot(
     let observed_validator_count = ordered.len();
     for (index, validator) in ordered.iter_mut().enumerate() {
         let is_recently_active = recent_active.contains(&validator.address);
+        let is_genesis_validator = genesis_addresses.contains(&validator.address);
         let has_observed_activity = validator.total_blocks_produced > 0;
+        let registry_active = matches!(
+            validator.status,
+            ValidatorStatus::Active | ValidatorStatus::Pending
+        );
+        let disciplined = matches!(
+            validator.status,
+            ValidatorStatus::Jailed | ValidatorStatus::Slashed
+        );
         if validator.cluster_id.is_none() {
             validator.cluster_id = default_cluster_id(index, observed_validator_count);
         }
@@ -691,17 +713,14 @@ fn network_validator_snapshot(
         } else {
             0.0
         };
-        if matches!(
-            validator.status,
-            ValidatorStatus::Active | ValidatorStatus::Pending
-        ) || is_recently_active
-            || has_observed_activity
+        if disciplined {
+            // Preserve explicit jail/slash state.
+        } else if is_genesis_validator
+            || is_recently_active
+            || (registry_active && !has_observed_activity)
         {
             validator.status = ValidatorStatus::Active;
-        } else if !matches!(
-            validator.status,
-            ValidatorStatus::Jailed | ValidatorStatus::Slashed
-        ) {
+        } else {
             validator.status = ValidatorStatus::Inactive;
         }
         if validator.synergy_score <= 0.0 && matches!(validator.status, ValidatorStatus::Active) {
@@ -5040,5 +5059,58 @@ mod tests {
         assert_eq!(matched.stake_amount, first_validator.stake_nwei);
         assert_eq!(matched.status, ValidatorStatus::Active);
         assert_eq!(matched.total_blocks_produced, 1);
+    }
+
+    #[test]
+    fn network_validator_snapshot_ages_out_historical_non_genesis_validators() {
+        let genesis_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../config/genesis.json")
+            .canonicalize()
+            .expect("repo genesis path should resolve");
+        std::env::set_var("SYNERGY_GENESIS_FILE", genesis_path);
+        let genesis = canonical_genesis().expect("canonical genesis must load");
+        let genesis_validator = genesis
+            .validators()
+            .first()
+            .expect("canonical genesis should define validators")
+            .operator_address
+            .clone();
+        let stale_validator = "synv11stalehistoricalvalidator0000000000000".to_string();
+
+        let mut chain = BlockChain::new();
+        chain.genesis().expect("genesis block should load");
+        chain.add_block(Block::new_with_timestamp(
+            1,
+            Vec::new(),
+            chain.last().unwrap().hash.clone(),
+            stale_validator.clone(),
+            1,
+            genesis.timestamp().saturating_add(2),
+        ));
+        for height in 2..=160 {
+            chain.add_block(Block::new_with_timestamp(
+                height,
+                Vec::new(),
+                chain.last().unwrap().hash.clone(),
+                genesis_validator.clone(),
+                1,
+                genesis.timestamp().saturating_add(height.saturating_mul(2)),
+            ));
+        }
+
+        let validator_manager = ValidatorManager::new();
+        let validators = network_validator_snapshot(&chain, &validator_manager);
+        let stale = validators
+            .iter()
+            .find(|validator| validator.address == stale_validator)
+            .expect("historical validator should remain visible for block attribution");
+        let genesis = validators
+            .iter()
+            .find(|validator| validator.address == genesis_validator)
+            .expect("genesis validator should remain visible");
+
+        assert_eq!(stale.total_blocks_produced, 1);
+        assert_eq!(stale.status, ValidatorStatus::Inactive);
+        assert_eq!(genesis.status, ValidatorStatus::Active);
     }
 }
