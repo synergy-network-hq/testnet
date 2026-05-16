@@ -11,6 +11,22 @@ pub enum NetworkMessage {
         version: String,
         capabilities: Vec<String>,
         #[serde(default)]
+        chain_id: Option<u64>,
+        #[serde(default)]
+        network_id: Option<u64>,
+        #[serde(default)]
+        genesis_hash: String,
+        #[serde(default)]
+        network_magic_bytes: String,
+        #[serde(default)]
+        protocol_version: Option<String>,
+        #[serde(default)]
+        consensus_version: Option<String>,
+        #[serde(default)]
+        native_caip2: Option<String>,
+        #[serde(default)]
+        reserved_eip155: Option<String>,
+        #[serde(default)]
         public_address: Option<String>,
         #[serde(default)]
         validator_address: Option<String>,
