@@ -59,6 +59,8 @@ const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
 const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
 const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
 const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
+const TESTNET_NATIVE_CAIP2: &str = "synergy:testnet";
+const TESTNET_RESERVED_EIP155: &str = "eip155:1263";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -181,6 +183,104 @@ fn canonical_genesis_hash() -> String {
     canonical_genesis()
         .map(|genesis| genesis.hash().to_string())
         .unwrap_or_default()
+}
+
+fn canonical_network_magic_bytes() -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.network_magic_bytes().to_string())
+        .unwrap_or_default()
+}
+
+fn local_chain_id(config: &NodeConfig) -> u64 {
+    canonical_genesis()
+        .map(|genesis| genesis.chain_id())
+        .unwrap_or(config.blockchain.chain_id)
+}
+
+fn local_network_id(config: &NodeConfig) -> u64 {
+    canonical_genesis()
+        .map(|genesis| genesis.network_id())
+        .unwrap_or(config.network.id)
+}
+
+fn local_protocol_version(config: &NodeConfig) -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.protocol_version().to_string())
+        .unwrap_or_else(|_| config.network.name.clone())
+}
+
+fn local_consensus_version(config: &NodeConfig) -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.consensus_version().to_string())
+        .unwrap_or_else(|_| config.consensus.algorithm.clone())
+}
+
+fn handshake_mismatch_reason(
+    config: &NodeConfig,
+    chain_id: Option<u64>,
+    network_id: Option<u64>,
+    genesis_hash: &str,
+    network_magic_bytes: &str,
+    native_caip2: Option<&str>,
+) -> Option<String> {
+    let expected_chain_id = local_chain_id(config);
+    let expected_network_id = local_network_id(config);
+    let expected_genesis_hash = canonical_genesis_hash();
+    let expected_network_magic_bytes = canonical_network_magic_bytes();
+
+    match chain_id {
+        Some(value) if value == expected_chain_id => {}
+        Some(value) => {
+            return Some(format!(
+                "chain_id differs: expected {expected_chain_id}, remote {value}"
+            ));
+        }
+        None => return Some(format!("chain_id missing: expected {expected_chain_id}")),
+    }
+
+    match network_id {
+        Some(value) if value == expected_network_id => {}
+        Some(value) => {
+            return Some(format!(
+                "network_id differs: expected {expected_network_id}, remote {value}"
+            ));
+        }
+        None => {
+            return Some(format!(
+                "network_id missing: expected {expected_network_id}"
+            ))
+        }
+    }
+
+    if genesis_hash.trim().is_empty() {
+        return Some("genesis_hash missing from handshake".to_string());
+    }
+    if !expected_genesis_hash.is_empty() && genesis_hash != expected_genesis_hash {
+        return Some(format!(
+            "genesis_hash differs: expected {expected_genesis_hash}, remote {genesis_hash}"
+        ));
+    }
+
+    if network_magic_bytes.trim().is_empty() {
+        return Some("network_magic_bytes missing from handshake".to_string());
+    }
+    if !expected_network_magic_bytes.is_empty()
+        && network_magic_bytes != expected_network_magic_bytes
+    {
+        return Some(format!(
+            "network_magic_bytes differs: expected {expected_network_magic_bytes}, remote {network_magic_bytes}"
+        ));
+    }
+
+    if let Some(caip2) = native_caip2 {
+        if caip2 != TESTNET_NATIVE_CAIP2 {
+            return Some(format!(
+                "native CAIP-2 differs: expected {TESTNET_NATIVE_CAIP2}, remote {caip2}"
+            ));
+        }
+    }
+
+    None
 }
 
 fn resolve_local_genesis_hash(blockchain: &BlockchainArc) -> String {
@@ -1501,9 +1601,19 @@ fn configure_peer_stream(stream: &TcpStream) {
 #[derive(Debug, Clone)]
 pub struct PeerSnapshot {
     pub address: String,
+    pub direction: String,
+    pub node_id: Option<String>,
+    pub validator_address: Option<String>,
     pub block_height: u64,
     pub best_block_hash: String,
     pub genesis_hash: String,
+    pub status_received_at: Option<u64>,
+    pub connected_at: u64,
+    pub last_seen: u64,
+    pub blocks_sent: u64,
+    pub blocks_received: u64,
+    pub txs_sent: u64,
+    pub txs_received: u64,
 }
 
 impl P2PNetwork {
@@ -1807,9 +1917,22 @@ impl P2PNetwork {
                     .clone()
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or_else(|| peer.address.clone()),
+                direction: match peer.direction {
+                    ConnectionDirection::Incoming => "incoming".to_string(),
+                    ConnectionDirection::Outgoing => "outgoing".to_string(),
+                },
+                node_id: peer.node_id.clone(),
+                validator_address: peer.validator_address.clone(),
                 block_height: peer.last_known_height,
                 best_block_hash: peer.best_block_hash.clone(),
                 genesis_hash: peer.genesis_hash.clone(),
+                status_received_at: peer.status_received_at,
+                connected_at: peer.connected_at,
+                last_seen: peer.last_seen,
+                blocks_sent: peer.blocks_sent,
+                blocks_received: peer.blocks_received,
+                txs_sent: peer.txs_sent,
+                txs_received: peer.txs_received,
             })
             .collect()
     }
@@ -2845,6 +2968,14 @@ fn handle_incoming_connection(
         node_id: config.p2p.node_name.clone(),
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
+        chain_id: Some(local_chain_id(&config)),
+        network_id: Some(local_network_id(&config)),
+        genesis_hash: canonical_genesis_hash(),
+        network_magic_bytes: canonical_network_magic_bytes(),
+        protocol_version: Some(local_protocol_version(&config)),
+        consensus_version: Some(local_consensus_version(&config)),
+        native_caip2: Some(TESTNET_NATIVE_CAIP2.to_string()),
+        reserved_eip155: Some(TESTNET_RESERVED_EIP155.to_string()),
         public_address: Some(config.p2p.public_address.clone()),
         validator_address: announced_validator_address(&config),
     };
@@ -2950,6 +3081,14 @@ fn handle_outgoing_connection(
         node_id: config.p2p.node_name.clone(),
         version: "1.0.0".to_string(),
         capabilities: vec!["blocks".to_string(), "transactions".to_string()],
+        chain_id: Some(local_chain_id(&config)),
+        network_id: Some(local_network_id(&config)),
+        genesis_hash: canonical_genesis_hash(),
+        network_magic_bytes: canonical_network_magic_bytes(),
+        protocol_version: Some(local_protocol_version(&config)),
+        consensus_version: Some(local_consensus_version(&config)),
+        native_caip2: Some(TESTNET_NATIVE_CAIP2.to_string()),
+        reserved_eip155: Some(TESTNET_RESERVED_EIP155.to_string()),
         public_address: Some(config.p2p.public_address.clone()),
         validator_address: announced_validator_address(&config),
     };
@@ -3025,6 +3164,14 @@ fn handle_messages(
                         node_id,
                         version,
                         capabilities,
+                        chain_id,
+                        network_id,
+                        genesis_hash,
+                        network_magic_bytes,
+                        protocol_version,
+                        consensus_version,
+                        native_caip2,
+                        reserved_eip155,
                         public_address,
                         validator_address,
                     } => {
@@ -3046,6 +3193,48 @@ fn handle_messages(
                                 "Rejecting self-connection handshake",
                                 "peer" => peer_address.clone(),
                                 "node_id" => node_id.clone()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
+                            continue;
+                        }
+
+                        if let Some(reason) = handshake_mismatch_reason(
+                            &config,
+                            chain_id,
+                            network_id,
+                            &genesis_hash,
+                            &network_magic_bytes,
+                            native_caip2.as_deref(),
+                        ) {
+                            warn!(
+                                "p2p",
+                                "Rejecting peer handshake for canonical testnet identity mismatch",
+                                "peer" => peer_address.clone(),
+                                "node_id" => node_id.clone(),
+                                "reason" => reason,
+                                "local_chain_id" => local_chain_id(&config),
+                                "local_network_id" => local_network_id(&config),
+                                "local_genesis_hash" => canonical_genesis_hash(),
+                                "local_network_magic_bytes" => canonical_network_magic_bytes()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
+                            continue;
+                        }
+
+                        if reserved_eip155
+                            .as_deref()
+                            .filter(|value| !value.is_empty())
+                            .is_some()
+                            && native_caip2.as_deref() != Some(TESTNET_NATIVE_CAIP2)
+                        {
+                            warn!(
+                                "p2p",
+                                "Rejecting peer handshake because reserved EIP-155 identity cannot override native Synergy identity",
+                                "peer" => peer_address.clone(),
+                                "node_id" => node_id.clone(),
+                                "reserved_eip155" => reserved_eip155.unwrap_or_default()
                             );
                             let mut peers = connected_peers.lock().unwrap();
                             disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
@@ -3089,6 +3278,10 @@ fn handle_messages(
                             "node_id" => node_id.clone(),
                             "validator_address" => announced_validator_address.clone().unwrap_or_default(),
                             "version" => version.clone(),
+                            "protocol_version" => protocol_version.unwrap_or_default(),
+                            "consensus_version" => consensus_version.unwrap_or_default(),
+                            "genesis_hash" => genesis_hash,
+                            "network_magic_bytes" => network_magic_bytes,
                             "public_address" => normalized_public_address.clone().unwrap_or_default()
                         );
 
@@ -4021,6 +4214,7 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     }
 
     prune_transaction_hashes_from_pool(&confirmed_hashes);
+    crate::dag::commit_blocks(&applied_blocks);
     apply_token_state_for_blocks(&applied_blocks);
 
     true
@@ -4158,6 +4352,14 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
         );
     }
 
+    if rollback_height.is_some() {
+        if let Some(snapshot) = snapshot.as_ref() {
+            crate::dag::rebuild_global_from_chain(snapshot);
+        }
+    } else {
+        crate::dag::commit_blocks(&applied_blocks);
+    }
+
     if let Some(snapshot) = snapshot {
         let chain_path = crate::utils::resolve_data_path("data/chain.json");
         persist_chain_snapshot_async(snapshot, chain_path, tip_height);
@@ -4178,6 +4380,7 @@ fn apply_token_state_for_blocks(blocks: &[Block]) {
     let validator_manager = VALIDATOR_MANAGER.clone();
     let mut applied_txs = 0u64;
     let mut failed_txs = 0u64;
+    let mut applied_validator_activations = 0u64;
 
     for block in blocks {
         for tx in &block.transactions {
@@ -4197,13 +4400,16 @@ fn apply_token_state_for_blocks(blocks: &[Block]) {
             if is_validator_activation_transaction(tx) {
                 match apply_validator_activation_transaction(tx, &token_manager, &validator_manager)
                 {
-                    Ok(message) => info!(
-                        "p2p",
-                        "Applied synced validator activation",
-                        "block_height" => block.block_index,
-                        "tx_hash" => tx.hash(),
-                        "message" => message
-                    ),
+                    Ok(message) => {
+                        applied_validator_activations += 1;
+                        info!(
+                            "p2p",
+                            "Applied synced validator activation",
+                            "block_height" => block.block_index,
+                            "tx_hash" => tx.hash(),
+                            "message" => message
+                        );
+                    }
                     Err(error) => warn!(
                         "p2p",
                         "Failed to apply synced validator activation",
@@ -4231,6 +4437,15 @@ fn apply_token_state_for_blocks(blocks: &[Block]) {
             warn!(
                 "p2p",
                 "Failed to persist synced token state",
+                "error" => error.to_string()
+            );
+        }
+    }
+    if applied_validator_activations > 0 {
+        if let Err(error) = validator_manager.save_registry("data/validator_registry.json") {
+            warn!(
+                "p2p",
+                "Failed to persist validator registry after synced activation",
                 "error" => error.to_string()
             );
         }
@@ -4483,7 +4698,7 @@ mod tests {
     #[test]
     fn validator_duplicate_resolution_prefers_opposite_directions_on_each_side() {
         let local_a = "validator:synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs";
-        let local_b = "validator:synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re";
+        let local_b = "validator:synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt";
 
         let decision_a = resolve_duplicate_connection(
             local_a,

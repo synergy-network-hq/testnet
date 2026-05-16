@@ -1,0 +1,168 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="4096" height="4096" viewBox="0 0 4096 4096" role="img" aria-label="Synergy Testnet genesis full sigil">
+<metadata>{&quot;art_seed&quot;:&quot;c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65&quot;,&quot;chain_id&quot;:1263,&quot;dag_topology_seed&quot;:&quot;6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8&quot;,&quot;kind&quot;:&quot;full sigil&quot;,&quot;network_magic_bytes&quot;:&quot;d5d5bb99&quot;,&quot;state_root&quot;:&quot;14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
+<defs>
+<style><![CDATA[text{font-family:Sora,Rajdhani,Segoe UI,Arial,sans-serif} .mono{font-family:SFMono-Regular,Consolas,Menlo,monospace}]]></style>
+<radialGradient id="bg-radial" cx="50%" cy="45%" r="72%"><stop offset="0%" stop-color="#111622"/><stop offset="50%" stop-color="#05070d"/><stop offset="100%" stop-color="#030206"/></radialGradient>
+<linearGradient id="energy-gradient" x1="8%" y1="12%" x2="92%" y2="88%"><stop offset="0%" stop-color="#00ff66"/><stop offset="32%" stop-color="#00ced1"/><stop offset="66%" stop-color="#0060ff"/><stop offset="100%" stop-color="#7d00ff"/></linearGradient>
+<linearGradient id="core-gradient" x1="25%" y1="10%" x2="80%" y2="90%"><stop offset="0%" stop-color="#ffffff"/><stop offset="38%" stop-color="#00ffd4"/><stop offset="72%" stop-color="#00ced1"/><stop offset="100%" stop-color="#7d00ff"/></linearGradient>
+<linearGradient id="gold-magenta" x1="0%" y1="0%" x2="100%" y2="100%"><stop offset="0%" stop-color="#ffd700"/><stop offset="100%" stop-color="#ff00e5"/></linearGradient>
+<filter id="core-glow" x="-35%" y="-35%" width="170%" height="170%"><feGaussianBlur stdDeviation="16" result="blur"/><feColorMatrix in="blur" type="matrix" values="0 0 0 0 0 0 0 0 0 1 0 0 0 0 0.83 0 0 0 .42 0"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+<filter id="line-glow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="5" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<rect width="100%" height="100%" fill="url(#bg-radial)"/>
+<g opacity="0.18" stroke="#111622" stroke-width="1">
+<line x1="192" y1="0" x2="192" y2="4096"/>
+<line x1="384" y1="0" x2="384" y2="4096"/>
+<line x1="576" y1="0" x2="576" y2="4096"/>
+<line x1="768" y1="0" x2="768" y2="4096"/>
+<line x1="960" y1="0" x2="960" y2="4096"/>
+<line x1="1152" y1="0" x2="1152" y2="4096"/>
+<line x1="1344" y1="0" x2="1344" y2="4096"/>
+<line x1="1536" y1="0" x2="1536" y2="4096"/>
+<line x1="1728" y1="0" x2="1728" y2="4096"/>
+<line x1="1920" y1="0" x2="1920" y2="4096"/>
+<line x1="2112" y1="0" x2="2112" y2="4096"/>
+<line x1="2304" y1="0" x2="2304" y2="4096"/>
+<line x1="2496" y1="0" x2="2496" y2="4096"/>
+<line x1="2688" y1="0" x2="2688" y2="4096"/>
+<line x1="2880" y1="0" x2="2880" y2="4096"/>
+<line x1="3072" y1="0" x2="3072" y2="4096"/>
+<line x1="3264" y1="0" x2="3264" y2="4096"/>
+<line x1="3456" y1="0" x2="3456" y2="4096"/>
+<line x1="3648" y1="0" x2="3648" y2="4096"/>
+<line x1="3840" y1="0" x2="3840" y2="4096"/>
+<line x1="4032" y1="0" x2="4032" y2="4096"/>
+<line x1="0" y1="192" x2="4096" y2="192"/>
+<line x1="0" y1="384" x2="4096" y2="384"/>
+<line x1="0" y1="576" x2="4096" y2="576"/>
+<line x1="0" y1="768" x2="4096" y2="768"/>
+<line x1="0" y1="960" x2="4096" y2="960"/>
+<line x1="0" y1="1152" x2="4096" y2="1152"/>
+<line x1="0" y1="1344" x2="4096" y2="1344"/>
+<line x1="0" y1="1536" x2="4096" y2="1536"/>
+<line x1="0" y1="1728" x2="4096" y2="1728"/>
+<line x1="0" y1="1920" x2="4096" y2="1920"/>
+<line x1="0" y1="2112" x2="4096" y2="2112"/>
+<line x1="0" y1="2304" x2="4096" y2="2304"/>
+<line x1="0" y1="2496" x2="4096" y2="2496"/>
+<line x1="0" y1="2688" x2="4096" y2="2688"/>
+<line x1="0" y1="2880" x2="4096" y2="2880"/>
+<line x1="0" y1="3072" x2="4096" y2="3072"/>
+<line x1="0" y1="3264" x2="4096" y2="3264"/>
+<line x1="0" y1="3456" x2="4096" y2="3456"/>
+<line x1="0" y1="3648" x2="4096" y2="3648"/>
+<line x1="0" y1="3840" x2="4096" y2="3840"/>
+<line x1="0" y1="4032" x2="4096" y2="4032"/>
+</g>
+<g id="synergy-genesis-motif">
+<g opacity="0.38" fill="none">
+<circle cx="2048" cy="2048" r="430" stroke="#00ff66" stroke-width="7" stroke-dasharray="2 24" transform="rotate(250 2048 2048)"/>
+<circle cx="2048" cy="2048" r="690" stroke="#00ced1" stroke-width="7" stroke-dasharray="18 30" transform="rotate(267 2048 2048)"/>
+<circle cx="2048" cy="2048" r="940" stroke="#0060ff" stroke-width="7" stroke-dasharray="2 24" transform="rotate(284 2048 2048)"/>
+<circle cx="2048" cy="2048" r="1390" stroke="#7d00ff" stroke-width="7" stroke-dasharray="18 30" transform="rotate(301 2048 2048)"/>
+</g>
+<g opacity="0.38" stroke="#ffd700" stroke-width="5" stroke-linecap="round">
+<line x1="1534.97" y1="638.461" x2="1507.608" y2="563.286"/>
+<line x1="1943.365" y1="551.654" x2="1941.273" y2="521.727"/>
+<line x1="2152.635" y1="551.654" x2="2154.727" y2="521.727"/>
+<line x1="2561.03" y1="638.461" x2="2588.392" y2="563.286"/>
+<line x1="2752.207" y1="723.579" x2="2766.291" y2="697.09"/>
+<line x1="3089.988" y1="968.99" x2="3110.827" y2="947.41"/>
+<line x1="3230.016" y1="1124.508" x2="3253.656" y2="1106.038"/>
+<line x1="3438.776" y1="1486.09" x2="3466.591" y2="1474.852"/>
+<line x1="3503.444" y1="1685.117" x2="3532.552" y2="1677.859"/>
+<line x1="3547.086" y1="2100.349" x2="3577.068" y2="2101.396"/>
+<line x1="3525.212" y1="2308.472" x2="3603.996" y2="2322.364"/>
+<line x1="3396.191" y1="2705.557" x2="3423.155" y2="2718.708"/>
+<line x1="3291.556" y1="2886.789" x2="3316.427" y2="2903.565"/>
+<line x1="3012.181" y1="3197.067" x2="3063.604" y2="3258.35"/>
+<line x1="2842.879" y1="3320.072" x2="2858.776" y2="3345.514"/>
+<line x1="2461.456" y1="3489.893" x2="2469.725" y2="3518.73"/>
+<line x1="2256.76" y1="3533.402" x2="2260.935" y2="3563.11"/>
+<line x1="1839.24" y1="3533.402" x2="1835.065" y2="3563.11"/>
+<line x1="1634.544" y1="3489.893" x2="1626.275" y2="3518.73"/>
+<line x1="1253.121" y1="3320.072" x2="1237.224" y2="3345.514"/>
+<line x1="1083.819" y1="3197.067" x2="1032.396" y2="3258.35"/>
+<line x1="804.444" y1="2886.789" x2="779.573" y2="2903.565"/>
+<line x1="699.809" y1="2705.557" x2="672.845" y2="2718.708"/>
+<line x1="570.788" y1="2308.472" x2="492.004" y2="2322.364"/>
+<line x1="548.914" y1="2100.349" x2="518.932" y2="2101.396"/>
+<line x1="592.556" y1="1685.117" x2="563.448" y2="1677.859"/>
+<line x1="657.224" y1="1486.09" x2="629.409" y2="1474.852"/>
+<line x1="865.984" y1="1124.508" x2="842.344" y2="1106.038"/>
+<line x1="1006.012" y1="968.99" x2="985.173" y2="947.41"/>
+<line x1="1343.793" y1="723.579" x2="1329.709" y2="697.09"/>
+</g>
+<path d="M 1365.785 3059.426 L 875.261 1711.722 L 2005.423 828.743 L 3194.425 1630.735 L 2799.107 3009.373 Z" fill="#05070d" opacity="0.16" stroke="#00ced1" stroke-width="2"/>
+<g stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="1">
+<path d="M 1365.785 3059.426 L 875.261 1711.722" stroke="#00ff66" stroke-width="54" fill="none"/>
+<path d="M 1365.785 3059.426 L 875.261 1711.722" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 875.261 1711.722 L 2005.423 828.743" stroke="#00ced1" stroke-width="54" fill="none"/>
+<path d="M 875.261 1711.722 L 2005.423 828.743" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 2005.423 828.743 L 3194.425 1630.735" stroke="#0060ff" stroke-width="54" fill="none"/>
+<path d="M 2005.423 828.743 L 3194.425 1630.735" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 3194.425 1630.735 L 2799.107 3009.373" stroke="#7d00ff" stroke-width="54" fill="none"/>
+<path d="M 3194.425 1630.735 L 2799.107 3009.373" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 2799.107 3009.373 L 1365.785 3059.426" stroke="#00ff66" stroke-width="54" fill="none"/>
+<path d="M 2799.107 3009.373 L 1365.785 3059.426" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+</g>
+<g stroke-linecap="round" fill="none" opacity="0.24">
+<path d="M 1365.785 3059.426 Q 1823.314 1983.572 2005.423 828.743" stroke="#00ced1" stroke-width="8"/>
+<path d="M 875.261 1711.722 Q 2039.843 1814.402 3194.425 1630.735" stroke="#00ced1" stroke-width="8"/>
+<path d="M 1365.785 3059.426 Q 2191.905 2232.19 3194.425 1630.735" stroke="#00ced1" stroke-width="8"/>
+</g>
+<g opacity="0.22" stroke="#7d00ff" stroke-width="3" fill="none">
+<line x1="2243.341" y1="2211.911" x2="2120.37" y2="2562.939"/>
+<line x1="2041.643" y1="2302.921" x2="1690.526" y2="2425.641"/>
+<line x1="1844.731" y1="2201.97" x2="1529.867" y2="2003.971"/>
+<line x1="1800.885" y1="1985.077" x2="1759.373" y2="1615.456"/>
+<line x1="1943.122" y1="1815.566" x2="2206.221" y2="1552.655"/>
+<line x1="2164.334" y1="1821.083" x2="2533.925" y2="1862.86"/>
+<line x1="2297.944" y1="1997.473" x2="2495.718" y2="2312.478"/>
+</g>
+<g id="genesis-core" filter="url(#core-glow)">
+<polygon points="2247.264,1810.526 2335.427,2164.128 2026.375,2357.245 1747.208,2122.996 1883.725,1785.105" fill="#0a0e18" stroke="url(#energy-gradient)" stroke-width="13" opacity="0.94"/>
+<polygon points="2123.928,2256.612 1905.301,2218.062 1829.373,2009.45 1972.072,1839.388 2190.699,1877.938 2266.627,2086.55" fill="none" stroke="#00ffd4" stroke-width="8" opacity="0.82"/>
+<polygon points="1932.298,2185.888 1986.436,1878.855 2225.265,2079.257" fill="#00ffd4" opacity="0.18" stroke="#ffffff" stroke-width="3"/>
+<polygon points="2163.702,1910.112 2109.564,2217.145 1870.735,2016.743" fill="#7d00ff" opacity="0.2" stroke="#00ced1" stroke-width="3"/>
+<polygon points="2058.284,2165.551 1930.449,2058.284 2037.716,1930.449 2165.551,2037.716" fill="url(#core-gradient)" stroke="#ffffff" stroke-width="4"/>
+<circle cx="2048" cy="2048" r="28" fill="#ffffff"/>
+</g>
+<g id="genesis-validators">
+<g id="validator-1-node">
+<circle cx="1365.785" cy="3059.426" r="126" fill="#030206" stroke="#00ff66" stroke-width="8" opacity="0.98"/>
+<circle cx="1365.785" cy="3059.426" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="1320.773,3094.592 1318.43,3027.485 1381.529,3004.519 1422.87,3057.432 1385.321,3113.101" fill="#00ff66" opacity="0.34"/>
+<circle cx="1365.785" cy="3059.426" r="18.36" fill="#ffd700"/>
+</g>
+<g id="validator-2-node">
+<circle cx="875.261" cy="1711.722" r="126" fill="#030206" stroke="#00ced1" stroke-width="8" opacity="0.98"/>
+<circle cx="875.261" cy="1711.722" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="827.906,1679.781 891.005,1656.815 932.346,1709.729 894.797,1765.398 830.25,1746.889" fill="#00ced1" opacity="0.34"/>
+<circle cx="875.261" cy="1711.722" r="18.36" fill="#ffd700"/>
+</g>
+<g id="validator-3-node">
+<circle cx="2005.423" cy="828.743" r="126" fill="#030206" stroke="#0060ff" stroke-width="8" opacity="0.98"/>
+<circle cx="2005.423" cy="828.743" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="2021.167,773.836 2062.508,826.75 2024.959,882.418 1960.411,863.91 1958.068,796.802" fill="#0060ff" opacity="0.34"/>
+<circle cx="2005.423" cy="828.743" r="18.36" fill="#ffd700"/>
+</g>
+<g id="validator-4-node">
+<circle cx="3194.425" cy="1630.735" r="126" fill="#030206" stroke="#7d00ff" stroke-width="8" opacity="0.98"/>
+<circle cx="3194.425" cy="1630.735" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="3251.51,1628.742 3213.961,1684.411 3149.414,1665.902 3147.07,1598.794 3210.169,1575.828" fill="#7d00ff" opacity="0.34"/>
+<circle cx="3194.425" cy="1630.735" r="18.36" fill="#ffd700"/>
+</g>
+<g id="validator-5-node">
+<circle cx="2799.107" cy="3009.373" r="126" fill="#030206" stroke="#00ffd4" stroke-width="8" opacity="0.98"/>
+<circle cx="2799.107" cy="3009.373" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="2818.643,3063.048 2754.096,3044.54 2751.752,2977.432 2814.851,2954.466 2856.192,3007.38" fill="#00ffd4" opacity="0.34"/>
+<circle cx="2799.107" cy="3009.373" r="18.36" fill="#ffd700"/>
+</g>
+</g>
+</g>
+<text x="2048" y="440" text-anchor="middle" font-size="132" font-weight="800" letter-spacing="0" fill="#ffffff" opacity="1">SYNERGY TESTNET</text>
+<text x="2048" y="570" text-anchor="middle" font-size="56" font-weight="650" letter-spacing="0" fill="#c5d9e8" opacity="1">CHAIN 1263   /   MAGIC d5d5bb99   /   POST-QUANTUM DAG CONSENSUS</text>
+<text class="mono" x="2048" y="3620" text-anchor="middle" font-size="70" font-weight="700" letter-spacing="0" fill="#f2f7ff" opacity="1">GENESIS HASH dd9ad8cf...5e450b8</text>
+<text class="mono" x="2048" y="3820" text-anchor="middle" font-size="34" font-weight="400" letter-spacing="0" fill="#5e7280" opacity="0.7">FULL GENESIS HASH dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8</text>
+</svg>

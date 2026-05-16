@@ -5,6 +5,7 @@
 //! Implementation mirrors the canonical `synergy-address-engine` (`synergy-keygen`).
 
 use bech32::{u5, Variant};
+use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_256};
 
 /// Target address length per SNTS-01.
@@ -13,6 +14,24 @@ pub const TARGET_ADDRESS_LEN: usize = 41;
 const CHECKSUM_LEN: usize = 6;
 /// Separator character ('1') length.
 const SEPARATOR_LEN: usize = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AddressKind {
+    Wallet,
+    Validator,
+    FeeCollector,
+    ValidatorCluster,
+    Contract,
+    BurnAddress,
+    System,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AddressRegistryEntry {
+    pub active: bool,
+    pub address_type: AddressKind,
+}
 
 /// Extracts exactly `count` 5-bit values from a byte slice (big-endian bit order).
 /// Identical to the extraction algorithm in `synergy-address-engine/src/address.rs`.
@@ -95,6 +114,11 @@ pub fn generate_generic_address(prefix: &str, public_key: &str) -> String {
     derive_address_from_bytes(prefix, &key_bytes_from_str(public_key))
 }
 
+/// Generates the protocol-controlled FeeCollector address with the `synf` prefix.
+pub fn generate_fee_collector_address(seed: &str) -> String {
+    derive_address_from_bytes("synf", seed.as_bytes())
+}
+
 /// Generates a cluster address using the `syngrp{1-5}` prefix (7 characters).
 /// The seed (typically a cluster ID + validator addresses string) is hashed
 /// deterministically; no timestamp entropy is introduced.
@@ -102,6 +126,11 @@ pub fn generate_cluster_address(seed: &str, group: u8) -> String {
     let group = group.clamp(1, 5);
     let prefix = format!("syngrp{}", group);
     derive_address_from_bytes(&prefix, seed.as_bytes())
+}
+
+/// Generates the permanent testnet cluster identifier using the `syngrp1` family.
+pub fn generate_validator_cluster_address(seed: &str) -> String {
+    derive_address_from_bytes("syngrp1", seed.as_bytes())
 }
 
 /// Returns `true` if `address` is a structurally valid Synergy Bech32m address:
@@ -117,6 +146,64 @@ pub fn is_valid_address(address: &str) -> bool {
         Ok((_, _, variant)) => variant == Variant::Bech32m,
         Err(_) => false,
     }
+}
+
+pub fn is_valid_cluster_address(address: &str) -> bool {
+    address.len() == TARGET_ADDRESS_LEN
+        && address.starts_with("syngrp1")
+        && matches!(address_kind(address), AddressKind::ValidatorCluster)
+        && matches!(bech32::decode(address), Ok((_, _, Variant::Bech32m)))
+}
+
+pub fn address_kind(address: &str) -> AddressKind {
+    if address.starts_with("synf") {
+        AddressKind::FeeCollector
+    } else if address.starts_with("syngrp1") {
+        AddressKind::ValidatorCluster
+    } else if address.starts_with("synv") {
+        AddressKind::Validator
+    } else if address.starts_with("synw") || address.starts_with("synu") {
+        AddressKind::Wallet
+    } else if address.starts_with("synq") {
+        AddressKind::Contract
+    } else if address.starts_with("synb") {
+        AddressKind::BurnAddress
+    } else if address.starts_with("syn") {
+        AddressKind::System
+    } else {
+        AddressKind::Unknown
+    }
+}
+
+pub fn registry_entry_for_prefix(prefix: &str) -> Option<AddressRegistryEntry> {
+    let address_type = match prefix {
+        "synf" => AddressKind::FeeCollector,
+        "syngrp1" => AddressKind::ValidatorCluster,
+        "synw" | "synu" => AddressKind::Wallet,
+        "synv1" | "synv2" | "synv3" | "synv4" | "synv5" => AddressKind::Validator,
+        "synq" => AddressKind::Contract,
+        "synb" => AddressKind::BurnAddress,
+        _ => return None,
+    };
+
+    Some(AddressRegistryEntry {
+        active: true,
+        address_type,
+    })
+}
+
+pub fn is_protocol_controlled_address(address: &str) -> bool {
+    matches!(
+        address_kind(address),
+        AddressKind::FeeCollector
+            | AddressKind::ValidatorCluster
+            | AddressKind::BurnAddress
+            | AddressKind::System
+    )
+}
+
+pub fn is_spendable_user_address(address: &str) -> bool {
+    is_valid_address(address) && !is_protocol_controlled_address(address)
 }
 
 #[cfg(test)]
@@ -257,6 +344,30 @@ mod tests {
         let a = generate_cluster_address("deterministic-seed-value", 2);
         let b = generate_cluster_address("deterministic-seed-value", 2);
         assert_eq!(a, b, "cluster address must be deterministic");
+    }
+
+    #[test]
+    fn fee_collector_prefix_is_registered_as_system_account() {
+        let entry = registry_entry_for_prefix("synf").expect("synf registry entry");
+        assert!(entry.active);
+        assert_eq!(entry.address_type, AddressKind::FeeCollector);
+
+        let fee_collector = generate_fee_collector_address("fee-collector");
+        assert_eq!(fee_collector.len(), TARGET_ADDRESS_LEN);
+        assert!(fee_collector.starts_with("synf"));
+        assert!(is_protocol_controlled_address(&fee_collector));
+        assert!(!is_spendable_user_address(&fee_collector));
+    }
+
+    #[test]
+    fn syngrp1_cluster_address_is_protocol_controlled() {
+        let addr = generate_validator_cluster_address("network:genesis:0:0");
+        assert_eq!(addr.len(), TARGET_ADDRESS_LEN);
+        assert!(addr.starts_with("syngrp1"));
+        assert!(is_valid_cluster_address(&addr));
+        assert_eq!(address_kind(&addr), AddressKind::ValidatorCluster);
+        assert!(is_protocol_controlled_address(&addr));
+        assert!(!is_spendable_user_address(&addr));
     }
 
     #[test]

@@ -305,7 +305,7 @@ impl ValidatorRegistry {
             clusters: HashMap::new(),
             pending_registrations: HashMap::new(),
             jailed_validators: HashSet::new(),
-            min_stake_amount: 0, // Lowered for testnet-beta (production: 1000)
+            min_stake_amount: 0, // Lowered for testnet (production: 1000)
             max_validators: 100,
             cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
             epoch_length: 30000,
@@ -629,14 +629,17 @@ impl ValidatorRegistry {
 
         for validator in active_validators {
             if validator.is_eligible(self.min_stake_amount) {
-                // Calculate rewards based on synergy score and stake
-                let base_reward = 100; // Base reward per epoch
-                let synergy_multiplier = validator.synergy_score / 100.0;
-                let stake_multiplier =
-                    (validator.stake_amount as f64 / self.min_stake_amount as f64).min(3.0);
-
-                let total_reward =
-                    (base_reward as f64 * synergy_multiplier * stake_multiplier) as u64;
+                // Legacy reward preview only. Consensus settlement now uses
+                // rewards.rs two-phase integer accounting.
+                let base_reward = 100u64;
+                let capped_stake = validator
+                    .stake_amount
+                    .min(self.min_stake_amount.saturating_mul(3));
+                let total_reward = (base_reward as u128)
+                    .saturating_mul(capped_stake as u128)
+                    .checked_div(self.min_stake_amount.max(1) as u128)
+                    .and_then(|value| u64::try_from(value).ok())
+                    .unwrap_or(u64::MAX);
                 rewards.insert(validator.address.clone(), total_reward);
             }
         }
@@ -1074,6 +1077,30 @@ pub fn apply_validator_activation_transaction(
     }
 }
 
+pub fn replay_validator_activation_transactions(
+    chain: &crate::block::BlockChain,
+    token_manager: &TokenManager,
+    validator_manager: &Arc<ValidatorManager>,
+) -> (u64, u64) {
+    let mut applied = 0u64;
+    let mut failed = 0u64;
+
+    for block in &chain.chain {
+        for tx in &block.transactions {
+            if !is_validator_activation_transaction(tx) {
+                continue;
+            }
+
+            match apply_validator_activation_transaction(tx, token_manager, validator_manager) {
+                Ok(_) => applied += 1,
+                Err(_) => failed += 1,
+            }
+        }
+    }
+
+    (applied, failed)
+}
+
 fn canonical_minimum_validator_stake_nwei() -> u64 {
     canonical_genesis()
         .ok()
@@ -1109,6 +1136,7 @@ pub fn consensus_membership_validators(active_validators: Vec<Validator>) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::block::{Block, BlockChain};
 
     fn pending_registration(index: usize) -> ValidatorRegistration {
         ValidatorRegistration {
@@ -1138,6 +1166,19 @@ mod tests {
         }
         registry.reorganize_clusters();
         registry
+    }
+
+    fn funded_test_address(required_nwei: u64) -> String {
+        crate::genesis::canonical_genesis()
+            .ok()
+            .and_then(|genesis| {
+                genesis
+                    .balances()
+                    .iter()
+                    .find(|balance| balance.balance_nwei >= required_nwei)
+                    .map(|balance| balance.address.clone())
+            })
+            .unwrap_or_else(|| "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh".to_string())
     }
 
     #[test]
@@ -1216,21 +1257,22 @@ mod tests {
 
     #[test]
     fn chain_activation_registers_bonded_validator_with_activation_hash() {
-        let funding_source = "synu1nd0fvzfhhj4s0te3ks06csfsnpg2hed8vsmh";
-        let validator_address = "synv1activationvalidator000000000000000000";
+        let public_key = "activation-public-key";
+        let validator_address = crate::address::generate_validator_address(public_key, 1);
         let bonded_stake = TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI;
+        let funding_source = funded_test_address(bonded_stake);
         let token_manager = crate::token::TokenManager::new();
         token_manager
-            .transfer_tokens(funding_source, validator_address, "SNRG", bonded_stake, 0)
+            .transfer_tokens(&funding_source, &validator_address, "SNRG", bonded_stake, 0)
             .expect("test stake balance should fund from genesis allocation");
         token_manager
-            .stake_tokens(validator_address, validator_address, "SNRG", bonded_stake)
+            .stake_tokens(&validator_address, &validator_address, "SNRG", bonded_stake)
             .expect("test validator should bond stake");
 
         let validator_manager = Arc::new(ValidatorManager::new());
         let tx = Transaction::new(
-            validator_address.to_string(),
-            validator_address.to_string(),
+            validator_address.clone(),
+            validator_address.clone(),
             0,
             0,
             vec![1, 2, 3],
@@ -1238,7 +1280,7 @@ mod tests {
             21_000,
             Some(format!(
                 "validator_activation:{{\"validator\":\"{}\",\"public_key\":\"{}\",\"name\":\"Outside Validator\",\"stake_amount_nwei\":{}}}",
-                validator_address, "activation-public-key", bonded_stake
+                validator_address, public_key, bonded_stake
             )),
             "fndsa".to_string(),
         );
@@ -1248,13 +1290,69 @@ mod tests {
             .expect("bonded validator activation should apply");
 
         let activated = validator_manager
-            .get_validator(validator_address)
+            .get_validator(&validator_address)
             .expect("validator should be active after activation transaction");
         assert_eq!(activated.status, ValidatorStatus::Active);
         assert_eq!(activated.stake_amount, bonded_stake);
         assert_eq!(
             activated.activation_tx_hash.as_deref(),
             Some(tx_hash.as_str())
+        );
+    }
+
+    #[test]
+    fn replay_validator_activations_restores_registry_from_chain() {
+        let public_key = "replay-public-key";
+        let validator_address = crate::address::generate_validator_address(public_key, 1);
+        let bonded_stake = TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI;
+        let funding_source = funded_test_address(bonded_stake);
+        let token_manager = crate::token::TokenManager::new();
+        token_manager
+            .transfer_tokens(&funding_source, &validator_address, "SNRG", bonded_stake, 0)
+            .expect("test stake balance should fund from genesis allocation");
+        token_manager
+            .stake_tokens(&validator_address, &validator_address, "SNRG", bonded_stake)
+            .expect("test validator should bond stake");
+
+        let activation_tx = Transaction::new(
+            validator_address.clone(),
+            validator_address.clone(),
+            0,
+            0,
+            vec![4, 5, 6],
+            1,
+            21_000,
+            Some(format!(
+                "validator_activation:{{\"validator\":\"{}\",\"public_key\":\"{}\",\"name\":\"Replayed Validator\",\"stake_amount_nwei\":{}}}",
+                validator_address, public_key, bonded_stake
+            )),
+            "fndsa".to_string(),
+        );
+        let activation_hash = activation_tx.hash();
+        let mut chain = BlockChain::new();
+        chain.add_block(Block::new_with_timestamp(
+            1,
+            vec![activation_tx],
+            "genesis".to_string(),
+            "genesis-validator".to_string(),
+            0,
+            1,
+        ));
+
+        let validator_manager = Arc::new(ValidatorManager::new());
+        let (applied, failed) =
+            replay_validator_activation_transactions(&chain, &token_manager, &validator_manager);
+
+        assert_eq!(applied, 1);
+        assert_eq!(failed, 0);
+        let activated = validator_manager
+            .get_validator(&validator_address)
+            .expect("validator should be restored from replayed activation");
+        assert_eq!(activated.status, ValidatorStatus::Active);
+        assert_eq!(activated.stake_amount, bonded_stake);
+        assert_eq!(
+            activated.activation_tx_hash.as_deref(),
+            Some(activation_hash.as_str())
         );
     }
 

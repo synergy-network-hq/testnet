@@ -1,0 +1,168 @@
+{
+  "artifact_filenames": [
+    "synergy-testnet-genesis-certificate.png",
+    "synergy-testnet-genesis-certificate.svg",
+    "synergy-testnet-genesis-poster.png",
+    "synergy-testnet-genesis-poster.svg",
+    "synergy-testnet-genesis-sigil-animated.svg",
+    "synergy-testnet-genesis-sigil-engraving.png",
+    "synergy-testnet-genesis-sigil-engraving.svg",
+    "synergy-testnet-genesis-sigil-minimal.png",
+    "synergy-testnet-genesis-sigil-minimal.svg",
+    "synergy-testnet-genesis-sigil.png",
+    "synergy-testnet-genesis-sigil.svg",
+    "synergy-testnet-validator-1-plaque.png",
+    "synergy-testnet-validator-1-plaque.svg",
+    "synergy-testnet-validator-2-plaque.png",
+    "synergy-testnet-validator-2-plaque.svg",
+    "synergy-testnet-validator-3-plaque.png",
+    "synergy-testnet-validator-3-plaque.svg",
+    "synergy-testnet-validator-4-plaque.png",
+    "synergy-testnet-validator-4-plaque.svg",
+    "synergy-testnet-validator-5-plaque.png",
+    "synergy-testnet-validator-5-plaque.svg"
+  ],
+  "canonical_identity": {
+    "chain_id": 1263,
+    "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
+    "network_magic_bytes": "d5d5bb99",
+    "state_root": "14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76",
+    "validator_set_hash": "8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc"
+  },
+  "creation_mode": "deterministic",
+  "deterministic_seed_values": {
+    "art_seed": "c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65",
+    "dag_topology_seed": "6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755"
+  },
+  "generator_version": "synergy-genesis-art-v2.0.0",
+  "glow_strengths": {
+    "core": 0.42,
+    "engraving": 0,
+    "line": 0.28
+  },
+  "layout_grid": {
+    "base_unit": 160,
+    "poster_center": [
+      2700,
+      3100
+    ],
+    "square_artboard_center": [
+      2048,
+      2048
+    ]
+  },
+  "line_opacity_ranges": {
+    "dag_chord": [
+      0.2,
+      0.26
+    ],
+    "facets": [
+      0.18,
+      0.26
+    ],
+    "quorum_perimeter": [
+      0.95,
+      1.0
+    ],
+    "rings": [
+      0.34,
+      0.42
+    ]
+  },
+  "minimal_ring_radii": [
+    470,
+    760,
+    1040,
+    1320
+  ],
+  "palette": {
+    "brand": {
+      "background_base": "#030206",
+      "background_primary": "#05070d",
+      "background_secondary": "#0a0e18",
+      "background_tertiary": "#111622",
+      "blue_synq": "#0060ff",
+      "cyan_sxcp": "#00ced1",
+      "electric_mint": "#00ffd4",
+      "gold": "#ffd700",
+      "lime_posy": "#00ff66",
+      "neon_magenta": "#ff00e5",
+      "purple_aegis": "#7d00ff",
+      "text_bright": "#ffffff",
+      "text_muted": "#5e7280",
+      "text_primary": "#f2f7ff",
+      "text_secondary": "#c5d9e8"
+    },
+    "energy_order": [
+      "lime_posy",
+      "cyan_sxcp",
+      "blue_synq",
+      "purple_aegis"
+    ],
+    "semantic": {
+      "archival_accent": "#ffd700",
+      "background": "#030206",
+      "core": "#00ffd4",
+      "dag_subtle": "#7d00ff",
+      "provenance": "#5e7280",
+      "quorum": "#0060ff",
+      "surface": "#05070d",
+      "surface_raised": "#0a0e18",
+      "validator_primary": "#00ced1",
+      "validator_secondary": "#00ff66"
+    }
+  },
+  "ring_radii": [
+    430,
+    690,
+    940,
+    1390
+  ],
+  "svg_dimensions": {
+    "certificate": {
+      "height": 2550,
+      "width": 3300
+    },
+    "full_sigil": {
+      "height": 4096,
+      "viewBox": "0 0 4096 4096",
+      "width": 4096
+    },
+    "minimal_sigil": {
+      "height": 2048,
+      "viewBox": "0 0 4096 4096",
+      "width": 2048
+    },
+    "poster": {
+      "height": 7200,
+      "print_inches": "18x24 at 300 DPI",
+      "width": 5400
+    },
+    "validator_plaque": {
+      "height": 2400,
+      "width": 3600
+    }
+  },
+  "typography_assumptions": {
+    "external_fonts_required": false,
+    "hierarchy": [
+      "SYNERGY TESTNET",
+      "CHAIN 1263 / MAGIC d5d5bb99",
+      "GENESIS HASH fingerprint",
+      "full provenance hash"
+    ],
+    "svg_font_family": "Sora, Rajdhani, Segoe UI, Arial, sans-serif"
+  },
+  "validator_fingerprints": {
+    "validator-1": "6ec2d413",
+    "validator-2": "38aec149",
+    "validator-3": "feca1787",
+    "validator-4": "f40a5e73",
+    "validator-5": "2548c636"
+  },
+  "validator_node_sizes": {
+    "core_dot_ratio": 0.18,
+    "inner_radius": 102,
+    "outer_radius": 126
+  }
+}

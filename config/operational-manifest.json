@@ -1,13 +1,13 @@
 {
   "version": 2,
-  "environment_id": "testbeta",
-  "display_name": "Synergy Testnet-Beta",
-  "network_id": "synergy-testnet-beta",
-  "chain_id": 338639,
+  "environment_id": "testnet",
+  "display_name": "Synergy Testnet",
+  "network_id": 1263,
+  "chain_id": 1263,
   "token": {
     "symbol": "SNRG",
     "denom": "SNRG",
-    "name": "Synergy Token",
+    "name": "Synergy Testnet Token",
     "decimals": 9
   },
   "bootstrap": {
@@ -104,43 +104,43 @@
   },
   "public_endpoints": {
     "core_rpc": {
-      "url": "https://testbeta-core-rpc.synergy-network.io",
-      "host": "testbeta-core-rpc.synergy-network.io",
+      "url": "https://testnet-core-rpc.synergy-network.io",
+      "host": "testnet-core-rpc.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "core_ws": {
-      "url": "wss://testbeta-core-ws.synergy-network.io",
-      "host": "testbeta-core-ws.synergy-network.io",
+      "url": "wss://testnet-core-ws.synergy-network.io",
+      "host": "testnet-core-ws.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "api": {
-      "url": "https://testbeta-api.synergy-network.io",
-      "host": "testbeta-api.synergy-network.io",
+      "url": "https://testnet-api.synergy-network.io",
+      "host": "testnet-api.synergy-network.io",
       "ip_address": "65.21.202.144"
     },
     "explorer": {
-      "url": "https://testbeta-explorer.synergy-network.io",
-      "host": "testbeta-explorer.synergy-network.io",
+      "url": "https://testnet-explorer.synergy-network.io",
+      "host": "testnet-explorer.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "indexer_ws": {
-      "url": "wss://testbeta-indexer.synergy-network.io",
-      "host": "testbeta-indexer.synergy-network.io",
+      "url": "wss://testnet-indexer.synergy-network.io",
+      "host": "testnet-indexer.synergy-network.io",
       "ip_address": "74.208.227.23"
     },
     "atlas_api": {
-      "url": "https://testbeta-atlas-api.synergy-network.io",
-      "host": "testbeta-atlas-api.synergy-network.io",
+      "url": "https://testnet-atlas-api.synergy-network.io",
+      "host": "testnet-atlas-api.synergy-network.io",
       "ip_address": "74.208.227.23"
     }
   },
   "services": {
-    "wallet_api": "https://testbeta-wallet-api.synergy-network.io",
-    "faucet": "https://testbeta-faucet.synergy-network.io",
-    "sxcp_api": "https://testbeta-sxcp-api.synergy-network.io",
-    "sxcp_ws": "wss://testbeta-sxcp-ws.synergy-network.io",
-    "synq_verify": "https://testbeta-synq-verify.synergy-network.io",
-    "aegis_verify": "https://testbeta-aegis-verify.synergy-network.io"
+    "wallet_api": "https://testnet-wallet-api.synergy-network.io",
+    "faucet": "https://testnet-faucet.synergy-network.io",
+    "sxcp_api": "https://testnet-sxcp-api.synergy-network.io",
+    "sxcp_ws": "wss://testnet-sxcp-ws.synergy-network.io",
+    "synq_verify": "https://testnet-synq-verify.synergy-network.io",
+    "aegis_verify": "https://testnet-aegis-verify.synergy-network.io"
   },
   "validators": [
     {

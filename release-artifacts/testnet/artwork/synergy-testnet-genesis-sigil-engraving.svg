@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="2048" height="2048" viewBox="0 0 4096 4096" role="img" aria-label="Synergy Testnet genesis engraving sigil">
+<metadata>{&quot;art_seed&quot;:&quot;c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65&quot;,&quot;chain_id&quot;:1263,&quot;dag_topology_seed&quot;:&quot;6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8&quot;,&quot;kind&quot;:&quot;monochrome engraving&quot;,&quot;network_magic_bytes&quot;:&quot;d5d5bb99&quot;,&quot;state_root&quot;:&quot;14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
+<rect width="100%" height="100%" fill="#030206"/>
+<g fill="none" stroke="#f2f7ff" stroke-linecap="round" stroke-linejoin="round">
+<circle cx="2048" cy="2048" r="520" stroke-width="7" opacity="0.72"/>
+<circle cx="2048" cy="2048" r="800" stroke-width="7" opacity="0.72"/>
+<circle cx="2048" cy="2048" r="1110" stroke-width="7" opacity="0.72"/>
+<circle cx="2048" cy="2048" r="1420" stroke-width="7" opacity="0.72"/>
+<path d="M 1365.785 3059.426 L 875.261 1711.722 L 2005.423 828.743 L 3194.425 1630.735 L 2799.107 3009.373 Z" stroke="#00ffd4" stroke-width="22"/>
+<line x1="1365.785" y1="3059.426" x2="2005.423" y2="828.743" stroke="#f2f7ff" stroke-width="6" opacity="0.55"/>
+<line x1="875.261" y1="1711.722" x2="3194.425" y2="1630.735" stroke="#f2f7ff" stroke-width="6" opacity="0.55"/>
+<line x1="1365.785" y1="3059.426" x2="3194.425" y2="1630.735" stroke="#f2f7ff" stroke-width="6" opacity="0.55"/>
+<polygon points="2253.692,1802.866 2344.699,2167.874 2025.678,2367.22 1737.505,2125.415 1878.426,1776.625" stroke="#00ffd4" stroke-width="18"/>
+<polygon points="2119.824,2245.335 1913.015,2208.869 1841.19,2011.534 1976.176,1850.665 2182.985,1887.131 2254.81,2084.466" stroke="#f2f7ff" stroke-width="10"/>
+<polygon points="2058.459,2167.543 1928.457,2058.459 2037.541,1928.457 2167.543,2037.541" stroke="#00ffd4" stroke-width="12"/>
+<circle cx="1365.785" cy="3059.426" r="112" stroke="#00ffd4" stroke-width="14"/>
+<circle cx="1365.785" cy="3059.426" r="36" stroke="#f2f7ff" stroke-width="10"/>
+<circle cx="875.261" cy="1711.722" r="112" stroke="#00ffd4" stroke-width="14"/>
+<circle cx="875.261" cy="1711.722" r="36" stroke="#f2f7ff" stroke-width="10"/>
+<circle cx="2005.423" cy="828.743" r="112" stroke="#00ffd4" stroke-width="14"/>
+<circle cx="2005.423" cy="828.743" r="36" stroke="#f2f7ff" stroke-width="10"/>
+<circle cx="3194.425" cy="1630.735" r="112" stroke="#00ffd4" stroke-width="14"/>
+<circle cx="3194.425" cy="1630.735" r="36" stroke="#f2f7ff" stroke-width="10"/>
+<circle cx="2799.107" cy="3009.373" r="112" stroke="#00ffd4" stroke-width="14"/>
+<circle cx="2799.107" cy="3009.373" r="36" stroke="#f2f7ff" stroke-width="10"/>
+</g>
+<text x="2048" y="3635" text-anchor="middle" font-size="72" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="1">SYNERGY TESTNET / CHAIN 1263</text>
+</svg>

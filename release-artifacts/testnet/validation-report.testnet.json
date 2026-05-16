@@ -1,0 +1,11 @@
+{
+  "allocation_total_nwei": "12000000000000000000",
+  "balance_total_nwei": "12000000000000000000",
+  "chain_id": 1263,
+  "errors": [],
+  "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
+  "network_magic_bytes": "d5d5bb99",
+  "total_supply_cap_nwei": "12000000000000000000",
+  "valid": true,
+  "validator_count": 5
+}

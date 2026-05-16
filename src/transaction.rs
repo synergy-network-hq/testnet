@@ -239,12 +239,14 @@ impl Transaction {
         serde_json::from_str(json).map_err(|e| format!("Failed to deserialize from JSON: {}", e))
     }
 
+    /// Actual fee charged for inclusion, using deterministic activity gas.
+    /// This is intentionally not `gas_limit * gas_price`; unused gas is refundable.
     pub fn get_fee(&self) -> u64 {
-        self.gas_price * self.gas_limit
+        u64::try_from(self.calculate_gas_fee()).unwrap_or(u64::MAX)
     }
 
     pub fn get_total_value(&self) -> u64 {
-        self.amount + self.get_fee()
+        self.amount.saturating_add(self.get_fee())
     }
 
     pub fn is_contract_call(&self) -> bool {
@@ -291,10 +293,19 @@ impl Transaction {
         self.gas_limit
     }
 
-    /// Calculate gas fee using the gas module (SNTS-04 compliant)
-    /// Returns fee in nWei
+    pub fn minimum_required_gas(&self) -> u64 {
+        self.estimate_gas()
+    }
+
+    /// Calculate actual gas fee using the gas module. Returns fee in nWei.
     pub fn calculate_gas_fee(&self) -> u128 {
-        (self.gas_limit as u128) * (self.gas_price as u128)
+        crate::gas::calculate_total_fee_nwei(self.minimum_required_gas(), self.gas_price)
+            .unwrap_or(u128::MAX)
+    }
+
+    /// Calculate the maximum fee reserve required before execution.
+    pub fn calculate_max_fee_reserve_nwei(&self) -> u128 {
+        crate::gas::calculate_total_fee_nwei(self.gas_limit, self.gas_price).unwrap_or(u128::MAX)
     }
 
     /// Get gas fee as NWei type
@@ -303,8 +314,8 @@ impl Transaction {
     }
 
     /// Get gas fee in SNRG (for display)
-    pub fn get_gas_fee_snrg(&self) -> f64 {
-        self.get_gas_fee_nwei().to_snrg()
+    pub fn get_gas_fee_snrg(&self) -> String {
+        self.get_gas_fee_nwei().format_snrg()
     }
 
     /// Get total cost (amount + gas fee) in nWei
@@ -315,7 +326,8 @@ impl Transaction {
     /// Check if sender has sufficient balance for transaction
     /// balance should be in nWei
     pub fn has_sufficient_balance(&self, sender_balance: u128) -> bool {
-        sender_balance >= self.get_total_cost_nwei()
+        sender_balance
+            >= (self.amount as u128).saturating_add(self.calculate_max_fee_reserve_nwei())
     }
 
     /// Set gas price (in nWei per gas unit)
@@ -338,21 +350,84 @@ impl Transaction {
 
     /// Estimate gas for this transaction based on its type
     pub fn estimate_gas(&self) -> u64 {
-        use crate::gas::GasEstimator;
+        use crate::gas::{calculate_activity_gas, GasComputationInput, GasSchedule};
+
+        let schedule = GasSchedule::default();
+        let payload_size = self
+            .data
+            .as_ref()
+            .map(|data| data.len() as u64)
+            .unwrap_or(0);
+        let mut input = GasComputationInput::new(self.gas_activity_type());
+        input.payload_size_bytes = payload_size;
 
         if let Some(ref data) = self.data {
             if data.starts_with("deploy:") {
-                // Contract deployment
-                let bytecode_size = data.len();
-                GasEstimator::estimate_contract_deploy(bytecode_size).as_u64()
-            } else {
-                // Contract call
-                let calldata_size = data.len();
-                GasEstimator::estimate_contract_call(calldata_size).as_u64()
+                input.contract_bytecode_size = data.len() as u64;
+            } else if data.starts_with("validator_activation:")
+                || data.starts_with("validator_registration:")
+            {
+                input.validator_metadata_size_bytes = data.len() as u64;
+            } else if data.starts_with("governance_proposal:") {
+                input.proposal_size_bytes = data.len() as u64;
+            } else if data.starts_with("pqc_key_registration:")
+                || data.starts_with("pqc_key_rotation:")
+            {
+                input.key_material_size_bytes = data.len() as u64;
+            } else if data.starts_with("sxcp_proof:") {
+                input.proof_size_bytes = data.len() as u64;
             }
-        } else {
-            // Simple transfer
-            GasEstimator::estimate_transfer().as_u64()
+        }
+
+        calculate_activity_gas(&schedule, &input)
+            .map(|breakdown| breakdown.total_gas)
+            .unwrap_or(schedule.base_tx_gas)
+    }
+
+    pub fn gas_activity_type(&self) -> crate::gas::GasActivityType {
+        use crate::gas::GasActivityType;
+
+        match self.data.as_deref() {
+            None => GasActivityType::NativeSnrgTransfer,
+            Some(data) if data.starts_with("token_transfer:") => {
+                GasActivityType::ScetpSameChainTransfer
+            }
+            Some(data)
+                if data.starts_with("validator_activation:")
+                    || data.starts_with("validator_registration:") =>
+            {
+                GasActivityType::ValidatorRegistration
+            }
+            Some(data) if data.starts_with("validator_heartbeat:") => {
+                GasActivityType::ValidatorHeartbeat
+            }
+            Some(data) if data.starts_with("stake:") => GasActivityType::StakingBond,
+            Some(data)
+                if data.starts_with("unstake:") || data.starts_with("withdrawal_request:") =>
+            {
+                GasActivityType::UnstakeRequest
+            }
+            Some(data) if data.starts_with("governance_proposal:") => {
+                GasActivityType::GovernanceProposal
+            }
+            Some(data) if data.starts_with("governance_vote:") => GasActivityType::GovernanceVote,
+            Some(data) if data.starts_with("deploy:") => GasActivityType::SynqContractDeployment,
+            Some(data) if data.starts_with("pqc_key_registration:") => {
+                GasActivityType::AegisPqcKeyRegistration
+            }
+            Some(data) if data.starts_with("pqc_key_rotation:") => {
+                GasActivityType::AegisPqcKeyRotation
+            }
+            Some(data) if data.starts_with("sxcp_intent:") => GasActivityType::SxcpIntentCreation,
+            Some(data) if data.starts_with("sxcp_proof:") => GasActivityType::SxcpProofVerification,
+            Some(data) if data.starts_with("sxcp_attestation:") => {
+                GasActivityType::SxcpRelayerAttestation
+            }
+            Some(data) if data.starts_with("uma_create:") => GasActivityType::UmaRecordCreation,
+            Some(data) if data.starts_with("uma_update:") => GasActivityType::UmaRecordUpdate,
+            Some(data) if data.starts_with("sns_register:") => GasActivityType::SnsNameRegistration,
+            Some(data) if data.starts_with("sns_update:") => GasActivityType::SnsNameUpdate,
+            Some(_) => GasActivityType::SynqContractCall,
         }
     }
 }
@@ -552,8 +627,8 @@ mod tests {
             "mldsa".to_string(),
         );
 
-        assert_eq!(tx.get_fee(), 100 * 21000);
-        assert_eq!(tx.get_total_value(), 1000 + (100 * 21000));
+        assert_eq!(tx.get_fee(), 100 * 38500);
+        assert_eq!(tx.get_total_value(), 1000 + (100 * 38500));
     }
 
     #[test]

@@ -271,8 +271,8 @@ impl Default for NodeConfig {
     fn default() -> Self {
         NodeConfig {
             network: NetworkConfig {
-                id: 338639,
-                name: "Synergy Testnet-Beta".to_string(),
+                id: 1263,
+                name: "Synergy Testnet".to_string(),
                 p2p_port: 5622,
                 rpc_port: 5640,
                 ws_port: 5660,
@@ -286,7 +286,7 @@ impl Default for NodeConfig {
             blockchain: BlockchainConfig {
                 block_time: 2,
                 max_gas_limit: "0x2fefd8".to_string(),
-                chain_id: 338639,
+                chain_id: 1263,
             },
             consensus: ConsensusConfig {
                 algorithm: "Proof of Synergy".to_string(),
@@ -1219,7 +1219,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_testbeta_control_panel_workspace_config() {
+    fn parses_testnet_control_panel_workspace_config() {
         let content = r#"
 [identity]
 node_id = "node-01"
@@ -1228,8 +1228,8 @@ address = "synv1test"
 label = "Validator Node 01"
 
 [network]
-chain_name = "synergy-testnet-beta"
-chain_id = 338639
+chain_name = "synergy-testnet"
+chain_id = 1263
 p2p_listen = "0.0.0.0:5622"
 bootnodes = ["bootnode1.synergynode.xyz:5620"]
 seed_servers = ["http://seed1.synergynode.xyz:5621"]
@@ -1242,7 +1242,7 @@ max_peers = 128
 compiled_profile = "validator_node"
 
 [storage]
-path = "/tmp/synergy-testbeta"
+path = "/tmp/synergy-testnet"
 
 [telemetry]
 log_level = "debug"
@@ -1252,9 +1252,9 @@ log_level = "debug"
 
         assert_eq!(config.identity.role, "validator");
         assert_eq!(config.role.compiled_profile, "validator_node");
-        assert_eq!(config.network.name, "synergy-testnet-beta");
-        assert_eq!(config.network.id, 338639);
-        assert_eq!(config.blockchain.chain_id, 338639);
+        assert_eq!(config.network.name, "synergy-testnet");
+        assert_eq!(config.network.id, 1263);
+        assert_eq!(config.blockchain.chain_id, 1263);
         assert_eq!(config.network.p2p_port, 5622);
         assert_eq!(config.p2p.listen_address, "0.0.0.0:5622");
         assert_eq!(
@@ -1352,8 +1352,8 @@ metrics_bind = "0.0.0.0:6030"
             &node_path,
             r#"
 [network]
-id = 338639
-name = "synergy-testnet-beta"
+id = 1263
+name = "synergy-testnet"
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
@@ -1362,7 +1362,7 @@ bootnodes = ["bootnode1.synergynode.xyz:5620"]
 [blockchain]
 block_time = 5
 max_gas_limit = "0x2fefd8"
-chain_id = 338639
+chain_id = 1263
 
 [consensus]
 algorithm = "Proof of Synergy"
@@ -1474,8 +1474,8 @@ address = "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re"
 label = "Genesis Validator 3 Node"
 
 [network]
-chain_name = "synergy-testnet-beta"
-chain_id = 338639
+chain_name = "synergy-testnet"
+chain_id = 1263
 p2p_port = 5622
 public_host = "genesisval3.synergynode.xyz"
 
@@ -1497,8 +1497,8 @@ public_address = "genesisval3.synergynode.xyz:5622"
     fn synthesizes_public_address_from_public_host_when_explicit_value_missing() {
         let content = r#"
 [network]
-chain_name = "synergy-testnet-beta"
-chain_id = 338639
+chain_name = "synergy-testnet"
+chain_id = 1263
 p2p_port = 5622
 public_host = "genesisval1.synergynode.xyz"
 
@@ -1522,8 +1522,8 @@ listen_address = "0.0.0.0:5622"
     fn parses_explicit_discovery_addresses_from_compatibility_blocks() {
         let content = r#"
 [network]
-chain_name = "synergy-testnet-beta"
-chain_id = 338639
+chain_name = "synergy-testnet"
+chain_id = 1263
 p2p_port = 5622
 public_host = "genesisval1.synergynode.xyz"
 
@@ -1666,8 +1666,8 @@ state_sync_before_join = true
             &config_path,
             r#"
 [network]
-id = 338639
-name = "synergy-testnet-beta"
+id = 1263
+name = "synergy-testnet"
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
@@ -1676,7 +1676,7 @@ max_peers = 32
 [blockchain]
 block_time = 5
 max_gas_limit = "0x2fefd8"
-chain_id = 338639
+chain_id = 1263
 
 [consensus]
 algorithm = "Proof of Synergy"

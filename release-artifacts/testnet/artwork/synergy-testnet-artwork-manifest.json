@@ -1,0 +1,359 @@
+{
+  "art_seed": "c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65",
+  "chain_id": 1263,
+  "creation_mode": "deterministic",
+  "dag_edges": [
+    {
+      "from": "validator-1",
+      "from_index": 0,
+      "role": "quorum_perimeter",
+      "to": "validator-2",
+      "to_index": 1,
+      "weight": "ceremonial"
+    },
+    {
+      "from": "validator-2",
+      "from_index": 1,
+      "role": "quorum_perimeter",
+      "to": "validator-3",
+      "to_index": 2,
+      "weight": "ceremonial"
+    },
+    {
+      "from": "validator-3",
+      "from_index": 2,
+      "role": "quorum_perimeter",
+      "to": "validator-4",
+      "to_index": 3,
+      "weight": "ceremonial"
+    },
+    {
+      "from": "validator-4",
+      "from_index": 3,
+      "role": "quorum_perimeter",
+      "to": "validator-5",
+      "to_index": 4,
+      "weight": "ceremonial"
+    },
+    {
+      "from": "validator-5",
+      "from_index": 4,
+      "role": "quorum_perimeter",
+      "to": "validator-1",
+      "to_index": 0,
+      "weight": "ceremonial"
+    },
+    {
+      "from": "validator-1",
+      "from_index": 0,
+      "role": "dag_chord",
+      "to": "validator-3",
+      "to_index": 2,
+      "weight": "237c4431"
+    },
+    {
+      "from": "validator-2",
+      "from_index": 1,
+      "role": "dag_chord",
+      "to": "validator-4",
+      "to_index": 3,
+      "weight": "46b36813"
+    },
+    {
+      "from": "validator-1",
+      "from_index": 0,
+      "role": "dag_chord",
+      "to": "validator-4",
+      "to_index": 3,
+      "weight": "bc81d3dd"
+    }
+  ],
+  "dag_topology_seed": "6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755",
+  "files": [
+    {
+      "blake3": "87d41a2a7b938ee4a091b1093a51f9d347546a9a0ce49f94f65625a5f307fa82",
+      "bytes": 4333,
+      "path": "synergy-art-styleguide.json",
+      "sha256": "5c0278fffc78f2eb6dfd35dea2c93cd14001cdecf314c9ab97429e808f566fed"
+    },
+    {
+      "blake3": "431ef35ed510c2104547c590e0ec8c7968c4e967e8dc54335de8649cf8705d72",
+      "bytes": 196618,
+      "path": "synergy-testnet-genesis-certificate.png",
+      "sha256": "c55289a1a80f226fd746b106d925030d9a1f6943b9089c1d3c7872ce3501d392"
+    },
+    {
+      "blake3": "fe48404271790b247b9d5a4a88f68017ac77d47a1c8f700dae8e41cb9cb4ceb3",
+      "bytes": 10765,
+      "path": "synergy-testnet-genesis-certificate.svg",
+      "sha256": "f4d7968b0f54451d7a2e4393a17c5d4d0f432ad0407a15038e0ba411b046f5e4"
+    },
+    {
+      "blake3": "89646c8d4088d35e324b92d67baa0fbdc1dee72399bb2b29e51dd7ae2379c643",
+      "bytes": 597017,
+      "path": "synergy-testnet-genesis-poster.png",
+      "sha256": "ad6dbf0f7cfed62d7acc7726c3c57dc9ba4d0a49f89b2333e1e4ad784e734223"
+    },
+    {
+      "blake3": "056ce08aa3940aa1e0d97c1759d9f717845e47de191dd3e68516e5530aab7704",
+      "bytes": 15037,
+      "path": "synergy-testnet-genesis-poster.svg",
+      "sha256": "541b0c2486692cb936fb73c45122408c134e5cadd5f7d95ca1ceaf4ea2cb59ea"
+    },
+    {
+      "blake3": "beebd2105c48c4e08a323a2b211707e5594126ec8d8e335d9c605527edf6c784",
+      "bytes": 10585,
+      "path": "synergy-testnet-genesis-sigil-animated.svg",
+      "sha256": "6f0d4d7cafbc4564bb135041e683a706c5992579bdcd782f21abd4577e5c465b"
+    },
+    {
+      "blake3": "61a91cc92b3ddbcef4dc1530380822ae30158e04d22f1550e647e22481eb4ce1",
+      "bytes": 204296,
+      "path": "synergy-testnet-genesis-sigil-engraving.png",
+      "sha256": "f0065aeb2ee43189af2b35b3bb1623ff488d7e085232b77a780691d10219893b"
+    },
+    {
+      "blake3": "785ebae6ba462e3aae9d32a843f41f32add97431adadee3a3debbb6a1846c0f1",
+      "bytes": 3193,
+      "path": "synergy-testnet-genesis-sigil-engraving.svg",
+      "sha256": "67c5223a7ac881249efecb10a3f6ebc1d8d38086dd2d8c24e7957d345d9fe779"
+    },
+    {
+      "blake3": "f067f25e87a221189a5c1ec5ce6091b4bc8a90e210a1ba560799e71c146b1380",
+      "bytes": 109728,
+      "path": "synergy-testnet-genesis-sigil-minimal.png",
+      "sha256": "796948f2c76656f76563b13805bdd6d0eed458ce015972724e6e4f536ab0c317"
+    },
+    {
+      "blake3": "197ff959bb5147d72a3514a1d3ea71994afad13cf79b1b92759519d0dca56a50",
+      "bytes": 9593,
+      "path": "synergy-testnet-genesis-sigil-minimal.svg",
+      "sha256": "7519053dc1126607f73677a05596063b62b98988aa031f6dd0f5d29470c6bdde"
+    },
+    {
+      "blake3": "eb48eb77ead267db07c04e7240730e2aa633dd4425132d8c55c4654420792c71",
+      "bytes": 329049,
+      "path": "synergy-testnet-genesis-sigil.png",
+      "sha256": "bc0923d7601c7aaa987b9c9f7d5722a4246f3c0c9b1194896841cdf33a1c579a"
+    },
+    {
+      "blake3": "c1d8544203e03fd7d556913bc3735e96ee41b1510ea25ecb575a5eca06fec4c3",
+      "bytes": 13059,
+      "path": "synergy-testnet-genesis-sigil.svg",
+      "sha256": "80f5dc4dc98e5efc42ee0c0e0e69e0b39820585fc517db88a4dfe317c2218525"
+    },
+    {
+      "blake3": "338a2960af64468ecac9f34b6858ec4ea1807b64d5d19e30752e5c1851871496",
+      "bytes": 238814,
+      "path": "synergy-testnet-validator-1-plaque.png",
+      "sha256": "200308c3f3d02da1455181ec3cb1101faefd0e2e44fe77963d7b738d5a931ad5"
+    },
+    {
+      "blake3": "29aca7c790bd4aaf3474ce17b9e0eb19eca8454ea21c941f431f941cdf220755",
+      "bytes": 12135,
+      "path": "synergy-testnet-validator-1-plaque.svg",
+      "sha256": "2794e3dd2a762a7f9f78a7d1c3ae09511e7b596a265265ccea21a014510c8540"
+    },
+    {
+      "blake3": "fc702b69cd777383e80ef1cd343a96838a8654b5b51bd83471be1665f1e604fe",
+      "bytes": 247375,
+      "path": "synergy-testnet-validator-2-plaque.png",
+      "sha256": "cee06d2eda2984f2cfe7748ac762c57d47188a48c90974e5d05aee34b74c06fb"
+    },
+    {
+      "blake3": "306bdc95dec7bddd537295a8dc600260248d8eb083a182ab6def45e9ddd926a5",
+      "bytes": 12135,
+      "path": "synergy-testnet-validator-2-plaque.svg",
+      "sha256": "fb396e46557517e7b1fc08fec92826dcadb47279e75fb300b59195523027a0c8"
+    },
+    {
+      "blake3": "940edf061c9c8c54f3b103d22fa5cb57647e04aa820341e4ec33b2516fcf321b",
+      "bytes": 244218,
+      "path": "synergy-testnet-validator-3-plaque.png",
+      "sha256": "471dc41f701bc123a8a57023d9fe8a8b44eb65501f45e1baecc0e0c0241e5990"
+    },
+    {
+      "blake3": "cebaa04ee0aeb18a3fd5d65177ece376b6c59aef88a29f46293de23c123c0b28",
+      "bytes": 12135,
+      "path": "synergy-testnet-validator-3-plaque.svg",
+      "sha256": "f3c23d1d78dde0665809943e18f093e80af59b0c1344d6698a16d5a62be789ea"
+    },
+    {
+      "blake3": "45730c2b25dd67da3463e60db83ea2971b6b96fc250dd76121a2b0807ca2900d",
+      "bytes": 243987,
+      "path": "synergy-testnet-validator-4-plaque.png",
+      "sha256": "1316473343a8c1208e0b95ae3c46d5c191f8050c98cfb4fa560cc3f9fdc6ce09"
+    },
+    {
+      "blake3": "bf6d9afefc756d872b3bbd95e73615758ff93d6e96c170d326b8b38e023a0051",
+      "bytes": 12135,
+      "path": "synergy-testnet-validator-4-plaque.svg",
+      "sha256": "6520769644c34b3196006a24b61dab696f2e01994e895beb0aa31f4d4052e5ef"
+    },
+    {
+      "blake3": "82bb5100efbec4c2f9b1073c8e40af106a865e13733670bc7430970665cc1d54",
+      "bytes": 242511,
+      "path": "synergy-testnet-validator-5-plaque.png",
+      "sha256": "879dc5adcdee9902142116f359079b90893c13f875d69d2fbca85eca42e3326b"
+    },
+    {
+      "blake3": "ac746720889051736e2a552ed10bb2ac1065799b05a89bbf46372760eeef1ac9",
+      "bytes": 12135,
+      "path": "synergy-testnet-validator-5-plaque.svg",
+      "sha256": "84180ac7e5b96b0743f923684161f2b6bc8d98d0dd50678433f6df1ddf62b376"
+    }
+  ],
+  "generator_version": "synergy-genesis-art-v2.0.0",
+  "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
+  "genesis_timestamp": 1775044800,
+  "manifest_self_hash_excluded": true,
+  "network_magic_bytes": "d5d5bb99",
+  "palette": {
+    "brand": {
+      "background_base": "#030206",
+      "background_primary": "#05070d",
+      "background_secondary": "#0a0e18",
+      "background_tertiary": "#111622",
+      "blue_synq": "#0060ff",
+      "cyan_sxcp": "#00ced1",
+      "electric_mint": "#00ffd4",
+      "gold": "#ffd700",
+      "lime_posy": "#00ff66",
+      "neon_magenta": "#ff00e5",
+      "purple_aegis": "#7d00ff",
+      "text_bright": "#ffffff",
+      "text_muted": "#5e7280",
+      "text_primary": "#f2f7ff",
+      "text_secondary": "#c5d9e8"
+    },
+    "energy_order": [
+      "lime_posy",
+      "cyan_sxcp",
+      "blue_synq",
+      "purple_aegis"
+    ],
+    "semantic": {
+      "archival_accent": "#ffd700",
+      "background": "#030206",
+      "core": "#00ffd4",
+      "dag_subtle": "#7d00ff",
+      "provenance": "#5e7280",
+      "quorum": "#0060ff",
+      "surface": "#05070d",
+      "surface_raised": "#0a0e18",
+      "validator_primary": "#00ced1",
+      "validator_secondary": "#00ff66"
+    }
+  },
+  "seed_derivations": {
+    "art_seed": "blake3(\"synergy-genesis-art-v2\" || chain_id || genesis_hash || network_magic_bytes || validator_set_hash || state_root || genesis_timestamp)",
+    "dag_topology_seed": "blake3(\"synergy-dag-topology-art-v2\" || genesis_hash || validator_set_hash || network_magic_bytes)",
+    "validator_art_fingerprint": "first_8_hex(blake3(\"synergy-validator-art-v2\" || validator_address || consensus_public_key || validator_id_hash))"
+  },
+  "state_root": "14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76",
+  "topology_metadata": {
+    "algorithm": "ProofOfSynergy",
+    "consensus_model": "cluster_dag_hybrid",
+    "dag_data_plane": {
+      "certified_available_vertices_only": true,
+      "cross_cluster_policy": "checkpoints_qcs_and_compact_commitments_only",
+      "equivocation_policy": "evidence_slashing_or_quarantine",
+      "ordering_cut": "deterministic_reconstructable_from_dag_evidence",
+      "parent_selection": "deterministic_parent_diversity_required",
+      "scope": "cluster_local",
+      "transaction_flow": [
+        "transactions",
+        "encrypted_or_committed_batch",
+        "dag_vertex",
+        "availability_receipts",
+        "dag_certificate",
+        "deterministic_ordering_cut",
+        "posy_proposal",
+        "validator_verification",
+        "dual_quorum_qc_finality"
+      ],
+      "uncertified_ordering_allowed": false
+    },
+    "finality": {
+      "checkpoint_frequency_blocks": 50,
+      "confirmation_depth": 2,
+      "dag_is_finality_artifact": false,
+      "finality_type": "dual_quorum"
+    },
+    "leader_selection": "deterministic_rotation",
+    "proposal_mechanism": "weighted_round_robin"
+  },
+  "validator_set_hash": "8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc",
+  "validators": [
+    {
+      "consensus_key_fingerprint": "e550e07ac0",
+      "index": 1,
+      "moniker": "Synergy Genesis Validator 1",
+      "position": {
+        "angle": 124.0,
+        "x": 1365.785,
+        "y": 3059.426
+      },
+      "validator_address": "synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs",
+      "validator_address_short": "synv11qen9...ssdwmvs",
+      "validator_art_fingerprint": "6ec2d413",
+      "validator_id": "validator-1"
+    },
+    {
+      "consensus_key_fingerprint": "dc2865870e",
+      "index": 2,
+      "moniker": "Synergy Genesis Validator 2",
+      "position": {
+        "angle": 196.0,
+        "x": 875.261,
+        "y": 1711.722
+      },
+      "validator_address": "synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt",
+      "validator_address_short": "synv11s4wc...f863srt",
+      "validator_art_fingerprint": "38aec149",
+      "validator_id": "validator-2"
+    },
+    {
+      "consensus_key_fingerprint": "f97613c8b4",
+      "index": 3,
+      "moniker": "Synergy Genesis Validator 3",
+      "position": {
+        "angle": 268.0,
+        "x": 2005.423,
+        "y": 828.743
+      },
+      "validator_address": "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re",
+      "validator_address_short": "synv11e3ep...gnum4re",
+      "validator_art_fingerprint": "feca1787",
+      "validator_id": "validator-3"
+    },
+    {
+      "consensus_key_fingerprint": "f89e645d72",
+      "index": 4,
+      "moniker": "Synergy Genesis Validator 4",
+      "position": {
+        "angle": 340.0,
+        "x": 3194.425,
+        "y": 1630.735
+      },
+      "validator_address": "synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5",
+      "validator_address_short": "synv11mka6...k7kmdp5",
+      "validator_art_fingerprint": "f40a5e73",
+      "validator_id": "validator-4"
+    },
+    {
+      "consensus_key_fingerprint": "99d7dc7042",
+      "index": 5,
+      "moniker": "Synergy Genesis Validator 5",
+      "position": {
+        "angle": 412.0,
+        "x": 2799.107,
+        "y": 3009.373
+      },
+      "validator_address": "synv11kguave5fpdpm9hru4acfvw0hcp4fcc7zv9f",
+      "validator_address_short": "synv11kgua...cc7zv9f",
+      "validator_art_fingerprint": "2548c636",
+      "validator_id": "validator-5"
+    }
+  ]
+}

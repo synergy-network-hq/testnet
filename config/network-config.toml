@@ -1,6 +1,6 @@
 [network]
-id = 338639
-name = "synergy-testnet-beta"
+id = 1263
+name = "synergy-testnet"
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
@@ -35,7 +35,7 @@ listen_address = "0.0.0.0:5622"
 public_address = "replace-with-public-host:5622"
 discovery_listen_address = "0.0.0.0:5680"
 discovery_public_address = "replace-with-public-host:5680"
-node_name = "synergy-testnet-beta-node"
+node_name = "synergy-testnet-node"
 enable_discovery = true
 discovery_port = 5680
 heartbeat_interval = 10
@@ -44,7 +44,7 @@ bootstrap_refresh_secs = 60
 [blockchain]
 block_time = 2
 max_gas_limit = "0x2fefd8"
-chain_id = 338639
+chain_id = 1263
 
 [consensus]
 algorithm = "Proof of Synergy"

@@ -1,130 +1,82 @@
-// Synergy Network Gas & Fee System
-// Implements SNTS-04: SNRG Denomination & Precision Specification
+// Synergy Network gas and fee accounting.
 //
-// Key principles:
-// - 9 decimal precision (1 SNRG = 1,000,000,000 nWei)
-// - All amounts stored as integer nWei
-// - Gas prices in nWei
-// - No floating-point arithmetic
+// Consensus-facing gas math is integer-only. Monetary values are nWei and
+// percentage-like parameters are basis points.
 
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
-/// SNRG denomination constants per SNTS-04
 pub mod constants {
-    /// Number of decimal places for SNRG
     pub const SNRG_DECIMALS: u32 = 9;
-
-    /// nWei per SNRG (1 billion)
     pub const NWEI_PER_SNRG: u128 = 1_000_000_000;
-
-    /// mWei per SNRG (1 million)
-    pub const MWEI_PER_SNRG: u128 = 1_000_000;
-
-    /// µWei per SNRG (1 thousand)
-    pub const UWEI_PER_SNRG: u128 = 1_000;
-
-    /// Default gas price (40 nWei per gas unit)
-    pub const DEFAULT_GAS_PRICE: u64 = 40;
-
-    /// Minimum gas price (1 nWei per gas unit)
     pub const MIN_GAS_PRICE: u64 = 1;
-
-    /// Maximum gas price (1000 nWei per gas unit = 0.000001 SNRG per gas)
-    pub const MAX_GAS_PRICE: u64 = 1000;
-
-    /// Gas limit for simple transfers
-    pub const GAS_LIMIT_TRANSFER: u64 = 21_000;
-
-    /// Gas limit for contract deployment
-    pub const GAS_LIMIT_CONTRACT_DEPLOY: u64 = 500_000;
-
-    /// Gas limit for contract call
-    pub const GAS_LIMIT_CONTRACT_CALL: u64 = 100_000;
-
-    /// Maximum gas limit per transaction
+    pub const DEFAULT_GAS_PRICE: u64 = 40;
+    pub const MAX_GAS_PRICE: u64 = 1_000_000_000;
     pub const MAX_GAS_LIMIT: u64 = 10_000_000;
-
-    /// Block gas limit (maximum gas for all transactions in a block)
+    pub const GAS_LIMIT_TRANSFER: u64 = 38_500;
     pub const BLOCK_GAS_LIMIT: u64 = 30_000_000;
-
-    /// EVM decimal precision (for cross-chain compatibility)
-    pub const EVM_DECIMALS: u32 = 18;
-
-    /// Bitcoin decimal precision (for cross-chain compatibility)
-    pub const BTC_DECIMALS: u32 = 8;
+    pub const BPS_DENOMINATOR: u64 = 10_000;
 }
 
-/// Represents an amount in nWei (nano-wei)
-/// All monetary values must use this type to ensure precision
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct NWei(pub u128);
 
 impl NWei {
-    /// Create from SNRG amount (will be converted to nWei)
-    pub fn from_snrg(snrg: f64) -> Self {
-        let nwei = (snrg * constants::NWEI_PER_SNRG as f64) as u128;
-        NWei(nwei)
-    }
-
-    /// Convert to SNRG (for display purposes)
-    pub fn to_snrg(&self) -> f64 {
-        self.0 as f64 / constants::NWEI_PER_SNRG as f64
-    }
-
-    /// Create from raw nWei value
     pub fn from_nwei(nwei: u128) -> Self {
-        NWei(nwei)
+        Self(nwei)
     }
 
-    /// Get raw nWei value
-    pub fn as_nwei(&self) -> u128 {
+    pub fn from_snrg_units(whole_snrg: u128, fractional_nwei: u128) -> Option<Self> {
+        if fractional_nwei >= constants::NWEI_PER_SNRG {
+            return None;
+        }
+        whole_snrg
+            .checked_mul(constants::NWEI_PER_SNRG)
+            .and_then(|whole| whole.checked_add(fractional_nwei))
+            .map(Self)
+    }
+
+    pub fn as_nwei(self) -> u128 {
         self.0
     }
 
-    /// Add two nWei amounts
-    pub fn checked_add(&self, other: &NWei) -> Option<NWei> {
+    pub fn format_snrg(self) -> String {
+        let whole = self.0 / constants::NWEI_PER_SNRG;
+        let frac = self.0 % constants::NWEI_PER_SNRG;
+        format!("{whole}.{frac:09}")
+    }
+
+    pub fn checked_add(self, other: NWei) -> Option<NWei> {
         self.0.checked_add(other.0).map(NWei)
     }
 
-    /// Subtract two nWei amounts
-    pub fn checked_sub(&self, other: &NWei) -> Option<NWei> {
+    pub fn checked_sub(self, other: NWei) -> Option<NWei> {
         self.0.checked_sub(other.0).map(NWei)
     }
 
-    /// Multiply nWei by a scalar
-    pub fn checked_mul(&self, scalar: u128) -> Option<NWei> {
+    pub fn checked_mul(self, scalar: u128) -> Option<NWei> {
         self.0.checked_mul(scalar).map(NWei)
     }
 
-    /// Divide nWei by a scalar (floored)
-    pub fn checked_div(&self, scalar: u128) -> Option<NWei> {
+    pub fn checked_div(self, scalar: u128) -> Option<NWei> {
         if scalar == 0 {
             return None;
         }
         Some(NWei(self.0 / scalar))
     }
 
-    /// Convert to EVM wei (18 decimals)
-    /// SNRG (9 decimals) → EVM (18 decimals) = multiply by 10^9
-    pub fn to_evm_wei(&self) -> u128 {
-        self.0 * 1_000_000_000 // 10^9
+    pub fn to_evm_wei(self) -> Option<u128> {
+        self.0.checked_mul(1_000_000_000)
     }
 
-    /// Create from EVM wei (18 decimals)
-    /// EVM (18 decimals) → SNRG (9 decimals) = divide by 10^9
     pub fn from_evm_wei(evm_wei: u128) -> Self {
-        NWei(evm_wei / 1_000_000_000) // Floored division
+        NWei(evm_wei / 1_000_000_000)
     }
 
-    /// Convert to Bitcoin satoshis (8 decimals)
-    /// SNRG (9 decimals) → BTC (8 decimals) = divide by 10
-    pub fn to_bitcoin_sats(&self) -> u64 {
-        (self.0 / 10) as u64 // Floored division
+    pub fn to_bitcoin_sats(self) -> Option<u64> {
+        u64::try_from(self.0 / 10).ok()
     }
 
-    /// Create from Bitcoin satoshis (8 decimals)
-    /// BTC (8 decimals) → SNRG (9 decimals) = multiply by 10
     pub fn from_bitcoin_sats(sats: u64) -> Self {
         NWei((sats as u128) * 10)
     }
@@ -132,16 +84,14 @@ impl NWei {
 
 impl fmt::Display for NWei {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} nWei ({:.9} SNRG)", self.0, self.to_snrg())
+        write!(f, "{} nWei ({} SNRG)", self.0, self.format_snrg())
     }
 }
 
-/// Gas price in nWei per gas unit
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GasPrice(pub u64);
 
 impl GasPrice {
-    /// Create gas price from nWei
     pub fn from_nwei(nwei: u64) -> Result<Self, &'static str> {
         if nwei < constants::MIN_GAS_PRICE {
             return Err("Gas price below minimum");
@@ -152,29 +102,21 @@ impl GasPrice {
         Ok(GasPrice(nwei))
     }
 
-    /// Get default gas price (40 nWei)
-    pub fn default() -> Self {
-        GasPrice(constants::DEFAULT_GAS_PRICE)
-    }
-
-    /// Get raw nWei value
-    pub fn as_nwei(&self) -> u64 {
+    pub fn as_nwei(self) -> u64 {
         self.0
     }
 }
 
 impl Default for GasPrice {
     fn default() -> Self {
-        Self::default()
+        GasPrice(40)
     }
 }
 
-/// Gas limit (maximum gas units for a transaction)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GasLimit(pub u64);
 
 impl GasLimit {
-    /// Create gas limit
     pub fn new(limit: u64) -> Result<Self, &'static str> {
         if limit == 0 {
             return Err("Gas limit cannot be zero");
@@ -185,91 +127,663 @@ impl GasLimit {
         Ok(GasLimit(limit))
     }
 
-    /// Get gas limit for simple transfer
     pub fn transfer() -> Self {
-        GasLimit(constants::GAS_LIMIT_TRANSFER)
+        GasLimit(GasSchedule::default().base_tx_gas + GasSchedule::default().native_transfer_gas)
     }
 
-    /// Get gas limit for contract deployment
     pub fn contract_deploy() -> Self {
-        GasLimit(constants::GAS_LIMIT_CONTRACT_DEPLOY)
+        GasLimit(GasSchedule::default().synq_contract_deploy_base_gas)
     }
 
-    /// Get gas limit for contract call
     pub fn contract_call() -> Self {
-        GasLimit(constants::GAS_LIMIT_CONTRACT_CALL)
+        GasLimit(GasSchedule::default().synq_contract_call_base_gas)
     }
 
-    /// Get raw gas limit value
-    pub fn as_u64(&self) -> u64 {
+    pub fn as_u64(self) -> u64 {
         self.0
     }
 }
 
-/// Gas fee calculation result
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GasFee {
-    /// Gas limit (max gas units)
     pub gas_limit: u64,
-    /// Gas price (nWei per gas unit)
-    pub gas_price: u64,
-    /// Total fee in nWei (gas_limit × gas_price)
+    pub gas_price_nwei: u64,
     pub fee_nwei: u128,
-    /// Total fee in SNRG (for display)
-    pub fee_snrg: f64,
 }
 
 impl GasFee {
-    /// Calculate gas fee
-    /// fee_nWei = gasLimit × gasPrice
     pub fn calculate(gas_limit: GasLimit, gas_price: GasPrice) -> Self {
         let fee_nwei = (gas_limit.0 as u128) * (gas_price.0 as u128);
-        let fee_snrg = fee_nwei as f64 / constants::NWEI_PER_SNRG as f64;
-
         GasFee {
             gas_limit: gas_limit.0,
-            gas_price: gas_price.0,
+            gas_price_nwei: gas_price.0,
             fee_nwei,
-            fee_snrg,
         }
     }
 
-    /// Get fee as NWei type
-    pub fn as_nwei(&self) -> NWei {
+    pub fn as_nwei(self) -> NWei {
         NWei(self.fee_nwei)
     }
 }
 
-/// Gas estimation for different transaction types
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasSchedule {
+    pub base_tx_gas: u64,
+    pub native_transfer_gas: u64,
+    pub scetp_transfer_gas: u64,
+    pub payload_byte_gas: u64,
+    pub signature_base_gas: u64,
+    pub pqc_signature_verify_gas: u64,
+    pub pqc_kem_operation_gas: u64,
+    pub pqc_key_registration_gas: u64,
+    pub pqc_key_rotation_gas: u64,
+    pub compute_unit_gas: u64,
+    pub storage_read_gas: u64,
+    pub storage_write_gas: u64,
+    pub storage_byte_gas: u64,
+    pub state_creation_gas: u64,
+    pub state_deletion_refund_gas: u64,
+    pub validator_registration_gas: u64,
+    pub validator_heartbeat_gas: u64,
+    pub staking_bond_gas: u64,
+    pub unstake_request_gas: u64,
+    pub governance_proposal_gas: u64,
+    pub governance_vote_gas: u64,
+    pub synq_contract_deploy_base_gas: u64,
+    pub synq_contract_byte_gas: u64,
+    pub synq_contract_call_base_gas: u64,
+    pub synq_contract_execution_unit_gas: u64,
+    pub sxcp_intent_creation_gas: u64,
+    pub sxcp_proof_verification_base_gas: u64,
+    pub sxcp_proof_byte_gas: u64,
+    pub sxcp_attestation_submission_gas: u64,
+    pub uma_record_create_gas: u64,
+    pub uma_record_update_gas: u64,
+    pub sns_name_register_gas: u64,
+    pub sns_name_update_gas: u64,
+}
+
+impl Default for GasSchedule {
+    fn default() -> Self {
+        Self {
+            base_tx_gas: 21_000,
+            native_transfer_gas: 5_000,
+            scetp_transfer_gas: 12_000,
+            payload_byte_gas: 16,
+            signature_base_gas: 500,
+            pqc_signature_verify_gas: 12_000,
+            pqc_kem_operation_gas: 18_000,
+            pqc_key_registration_gas: 40_000,
+            pqc_key_rotation_gas: 30_000,
+            compute_unit_gas: 1,
+            storage_read_gas: 100,
+            storage_write_gas: 2_000,
+            storage_byte_gas: 25,
+            state_creation_gas: 20_000,
+            state_deletion_refund_gas: 5_000,
+            validator_registration_gas: 75_000,
+            validator_heartbeat_gas: 3_000,
+            staking_bond_gas: 25_000,
+            unstake_request_gas: 20_000,
+            governance_proposal_gas: 100_000,
+            governance_vote_gas: 10_000,
+            synq_contract_deploy_base_gas: 150_000,
+            synq_contract_byte_gas: 200,
+            synq_contract_call_base_gas: 30_000,
+            synq_contract_execution_unit_gas: 1,
+            sxcp_intent_creation_gas: 45_000,
+            sxcp_proof_verification_base_gas: 125_000,
+            sxcp_proof_byte_gas: 50,
+            sxcp_attestation_submission_gas: 60_000,
+            uma_record_create_gas: 50_000,
+            uma_record_update_gas: 25_000,
+            sns_name_register_gas: 60_000,
+            sns_name_update_gas: 30_000,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum GasActivityType {
+    NativeSnrgTransfer,
+    ScetpSameChainTransfer,
+    ValidatorRegistration,
+    ValidatorHeartbeat,
+    StakingBond,
+    UnstakeRequest,
+    GovernanceProposal,
+    GovernanceVote,
+    SynqContractDeployment,
+    SynqContractCall,
+    AegisPqcKeyRegistration,
+    AegisPqcKeyRotation,
+    SxcpIntentCreation,
+    SxcpProofVerification,
+    SxcpRelayerAttestation,
+    UmaRecordCreation,
+    UmaRecordUpdate,
+    SnsNameRegistration,
+    SnsNameUpdate,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasComputationInput {
+    pub activity_type: GasActivityType,
+    pub payload_size_bytes: u64,
+    pub validator_metadata_size_bytes: u64,
+    pub proposal_size_bytes: u64,
+    pub contract_bytecode_size: u64,
+    pub initial_contract_state_size_bytes: u64,
+    pub execution_units: u64,
+    pub storage_reads: u64,
+    pub storage_writes: u64,
+    pub storage_bytes_written: u64,
+    pub key_material_size_bytes: u64,
+    pub proof_size_bytes: u64,
+    pub signature_count: u64,
+    pub uma_record_size_bytes: u64,
+    pub sns_record_size_bytes: u64,
+}
+
+impl GasComputationInput {
+    pub fn new(activity_type: GasActivityType) -> Self {
+        Self {
+            activity_type,
+            payload_size_bytes: 0,
+            validator_metadata_size_bytes: 0,
+            proposal_size_bytes: 0,
+            contract_bytecode_size: 0,
+            initial_contract_state_size_bytes: 0,
+            execution_units: 0,
+            storage_reads: 0,
+            storage_writes: 0,
+            storage_bytes_written: 0,
+            key_material_size_bytes: 0,
+            proof_size_bytes: 0,
+            signature_count: 1,
+            uma_record_size_bytes: 0,
+            sns_record_size_bytes: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasBreakdown {
+    pub base_tx_gas: u64,
+    pub payload_byte_gas: u64,
+    pub signature_gas: u64,
+    pub compute_gas: u64,
+    pub storage_read_gas: u64,
+    pub storage_write_gas: u64,
+    pub state_creation_gas: u64,
+    pub bandwidth_gas: u64,
+    pub pqc_gas: u64,
+    pub sxcp_gas: u64,
+    pub contract_deployment_gas: u64,
+    pub contract_execution_gas: u64,
+    pub operation_gas: u64,
+    pub total_gas: u64,
+}
+
+impl GasBreakdown {
+    fn empty(schedule: &GasSchedule) -> Self {
+        Self {
+            base_tx_gas: schedule.base_tx_gas,
+            payload_byte_gas: 0,
+            signature_gas: 0,
+            compute_gas: 0,
+            storage_read_gas: 0,
+            storage_write_gas: 0,
+            state_creation_gas: 0,
+            bandwidth_gas: 0,
+            pqc_gas: 0,
+            sxcp_gas: 0,
+            contract_deployment_gas: 0,
+            contract_execution_gas: 0,
+            operation_gas: 0,
+            total_gas: schedule.base_tx_gas,
+        }
+    }
+
+    fn add(&mut self, field: GasComponent, amount: u64) -> Result<(), String> {
+        match field {
+            GasComponent::Payload => {
+                self.payload_byte_gas = checked_add(self.payload_byte_gas, amount)?
+            }
+            GasComponent::Signature => {
+                self.signature_gas = checked_add(self.signature_gas, amount)?
+            }
+            GasComponent::Compute => self.compute_gas = checked_add(self.compute_gas, amount)?,
+            GasComponent::StorageRead => {
+                self.storage_read_gas = checked_add(self.storage_read_gas, amount)?
+            }
+            GasComponent::StorageWrite => {
+                self.storage_write_gas = checked_add(self.storage_write_gas, amount)?
+            }
+            GasComponent::StateCreation => {
+                self.state_creation_gas = checked_add(self.state_creation_gas, amount)?
+            }
+            GasComponent::Bandwidth => {
+                self.bandwidth_gas = checked_add(self.bandwidth_gas, amount)?
+            }
+            GasComponent::Pqc => self.pqc_gas = checked_add(self.pqc_gas, amount)?,
+            GasComponent::Sxcp => self.sxcp_gas = checked_add(self.sxcp_gas, amount)?,
+            GasComponent::ContractDeployment => {
+                self.contract_deployment_gas = checked_add(self.contract_deployment_gas, amount)?
+            }
+            GasComponent::ContractExecution => {
+                self.contract_execution_gas = checked_add(self.contract_execution_gas, amount)?
+            }
+            GasComponent::Operation => {
+                self.operation_gas = checked_add(self.operation_gas, amount)?
+            }
+        }
+        self.total_gas = checked_add(self.total_gas, amount)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum GasComponent {
+    Payload,
+    Signature,
+    Compute,
+    StorageRead,
+    StorageWrite,
+    StateCreation,
+    Bandwidth,
+    Pqc,
+    Sxcp,
+    ContractDeployment,
+    ContractExecution,
+    Operation,
+}
+
+pub fn calculate_activity_gas(
+    schedule: &GasSchedule,
+    input: &GasComputationInput,
+) -> Result<GasBreakdown, String> {
+    let mut gas = GasBreakdown::empty(schedule);
+    let payload_gas = checked_mul(schedule.payload_byte_gas, input.payload_size_bytes)?;
+    gas.add(GasComponent::Payload, payload_gas)?;
+
+    match input.activity_type {
+        GasActivityType::NativeSnrgTransfer => {
+            gas.add(GasComponent::Operation, schedule.native_transfer_gas)?;
+            gas.add(GasComponent::Signature, schedule.signature_base_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+        }
+        GasActivityType::ScetpSameChainTransfer => {
+            gas.add(GasComponent::Operation, schedule.scetp_transfer_gas)?;
+            gas.add(GasComponent::Signature, schedule.signature_base_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::ValidatorRegistration => {
+            gas.add(GasComponent::Operation, schedule.validator_registration_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_key_registration_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(
+                    schedule.storage_byte_gas,
+                    input.validator_metadata_size_bytes,
+                )?,
+            )?;
+        }
+        GasActivityType::ValidatorHeartbeat => {
+            gas.add(GasComponent::Operation, schedule.validator_heartbeat_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+        }
+        GasActivityType::StakingBond => {
+            gas.add(GasComponent::Operation, schedule.staking_bond_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::UnstakeRequest => {
+            gas.add(GasComponent::Operation, schedule.unstake_request_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::GovernanceProposal => {
+            gas.add(GasComponent::Operation, schedule.governance_proposal_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.proposal_size_bytes)?,
+            )?;
+        }
+        GasActivityType::GovernanceVote => {
+            gas.add(GasComponent::Operation, schedule.governance_vote_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::SynqContractDeployment => {
+            gas.add(
+                GasComponent::ContractDeployment,
+                schedule.synq_contract_deploy_base_gas,
+            )?;
+            gas.add(
+                GasComponent::ContractDeployment,
+                checked_mul(
+                    schedule.synq_contract_byte_gas,
+                    input.contract_bytecode_size,
+                )?,
+            )?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(
+                    schedule.storage_byte_gas,
+                    input.initial_contract_state_size_bytes,
+                )?,
+            )?;
+        }
+        GasActivityType::SynqContractCall => {
+            gas.add(
+                GasComponent::ContractExecution,
+                schedule.synq_contract_call_base_gas,
+            )?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(
+                GasComponent::ContractExecution,
+                checked_mul(
+                    schedule.synq_contract_execution_unit_gas,
+                    input.execution_units,
+                )?,
+            )?;
+            gas.add(
+                GasComponent::StorageRead,
+                checked_mul(schedule.storage_read_gas, input.storage_reads)?,
+            )?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_write_gas, input.storage_writes)?,
+            )?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.storage_bytes_written)?,
+            )?;
+        }
+        GasActivityType::AegisPqcKeyRegistration => {
+            gas.add(GasComponent::Pqc, schedule.pqc_key_registration_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.key_material_size_bytes)?,
+            )?;
+        }
+        GasActivityType::AegisPqcKeyRotation => {
+            gas.add(GasComponent::Pqc, schedule.pqc_key_rotation_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.key_material_size_bytes)?,
+            )?;
+        }
+        GasActivityType::SxcpIntentCreation => {
+            gas.add(GasComponent::Sxcp, schedule.sxcp_intent_creation_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::SxcpProofVerification => {
+            gas.add(
+                GasComponent::Sxcp,
+                schedule.sxcp_proof_verification_base_gas,
+            )?;
+            gas.add(
+                GasComponent::Sxcp,
+                checked_mul(schedule.sxcp_proof_byte_gas, input.proof_size_bytes)?,
+            )?;
+            gas.add(
+                GasComponent::Pqc,
+                checked_mul(schedule.pqc_signature_verify_gas, input.signature_count)?,
+            )?;
+            gas.add(
+                GasComponent::StorageRead,
+                checked_mul(schedule.storage_read_gas, input.storage_reads)?,
+            )?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_write_gas, input.storage_writes)?,
+            )?;
+        }
+        GasActivityType::SxcpRelayerAttestation => {
+            gas.add(GasComponent::Sxcp, schedule.sxcp_attestation_submission_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+        }
+        GasActivityType::UmaRecordCreation => {
+            gas.add(GasComponent::Operation, schedule.uma_record_create_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.uma_record_size_bytes)?,
+            )?;
+        }
+        GasActivityType::UmaRecordUpdate => {
+            gas.add(GasComponent::Operation, schedule.uma_record_update_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.uma_record_size_bytes)?,
+            )?;
+        }
+        GasActivityType::SnsNameRegistration => {
+            gas.add(GasComponent::Operation, schedule.sns_name_register_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StateCreation, schedule.state_creation_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.sns_record_size_bytes)?,
+            )?;
+        }
+        GasActivityType::SnsNameUpdate => {
+            gas.add(GasComponent::Operation, schedule.sns_name_update_gas)?;
+            gas.add(GasComponent::Pqc, schedule.pqc_signature_verify_gas)?;
+            gas.add(GasComponent::StorageRead, schedule.storage_read_gas)?;
+            gas.add(GasComponent::StorageWrite, schedule.storage_write_gas)?;
+            gas.add(
+                GasComponent::StorageWrite,
+                checked_mul(schedule.storage_byte_gas, input.sns_record_size_bytes)?,
+            )?;
+        }
+    }
+
+    Ok(gas)
+}
+
+pub fn calculate_total_fee_nwei(
+    gas_used: u64,
+    effective_gas_price_nwei: u64,
+) -> Result<u128, String> {
+    (gas_used as u128)
+        .checked_mul(effective_gas_price_nwei as u128)
+        .ok_or_else(|| "total fee overflow".to_string())
+}
+
+pub fn calculate_effective_gas_price_nwei(
+    base_fee_nwei: u64,
+    priority_fee_nwei: u64,
+    congestion_premium_nwei: u64,
+) -> Result<u64, String> {
+    base_fee_nwei
+        .checked_add(priority_fee_nwei)
+        .and_then(|value| value.checked_add(congestion_premium_nwei))
+        .ok_or_else(|| "effective gas price overflow".to_string())
+}
+
+pub fn calculate_congestion_premium_nwei(
+    base_fee_nwei: u64,
+    utilization_bps: u64,
+    target_epoch_utilization_bps: u64,
+    congestion_multiplier_bps: u64,
+    max_congestion_premium_bps: u64,
+) -> Result<u64, String> {
+    if target_epoch_utilization_bps == 0 {
+        return Err("target utilization cannot be zero".to_string());
+    }
+    if utilization_bps <= target_epoch_utilization_bps {
+        return Ok(0);
+    }
+
+    let excess_bps = utilization_bps - target_epoch_utilization_bps;
+    let raw = (base_fee_nwei as u128)
+        .checked_mul(congestion_multiplier_bps as u128)
+        .and_then(|value| value.checked_mul(excess_bps as u128))
+        .ok_or_else(|| "congestion premium overflow".to_string())?
+        / (target_epoch_utilization_bps as u128)
+        / (constants::BPS_DENOMINATOR as u128);
+    let cap = (base_fee_nwei as u128)
+        .checked_mul(max_congestion_premium_bps as u128)
+        .ok_or_else(|| "congestion cap overflow".to_string())?
+        / (constants::BPS_DENOMINATOR as u128);
+    u64::try_from(raw.min(cap)).map_err(|_| "congestion premium exceeds u64".to_string())
+}
+
+pub fn calculate_next_base_fee_nwei(
+    base_fee_current_nwei: u64,
+    gas_used_epoch: u64,
+    target_gas_epoch: u64,
+    adjustment_rate_bps: u64,
+    max_base_fee_change_per_epoch_bps: u64,
+    min_base_fee_nwei: u64,
+) -> Result<u64, String> {
+    if target_gas_epoch == 0 {
+        return Err("target gas epoch cannot be zero".to_string());
+    }
+    if min_base_fee_nwei == 0 {
+        return Err("min base fee must be at least 1".to_string());
+    }
+    if gas_used_epoch == target_gas_epoch || adjustment_rate_bps == 0 {
+        return Ok(base_fee_current_nwei.max(min_base_fee_nwei));
+    }
+
+    let delta_gas = gas_used_epoch.abs_diff(target_gas_epoch) as u128;
+    let base = base_fee_current_nwei.max(min_base_fee_nwei) as u128;
+    let raw_delta = base
+        .checked_mul(adjustment_rate_bps as u128)
+        .and_then(|value| value.checked_mul(delta_gas))
+        .ok_or_else(|| "base fee delta overflow".to_string())?
+        / (target_gas_epoch as u128)
+        / (constants::BPS_DENOMINATOR as u128);
+    let max_delta = base
+        .checked_mul(max_base_fee_change_per_epoch_bps as u128)
+        .ok_or_else(|| "base fee max delta overflow".to_string())?
+        / (constants::BPS_DENOMINATOR as u128);
+    let delta = raw_delta.min(max_delta).max(1);
+
+    let next = if gas_used_epoch > target_gas_epoch {
+        base.checked_add(delta)
+            .ok_or_else(|| "base fee increase overflow".to_string())?
+    } else {
+        base.saturating_sub(delta).max(min_base_fee_nwei as u128)
+    };
+    u64::try_from(next).map_err(|_| "base fee exceeds u64".to_string())
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GasSettlement {
+    pub gas_limit: u64,
+    pub minimum_required_gas: u64,
+    pub gas_used: u64,
+    pub max_effective_gas_price_nwei: u64,
+    pub effective_gas_price_nwei: u64,
+    pub max_fee_reserved_nwei: u128,
+    pub actual_fee_nwei: u128,
+    pub refund_nwei: u128,
+}
+
+pub fn settle_gas_limit(
+    gas_limit: u64,
+    minimum_required_gas: u64,
+    gas_used: u64,
+    max_effective_gas_price_nwei: u64,
+    effective_gas_price_nwei: u64,
+) -> Result<GasSettlement, String> {
+    if gas_limit < minimum_required_gas {
+        return Err("gas limit below minimum required gas".to_string());
+    }
+    if gas_used > gas_limit {
+        return Err("gas used exceeds gas limit".to_string());
+    }
+    if effective_gas_price_nwei > max_effective_gas_price_nwei {
+        return Err("effective gas price exceeds max effective gas price".to_string());
+    }
+
+    let max_fee_reserved_nwei = calculate_total_fee_nwei(gas_limit, max_effective_gas_price_nwei)?;
+    let actual_fee_nwei = calculate_total_fee_nwei(gas_used, effective_gas_price_nwei)?;
+    let refund_nwei = max_fee_reserved_nwei
+        .checked_sub(actual_fee_nwei)
+        .ok_or_else(|| "refund underflow".to_string())?;
+
+    Ok(GasSettlement {
+        gas_limit,
+        minimum_required_gas,
+        gas_used,
+        max_effective_gas_price_nwei,
+        effective_gas_price_nwei,
+        max_fee_reserved_nwei,
+        actual_fee_nwei,
+        refund_nwei,
+    })
+}
+
 pub struct GasEstimator;
 
 impl GasEstimator {
-    /// Estimate gas for a simple transfer
     pub fn estimate_transfer() -> GasLimit {
-        GasLimit::transfer()
+        let schedule = GasSchedule::default();
+        let input = GasComputationInput::new(GasActivityType::NativeSnrgTransfer);
+        let gas = calculate_activity_gas(&schedule, &input)
+            .map(|breakdown| breakdown.total_gas)
+            .unwrap_or(schedule.base_tx_gas + schedule.native_transfer_gas);
+        GasLimit(gas.min(constants::MAX_GAS_LIMIT))
     }
 
-    /// Estimate gas for contract deployment
-    /// Base cost + bytecode size cost
     pub fn estimate_contract_deploy(bytecode_size: usize) -> GasLimit {
-        let base_cost = constants::GAS_LIMIT_CONTRACT_DEPLOY;
-        let bytecode_cost = (bytecode_size as u64) * 200; // 200 gas per byte
-        let total = base_cost + bytecode_cost;
-
-        GasLimit::new(total.min(constants::MAX_GAS_LIMIT))
-            .unwrap_or(GasLimit(constants::MAX_GAS_LIMIT))
+        let schedule = GasSchedule::default();
+        let mut input = GasComputationInput::new(GasActivityType::SynqContractDeployment);
+        input.contract_bytecode_size = bytecode_size as u64;
+        let gas = calculate_activity_gas(&schedule, &input)
+            .map(|breakdown| breakdown.total_gas)
+            .unwrap_or(constants::MAX_GAS_LIMIT);
+        GasLimit(gas.min(constants::MAX_GAS_LIMIT))
     }
 
-    /// Estimate gas for contract call
-    /// Base cost + calldata size cost
     pub fn estimate_contract_call(calldata_size: usize) -> GasLimit {
-        let base_cost = constants::GAS_LIMIT_CONTRACT_CALL;
-        let calldata_cost = (calldata_size as u64) * 68; // 68 gas per non-zero byte
-        let total = base_cost + calldata_cost;
-
-        GasLimit::new(total.min(constants::MAX_GAS_LIMIT))
-            .unwrap_or(GasLimit(constants::MAX_GAS_LIMIT))
+        let schedule = GasSchedule::default();
+        let mut input = GasComputationInput::new(GasActivityType::SynqContractCall);
+        input.payload_size_bytes = calldata_size as u64;
+        let gas = calculate_activity_gas(&schedule, &input)
+            .map(|breakdown| breakdown.total_gas)
+            .unwrap_or(constants::MAX_GAS_LIMIT);
+        GasLimit(gas.min(constants::MAX_GAS_LIMIT))
     }
+}
+
+fn checked_add(left: u64, right: u64) -> Result<u64, String> {
+    left.checked_add(right)
+        .ok_or_else(|| "gas addition overflow".to_string())
+}
+
+fn checked_mul(left: u64, right: u64) -> Result<u64, String> {
+    left.checked_mul(right)
+        .ok_or_else(|| "gas multiplication overflow".to_string())
 }
 
 #[cfg(test)]
@@ -277,75 +791,121 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_nwei_conversions() {
-        // 1 SNRG = 1,000,000,000 nWei
-        let one_snrg = NWei::from_snrg(1.0);
-        assert_eq!(one_snrg.as_nwei(), 1_000_000_000);
-
-        // 2.5 SNRG = 2,500,000,000 nWei
-        let two_and_half = NWei::from_snrg(2.5);
-        assert_eq!(two_and_half.as_nwei(), 2_500_000_000);
-
-        // Conversion back to SNRG
-        assert_eq!(one_snrg.to_snrg(), 1.0);
+    fn nwei_formats_without_floating_point() {
+        let amount = NWei::from_snrg_units(2, 500_000_000).expect("valid fractional nWei");
+        assert_eq!(amount.as_nwei(), 2_500_000_000);
+        assert_eq!(amount.format_snrg(), "2.500000000");
     }
 
     #[test]
-    fn test_gas_fee_calculation() {
-        // Example from spec:
-        // Gas Limit: 25,000
-        // Gas Price: 40 nWei
-        // Fee: 25,000 × 40 = 1,000,000 nWei = 0.001 SNRG
-        let gas_limit = GasLimit::new(25_000).unwrap();
-        let gas_price = GasPrice::from_nwei(40).unwrap();
-
-        let fee = GasFee::calculate(gas_limit, gas_price);
-
-        assert_eq!(fee.fee_nwei, 1_000_000);
-        assert_eq!(fee.fee_snrg, 0.001);
+    fn native_transfer_gas_is_calculated_correctly() {
+        let schedule = GasSchedule::default();
+        let mut input = GasComputationInput::new(GasActivityType::NativeSnrgTransfer);
+        input.payload_size_bytes = 10;
+        let gas = calculate_activity_gas(&schedule, &input).expect("gas should calculate");
+        assert_eq!(gas.total_gas, 21_000 + 5_000 + (16 * 10) + 500 + 12_000);
     }
 
     #[test]
-    fn test_evm_conversion() {
-        // 2.5 SNRG = 2,500,000,000 nWei
-        let snrg_amount = NWei::from_snrg(2.5);
-        assert_eq!(snrg_amount.as_nwei(), 2_500_000_000);
+    fn validator_registration_gas_increases_with_metadata_size() {
+        let schedule = GasSchedule::default();
+        let mut small = GasComputationInput::new(GasActivityType::ValidatorRegistration);
+        small.validator_metadata_size_bytes = 10;
+        let mut large = small;
+        large.validator_metadata_size_bytes = 100;
 
-        // Convert to EVM wei (multiply by 10^9)
-        let evm_wei = snrg_amount.to_evm_wei();
-        assert_eq!(evm_wei, 2_500_000_000_000_000_000);
+        let small_gas = calculate_activity_gas(&schedule, &small).unwrap().total_gas;
+        let large_gas = calculate_activity_gas(&schedule, &large).unwrap().total_gas;
 
-        // Convert back from EVM wei
-        let back_to_snrg = NWei::from_evm_wei(evm_wei);
-        assert_eq!(back_to_snrg.as_nwei(), 2_500_000_000);
+        assert_eq!(large_gas - small_gas, 90 * schedule.storage_byte_gas);
     }
 
     #[test]
-    fn test_bitcoin_conversion() {
-        // 10 SNRG = 10,000,000,000 nWei
-        let snrg_amount = NWei::from_snrg(10.0);
+    fn synq_call_gas_increases_with_execution_and_storage() {
+        let schedule = GasSchedule::default();
+        let mut input = GasComputationInput::new(GasActivityType::SynqContractCall);
+        input.execution_units = 10;
+        input.storage_reads = 2;
+        input.storage_writes = 3;
+        input.storage_bytes_written = 20;
+        let gas = calculate_activity_gas(&schedule, &input).unwrap();
 
-        // Convert to Bitcoin satoshis (divide by 10)
-        let sats = snrg_amount.to_bitcoin_sats();
-        assert_eq!(sats, 1_000_000_000);
-
-        // Convert back from satoshis
-        let back_to_snrg = NWei::from_bitcoin_sats(sats);
-        assert_eq!(back_to_snrg.as_nwei(), 10_000_000_000);
+        assert_eq!(
+            gas.total_gas,
+            21_000 + 30_000 + 12_000 + 10 + (2 * 100) + (3 * 2_000) + (20 * 25)
+        );
     }
 
     #[test]
-    fn test_gas_estimation() {
-        // Simple transfer
-        let transfer_gas = GasEstimator::estimate_transfer();
-        assert_eq!(transfer_gas.as_u64(), 21_000);
+    fn sxcp_proof_gas_increases_with_proof_size_and_signature_count() {
+        let schedule = GasSchedule::default();
+        let mut input = GasComputationInput::new(GasActivityType::SxcpProofVerification);
+        input.proof_size_bytes = 100;
+        input.signature_count = 3;
+        let gas = calculate_activity_gas(&schedule, &input).unwrap();
 
-        // Contract deployment with 10KB bytecode
-        let deploy_gas = GasEstimator::estimate_contract_deploy(10_000);
-        assert!(deploy_gas.as_u64() > 500_000);
+        assert_eq!(gas.total_gas, 21_000 + 125_000 + (100 * 50) + (3 * 12_000));
+    }
 
-        // Contract call with 256 bytes calldata
-        let call_gas = GasEstimator::estimate_contract_call(256);
-        assert!(call_gas.as_u64() > 100_000);
+    #[test]
+    fn congestion_premium_is_zero_below_target() {
+        assert_eq!(
+            calculate_congestion_premium_nwei(100, 5_000, 6_000, 1_000, 5_000).unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn congestion_premium_activates_above_target() {
+        let premium = calculate_congestion_premium_nwei(100, 9_000, 6_000, 1_000, 5_000).unwrap();
+        assert_eq!(premium, 5);
+    }
+
+    #[test]
+    fn congestion_premium_cap_is_enforced() {
+        let premium = calculate_congestion_premium_nwei(100, 60_000, 6_000, 10_000, 5_000).unwrap();
+        assert_eq!(premium, 50);
+    }
+
+    #[test]
+    fn base_fee_increases_decreases_and_respects_caps() {
+        assert_eq!(
+            calculate_next_base_fee_nwei(100, 120, 100, 1_000, 1_250, 1).unwrap(),
+            102
+        );
+        assert_eq!(
+            calculate_next_base_fee_nwei(100, 80, 100, 1_000, 1_250, 1).unwrap(),
+            98
+        );
+        assert_eq!(
+            calculate_next_base_fee_nwei(100, 100, 100, 1_000, 1_250, 1).unwrap(),
+            100
+        );
+        assert_eq!(
+            calculate_next_base_fee_nwei(100, 10_000, 100, 10_000, 1_250, 1).unwrap(),
+            112
+        );
+    }
+
+    #[test]
+    fn min_base_fee_is_enforced() {
+        assert_eq!(
+            calculate_next_base_fee_nwei(1, 0, 100, 10_000, 10_000, 1).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn gas_limit_below_required_gas_fails() {
+        let err = settle_gas_limit(10, 11, 10, 2, 2).unwrap_err();
+        assert_eq!(err, "gas limit below minimum required gas");
+    }
+
+    #[test]
+    fn unused_gas_is_refunded_and_actual_fee_is_collected() {
+        let settlement = settle_gas_limit(100, 50, 60, 3, 2).unwrap();
+        assert_eq!(settlement.max_fee_reserved_nwei, 300);
+        assert_eq!(settlement.actual_fee_nwei, 120);
+        assert_eq!(settlement.refund_nwei, 180);
     }
 }

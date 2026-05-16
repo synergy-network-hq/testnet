@@ -1,0 +1,189 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1040" height="3100" viewBox="0 0 1040 3100">
+<rect width="100%" height="100%" fill="#061014"/>
+<rect x="20" y="20" width="1000" height="3060" rx="8" fill="#081820" stroke="#1f5a66"/>
+<text x="32" y="58" fill="#f4fbff" font-family="Menlo, Consolas, monospace" font-size="24" font-weight="700">Synergy Genesis Block Raw Hex</text>
+<text x="32" y="88" fill="#7ee7ff" font-family="Menlo, Consolas, monospace" font-size="13">chain_id=1263  hash=dd9ad8cfc74be1ab17a0a0fc...  magic=d5d5bb99</text>
+<text x="32" y="116" fill="#a8b8c0" font-family="Menlo, Consolas, monospace" font-size="12">16 May 2026 - Synergy Testnet chain 1263 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.</text>
+<text x="32" y="146" fill="#6fffd2" font-family="Menlo, Consolas, monospace" font-size="12">state_root=14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76</text>
+<text x="32" y="164" fill="#6fffd2" font-family="Menlo, Consolas, monospace" font-size="12">validator_set_hash=8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc allocation_hash=e4db5cbe7fccce3efb9cc452df0936ee226338866368059defeb4c5eb3288a13</text>
+<text x="32" y="186" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">SYNERGY GENESIS BLOCK RAW HEX</text>
+<text x="32" y="202" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">Canonical serialization: deterministic JSON sorted keys, no insignificant whitespace</text>
+<text x="32" y="218" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">Bytes: 155759</text>
+<text x="32" y="234" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12"></text>
+<text x="32" y="250" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">OFFSET    HEX BYTES                                               ASCII</text>
+<text x="32" y="266" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">--------  ------------------------------------------------------  ----------------</text>
+<text x="32" y="282" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000000  7b 22 61 63 63 6f 75 6e 74 73 22 3a 5b 7b 22 61  {&quot;accounts&quot;:[{&quot;a</text>
+<text x="32" y="298" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000010  63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 44 41  ccount_type&quot;:&quot;DA</text>
+<text x="32" y="314" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000020  4f 47 6f 76 65 72 6e 61 6e 63 65 52 65 73 65 72  OGovernanceReser</text>
+<text x="32" y="330" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000030  76 65 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73  ve&quot;,&quot;address&quot;:&quot;s</text>
+<text x="32" y="346" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000040  79 6e 77 31 70 71 77 67 6c 79 66 6a 79 6e 72 78  ynw1pqwglyfjynrx</text>
+<text x="32" y="362" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000050  74 37 6d 73 39 6e 76 67 67 6e 74 61 76 36 78 33  t7ms9nvggntav6x3</text>
+<text x="32" y="378" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000060  6c 78 39 63 32 6c 34 72 22 7d 2c 7b 22 61 63 63  lx9c2l4r&quot;},{&quot;acc</text>
+<text x="32" y="394" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000070  6f 75 6e 74 5f 74 79 70 65 22 3a 22 45 63 6f 73  ount_type&quot;:&quot;Ecos</text>
+<text x="32" y="410" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000080  79 73 74 65 6d 57 61 6c 6c 65 74 22 2c 22 61 64  ystemWallet&quot;,&quot;ad</text>
+<text x="32" y="426" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000090  64 72 65 73 73 22 3a 22 73 79 6e 77 31 61 6c 6b  dress&quot;:&quot;synw1alk</text>
+<text x="32" y="442" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000a0  6b 32 78 30 73 38 7a 6c 6b 67 7a 78 7a 63 79 68  k2x0s8zlkgzxzcyh</text>
+<text x="32" y="458" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000b0  66 35 6b 66 7a 77 77 70 39 64 71 75 38 79 73 30  f5kfzwwp9dqu8ys0</text>
+<text x="32" y="474" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000c0  68 22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f 74 79  h&quot;},{&quot;account_ty</text>
+<text x="32" y="490" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000d0  70 65 22 3a 22 46 61 75 63 65 74 57 61 6c 6c 65  pe&quot;:&quot;FaucetWalle</text>
+<text x="32" y="506" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000e0  74 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73 79  t&quot;,&quot;address&quot;:&quot;sy</text>
+<text x="32" y="522" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000000f0  6e 77 31 7a 70 37 63 78 6d 65 37 78 6d 38 33 38  nw1zp7cxme7xm838</text>
+<text x="32" y="538" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000100  36 36 33 79 72 64 34 33 6c 78 74 78 6c 77 30 63  663yrd43lxtxlw0c</text>
+<text x="32" y="554" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000110  6b 39 30 7a 34 61 6d 22 7d 2c 7b 22 61 63 63 6f  k90z4am&quot;},{&quot;acco</text>
+<text x="32" y="570" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000120  75 6e 74 5f 74 79 70 65 22 3a 22 46 65 65 43 6f  unt_type&quot;:&quot;FeeCo</text>
+<text x="32" y="586" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000130  6c 6c 65 63 74 6f 72 22 2c 22 61 64 64 72 65 73  llector&quot;,&quot;addres</text>
+<text x="32" y="602" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000140  73 22 3a 22 73 79 6e 66 31 79 34 32 70 37 70 36  s&quot;:&quot;synf1y42p7p6</text>
+<text x="32" y="618" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000150  6a 72 78 72 67 34 37 32 74 73 36 6a 65 61 35 79  jrxrg472ts6jea5y</text>
+<text x="32" y="634" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000160  33 34 79 67 37 74 67 6a 36 71 67 32 6a 22 7d 2c  34yg7tgj6qg2j&quot;},</text>
+<text x="32" y="650" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000170  7b 22 61 63 63 6f 75 6e 74 5f 74 79 70 65 22 3a  {&quot;account_type&quot;:</text>
+<text x="32" y="666" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000180  22 46 6f 75 6e 64 61 74 69 6f 6e 54 72 65 61 73  &quot;FoundationTreas</text>
+<text x="32" y="682" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000190  75 72 79 22 2c 22 61 64 64 72 65 73 73 22 3a 22  ury&quot;,&quot;address&quot;:&quot;</text>
+<text x="32" y="698" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001a0  73 79 6e 77 31 73 79 76 33 74 6e 75 36 72 32 79  synw1syv3tnu6r2y</text>
+<text x="32" y="714" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001b0  35 65 33 75 39 66 30 77 71 6d 78 68 61 76 79 6c  5e3u9f0wqmxhavyl</text>
+<text x="32" y="730" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001c0  66 78 65 6e 61 30 7a 39 32 22 7d 2c 7b 22 61 63  fxena0z92&quot;},{&quot;ac</text>
+<text x="32" y="746" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001d0  63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 47 65 6e  count_type&quot;:&quot;Gen</text>
+<text x="32" y="762" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001e0  65 73 69 73 56 61 6c 69 64 61 74 6f 72 22 2c 22  esisValidator&quot;,&quot;</text>
+<text x="32" y="778" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000001f0  61 64 64 72 65 73 73 22 3a 22 73 79 6e 76 31 31  address&quot;:&quot;synv11</text>
+<text x="32" y="794" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000200  65 33 65 70 68 73 61 72 63 77 36 6d 65 79 30 66  e3ephsarcw6mey0f</text>
+<text x="32" y="810" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000210  78 35 78 74 6e 79 67 67 32 65 77 65 67 6e 75 6d  x5xtnygg2ewegnum</text>
+<text x="32" y="826" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000220  34 72 65 22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f  4re&quot;},{&quot;account_</text>
+<text x="32" y="842" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000230  74 79 70 65 22 3a 22 47 65 6e 65 73 69 73 56 61  type&quot;:&quot;GenesisVa</text>
+<text x="32" y="858" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000240  6c 69 64 61 74 6f 72 22 2c 22 61 64 64 72 65 73  lidator&quot;,&quot;addres</text>
+<text x="32" y="874" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000250  73 22 3a 22 73 79 6e 76 31 31 6b 67 75 61 76 65  s&quot;:&quot;synv11kguave</text>
+<text x="32" y="890" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000260  35 66 70 64 70 6d 39 68 72 75 34 61 63 66 76 77  5fpdpm9hru4acfvw</text>
+<text x="32" y="906" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000270  30 68 63 70 34 66 63 63 37 7a 76 39 66 22 7d 2c  0hcp4fcc7zv9f&quot;},</text>
+<text x="32" y="922" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000280  7b 22 61 63 63 6f 75 6e 74 5f 74 79 70 65 22 3a  {&quot;account_type&quot;:</text>
+<text x="32" y="938" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000290  22 47 65 6e 65 73 69 73 56 61 6c 69 64 61 74 6f  &quot;GenesisValidato</text>
+<text x="32" y="954" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002a0  72 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73 79  r&quot;,&quot;address&quot;:&quot;sy</text>
+<text x="32" y="970" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002b0  6e 76 31 31 6d 6b 61 36 34 75 7a 30 34 39 61 65  nv11mka64uz049ae</text>
+<text x="32" y="986" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002c0  6b 77 68 64 76 66 72 71 36 64 76 68 37 35 64 30  kwhdvfrq6dvh75d0</text>
+<text x="32" y="1002" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002d0  6b 37 6b 6d 64 70 35 22 7d 2c 7b 22 61 63 63 6f  k7kmdp5&quot;},{&quot;acco</text>
+<text x="32" y="1018" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002e0  75 6e 74 5f 74 79 70 65 22 3a 22 47 65 6e 65 73  unt_type&quot;:&quot;Genes</text>
+<text x="32" y="1034" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000002f0  69 73 56 61 6c 69 64 61 74 6f 72 22 2c 22 61 64  isValidator&quot;,&quot;ad</text>
+<text x="32" y="1050" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000300  64 72 65 73 73 22 3a 22 73 79 6e 76 31 31 71 65  dress&quot;:&quot;synv11qe</text>
+<text x="32" y="1066" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000310  6e 39 78 30 67 39 70 30 66 32 70 71 7a 6e 70 71  n9x0g9p0f2pqznpq</text>
+<text x="32" y="1082" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000320  7a 66 72 77 6b 72 67 6e 73 75 73 73 64 77 6d 76  zfrwkrgnsussdwmv</text>
+<text x="32" y="1098" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000330  73 22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f 74 79  s&quot;},{&quot;account_ty</text>
+<text x="32" y="1114" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000340  70 65 22 3a 22 47 65 6e 65 73 69 73 56 61 6c 69  pe&quot;:&quot;GenesisVali</text>
+<text x="32" y="1130" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000350  64 61 74 6f 72 22 2c 22 61 64 64 72 65 73 73 22  dator&quot;,&quot;address&quot;</text>
+<text x="32" y="1146" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000360  3a 22 73 79 6e 76 31 31 73 34 77 63 36 6c 34 6b  :&quot;synv11s4wc6l4k</text>
+<text x="32" y="1162" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000370  67 34 6a 72 30 6b 35 6d 65 67 34 32 63 79 7a 78  g4jr0k5meg42cyzx</text>
+<text x="32" y="1178" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000380  61 30 33 63 66 38 36 33 73 72 74 22 7d 2c 7b 22  a03cf863srt&quot;},{&quot;</text>
+<text x="32" y="1194" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000390  61 63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 4c  account_type&quot;:&quot;L</text>
+<text x="32" y="1210" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003a0  69 71 75 69 64 69 74 79 4d 61 72 6b 65 74 49 6e  iquidityMarketIn</text>
+<text x="32" y="1226" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003b0  66 72 61 73 74 72 75 63 74 75 72 65 57 61 6c 6c  frastructureWall</text>
+<text x="32" y="1242" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003c0  65 74 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73  et&quot;,&quot;address&quot;:&quot;s</text>
+<text x="32" y="1258" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003d0  79 6e 77 31 79 63 63 61 65 32 68 75 72 66 37 7a  ynw1yccae2hurf7z</text>
+<text x="32" y="1274" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003e0  72 33 75 64 7a 75 73 33 32 30 30 78 30 34 6a 6c  r3udzus3200x04jl</text>
+<text x="32" y="1290" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000003f0  76 67 64 73 30 77 6b 77 22 7d 2c 7b 22 61 63 63  vgds0wkw&quot;},{&quot;acc</text>
+<text x="32" y="1306" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000400  6f 75 6e 74 5f 74 79 70 65 22 3a 22 4d 61 72 6b  ount_type&quot;:&quot;Mark</text>
+<text x="32" y="1322" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000410  65 74 69 6e 67 47 72 6f 77 74 68 57 61 6c 6c 65  etingGrowthWalle</text>
+<text x="32" y="1338" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000420  74 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73 79  t&quot;,&quot;address&quot;:&quot;sy</text>
+<text x="32" y="1354" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000430  6e 77 31 34 32 6a 39 30 33 76 36 38 33 68 34 78  nw142j903v683h4x</text>
+<text x="32" y="1370" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000440  6c 6c 75 73 73 6b 6d 70 76 68 73 30 6d 61 77 63  llusskmpvhs0mawc</text>
+<text x="32" y="1386" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000450  36 38 36 39 74 77 79 22 7d 2c 7b 22 61 63 63 6f  6869twy&quot;},{&quot;acco</text>
+<text x="32" y="1402" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000460  75 6e 74 5f 74 79 70 65 22 3a 22 52 65 6c 69 61  unt_type&quot;:&quot;Relia</text>
+<text x="32" y="1418" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000470  62 69 6c 69 74 79 42 6f 6e 75 73 50 6f 6f 6c 22  bilityBonusPool&quot;</text>
+<text x="32" y="1434" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000480  2c 22 61 64 64 72 65 73 73 22 3a 22 73 79 6e 77  ,&quot;address&quot;:&quot;synw</text>
+<text x="32" y="1450" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000490  31 6d 63 74 36 61 33 33 67 37 68 79 74 36 6a 7a  1mct6a33g7hyt6jz</text>
+<text x="32" y="1466" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004a0  6b 6a 64 77 72 76 78 7a 66 36 34 34 6c 63 34 76  kjdwrvxzf644lc4v</text>
+<text x="32" y="1482" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004b0  79 74 71 63 7a 22 7d 2c 7b 22 61 63 63 6f 75 6e  ytqcz&quot;},{&quot;accoun</text>
+<text x="32" y="1498" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004c0  74 5f 74 79 70 65 22 3a 22 53 74 72 61 74 65 67  t_type&quot;:&quot;Strateg</text>
+<text x="32" y="1514" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004d0  69 63 50 61 72 74 6e 65 72 73 68 69 70 73 57 61  icPartnershipsWa</text>
+<text x="32" y="1530" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004e0  6c 6c 65 74 22 2c 22 61 64 64 72 65 73 73 22 3a  llet&quot;,&quot;address&quot;:</text>
+<text x="32" y="1546" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000004f0  22 73 79 6e 77 31 30 66 65 37 32 72 67 33 78 65  &quot;synw10fe72rg3xe</text>
+<text x="32" y="1562" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000500  39 34 70 77 63 79 71 36 35 70 6b 74 71 7a 35 61  94pwcyq65pktqz5a</text>
+<text x="32" y="1578" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000510  76 78 36 37 79 72 34 37 68 35 22 7d 2c 7b 22 61  vx67yr47h5&quot;},{&quot;a</text>
+<text x="32" y="1594" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000520  63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 53 79  ccount_type&quot;:&quot;Sy</text>
+<text x="32" y="1610" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000530  73 74 65 6d 43 6f 6e 74 72 61 63 74 22 2c 22 61  stemContract&quot;,&quot;a</text>
+<text x="32" y="1626" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000540  64 64 72 65 73 73 22 3a 22 73 79 6e 71 31 30 34  ddress&quot;:&quot;synq104</text>
+<text x="32" y="1642" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000550  76 6e 61 71 33 39 72 30 70 79 30 32 35 6d 75 76  vnaq39r0py025muv</text>
+<text x="32" y="1658" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000560  74 34 7a 66 7a 76 61 36 6c 71 33 35 76 33 64 71  t4zfzva6lq35v3dq</text>
+<text x="32" y="1674" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000570  63 6c 22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f 74  cl&quot;},{&quot;account_t</text>
+<text x="32" y="1690" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000580  79 70 65 22 3a 22 53 79 73 74 65 6d 43 6f 6e 74  ype&quot;:&quot;SystemCont</text>
+<text x="32" y="1706" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000590  72 61 63 74 22 2c 22 61 64 64 72 65 73 73 22 3a  ract&quot;,&quot;address&quot;:</text>
+<text x="32" y="1722" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005a0  22 73 79 6e 71 31 36 63 37 74 64 64 6e 65 61 71  &quot;synq16c7tddneaq</text>
+<text x="32" y="1738" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005b0  7a 32 37 73 61 66 66 63 74 77 72 64 6e 79 66 6d  z27saffctwrdnyfm</text>
+<text x="32" y="1754" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005c0  39 73 35 6d 72 73 64 6d 6c 71 22 7d 2c 7b 22 61  9s5mrsdmlq&quot;},{&quot;a</text>
+<text x="32" y="1770" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005d0  63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 54 65  ccount_type&quot;:&quot;Te</text>
+<text x="32" y="1786" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005e0  61 6d 57 61 6c 6c 65 74 22 2c 22 61 64 64 72 65  amWallet&quot;,&quot;addre</text>
+<text x="32" y="1802" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000005f0  73 73 22 3a 22 73 79 6e 77 31 32 32 7a 67 77 71  ss&quot;:&quot;synw122zgwq</text>
+<text x="32" y="1818" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000600  6c 6a 61 30 76 72 35 72 72 74 68 71 6d 66 6d 38  lja0vr5rrthqmfm8</text>
+<text x="32" y="1834" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000610  6a 6d 33 39 35 78 71 76 37 64 67 74 71 74 22 7d  jm395xqv7dgtqt&quot;}</text>
+<text x="32" y="1850" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000620  2c 7b 22 61 63 63 6f 75 6e 74 5f 74 79 70 65 22  ,{&quot;account_type&quot;</text>
+<text x="32" y="1866" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000630  3a 22 54 6f 6b 65 6e 53 61 6c 65 73 57 61 6c 6c  :&quot;TokenSalesWall</text>
+<text x="32" y="1882" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000640  65 74 22 2c 22 61 64 64 72 65 73 73 22 3a 22 73  et&quot;,&quot;address&quot;:&quot;s</text>
+<text x="32" y="1898" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000650  79 6e 77 31 37 6e 68 32 36 35 75 67 32 66 67 63  ynw17nh265ug2fgc</text>
+<text x="32" y="1914" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000660  38 67 75 76 32 61 64 37 74 74 38 6b 76 30 77 6c  8guv2ad7tt8kv0wl</text>
+<text x="32" y="1930" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000670  68 65 73 78 6e 64 6c 38 22 7d 2c 7b 22 61 63 63  hesxndl8&quot;},{&quot;acc</text>
+<text x="32" y="1946" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000680  6f 75 6e 74 5f 74 79 70 65 22 3a 22 56 61 6c 69  ount_type&quot;:&quot;Vali</text>
+<text x="32" y="1962" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000690  64 61 74 6f 72 43 6c 75 73 74 65 72 22 2c 22 61  datorCluster&quot;,&quot;a</text>
+<text x="32" y="1978" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006a0  64 64 72 65 73 73 22 3a 22 73 79 6e 67 72 70 31  ddress&quot;:&quot;syngrp1</text>
+<text x="32" y="1994" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006b0  31 30 61 33 36 39 6c 38 66 6e 70 76 39 65 67 77  10a369l8fnpv9egw</text>
+<text x="32" y="2010" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006c0  79 6e 36 66 33 65 39 36 73 72 79 37 67 63 73 38  yn6f3e96sry7gcs8</text>
+<text x="32" y="2026" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006d0  75 79 22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f 74  uy&quot;},{&quot;account_t</text>
+<text x="32" y="2042" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006e0  79 70 65 22 3a 22 56 61 6c 69 64 61 74 6f 72 43  ype&quot;:&quot;ValidatorC</text>
+<text x="32" y="2058" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000006f0  6c 75 73 74 65 72 22 2c 22 61 64 64 72 65 73 73  luster&quot;,&quot;address</text>
+<text x="32" y="2074" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000700  22 3a 22 73 79 6e 67 72 70 31 31 35 39 68 78 7a  &quot;:&quot;syngrp1159hxz</text>
+<text x="32" y="2090" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000710  32 64 71 61 74 63 64 34 34 32 32 6c 68 32 61 68  2dqatcd4422lh2ah</text>
+<text x="32" y="2106" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000720  6b 79 70 6c 78 65 37 75 77 6a 33 63 22 7d 2c 7b  kyplxe7uwj3c&quot;},{</text>
+<text x="32" y="2122" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000730  22 61 63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22  &quot;account_type&quot;:&quot;</text>
+<text x="32" y="2138" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000740  56 61 6c 69 64 61 74 6f 72 43 6c 75 73 74 65 72  ValidatorCluster</text>
+<text x="32" y="2154" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000750  22 2c 22 61 64 64 72 65 73 73 22 3a 22 73 79 6e  &quot;,&quot;address&quot;:&quot;syn</text>
+<text x="32" y="2170" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000760  67 72 70 31 31 68 30 67 64 63 6e 32 33 30 35 74  grp11h0gdcn2305t</text>
+<text x="32" y="2186" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000770  35 76 36 34 73 32 65 61 79 63 36 32 6e 32 38 37  5v64s2eayc62n287</text>
+<text x="32" y="2202" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000780  6d 6c 64 6b 39 7a 22 7d 2c 7b 22 61 63 63 6f 75  mldk9z&quot;},{&quot;accou</text>
+<text x="32" y="2218" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000790  6e 74 5f 74 79 70 65 22 3a 22 56 61 6c 69 64 61  nt_type&quot;:&quot;Valida</text>
+<text x="32" y="2234" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007a0  74 6f 72 43 6c 75 73 74 65 72 22 2c 22 61 64 64  torCluster&quot;,&quot;add</text>
+<text x="32" y="2250" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007b0  72 65 73 73 22 3a 22 73 79 6e 67 72 70 31 31 78  ress&quot;:&quot;syngrp11x</text>
+<text x="32" y="2266" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007c0  79 76 39 77 75 67 71 74 38 32 6d 6a 37 38 6d 75  yv9wugqt82mj78mu</text>
+<text x="32" y="2282" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007d0  64 74 7a 63 66 76 33 70 34 65 38 66 7a 73 30 72  dtzcfv3p4e8fzs0r</text>
+<text x="32" y="2298" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007e0  22 7d 2c 7b 22 61 63 63 6f 75 6e 74 5f 74 79 70  &quot;},{&quot;account_typ</text>
+<text x="32" y="2314" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000007f0  65 22 3a 22 56 61 6c 69 64 61 74 6f 72 43 6c 75  e&quot;:&quot;ValidatorClu</text>
+<text x="32" y="2330" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000800  73 74 65 72 22 2c 22 61 64 64 72 65 73 73 22 3a  ster&quot;,&quot;address&quot;:</text>
+<text x="32" y="2346" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000810  22 73 79 6e 67 72 70 31 31 7a 74 6a 79 6d 63 74  &quot;syngrp11ztjymct</text>
+<text x="32" y="2362" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000820  30 72 33 66 64 73 35 61 32 64 74 64 36 72 70 72  0r3fds5a2dtd6rpr</text>
+<text x="32" y="2378" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000830  77 6d 33 39 30 63 7a 38 74 77 22 7d 2c 7b 22 61  wm390cz8tw&quot;},{&quot;a</text>
+<text x="32" y="2394" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000840  63 63 6f 75 6e 74 5f 74 79 70 65 22 3a 22 56 61  ccount_type&quot;:&quot;Va</text>
+<text x="32" y="2410" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000850  6c 69 64 61 74 6f 72 53 65 63 75 72 69 74 79 50  lidatorSecurityP</text>
+<text x="32" y="2426" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000860  6f 6f 6c 22 2c 22 61 64 64 72 65 73 73 22 3a 22  ool&quot;,&quot;address&quot;:&quot;</text>
+<text x="32" y="2442" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000870  73 79 6e 77 31 61 74 36 30 37 78 33 35 72 6b 6d  synw1at607x35rkm</text>
+<text x="32" y="2458" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000880  73 6d 76 67 7a 30 36 39 6e 78 30 6a 33 71 35 6b  smvgz069nx0j3q5k</text>
+<text x="32" y="2474" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000890  6d 39 33 6b 72 72 76 67 65 22 7d 5d 2c 22 61 6c  m93krrvge&quot;}],&quot;al</text>
+<text x="32" y="2490" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008a0  6c 6f 63 61 74 69 6f 6e 73 22 3a 5b 7b 22 61 64  locations&quot;:[{&quot;ad</text>
+<text x="32" y="2506" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008b0  64 72 65 73 73 22 3a 22 73 79 6e 77 31 61 74 36  dress&quot;:&quot;synw1at6</text>
+<text x="32" y="2522" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008c0  30 37 78 33 35 72 6b 6d 73 6d 76 67 7a 30 36 39  07x35rkmsmvgz069</text>
+<text x="32" y="2538" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008d0  6e 78 30 6a 33 71 35 6b 6d 39 33 6b 72 72 76 67  nx0j3q5km93krrvg</text>
+<text x="32" y="2554" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008e0  65 22 2c 22 61 6d 6f 75 6e 74 5f 6e 77 65 69 22  e&quot;,&quot;amount_nwei&quot;</text>
+<text x="32" y="2570" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000008f0  3a 22 32 36 33 39 37 35 30 30 30 30 30 30 30 30  :&quot;26397500000000</text>
+<text x="32" y="2586" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000900  30 30 30 30 30 22 2c 22 63 61 74 65 67 6f 72 79  00000&quot;,&quot;category</text>
+<text x="32" y="2602" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000910  22 3a 22 76 61 6c 69 64 61 74 6f 72 73 5f 73 74  &quot;:&quot;validators_st</text>
+<text x="32" y="2618" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000920  61 6b 69 6e 67 5f 6e 65 74 77 6f 72 6b 5f 73 65  aking_network_se</text>
+<text x="32" y="2634" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000930  63 75 72 69 74 79 22 2c 22 6c 6f 63 6b 65 64 22  curity&quot;,&quot;locked&quot;</text>
+<text x="32" y="2650" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000940  3a 74 72 75 65 2c 22 6e 61 6d 65 22 3a 22 56 61  :true,&quot;name&quot;:&quot;Va</text>
+<text x="32" y="2666" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000950  6c 69 64 61 74 6f 72 73 20 2f 20 53 74 61 6b 69  lidators / Staki</text>
+<text x="32" y="2682" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000960  6e 67 20 2f 20 4e 65 74 77 6f 72 6b 20 53 65 63  ng / Network Sec</text>
+<text x="32" y="2698" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000970  75 72 69 74 79 22 2c 22 73 6f 75 72 63 65 5f 6d  urity&quot;,&quot;source_m</text>
+<text x="32" y="2714" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000980  6f 64 65 6c 22 3a 22 53 79 6e 65 72 67 79 20 54  odel&quot;:&quot;Synergy T</text>
+<text x="32" y="2730" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000990  65 73 74 6e 65 74 20 31 32 42 20 74 6f 6b 65 6e  estnet 12B token</text>
+<text x="32" y="2746" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009a0  6f 6d 69 63 73 20 73 63 72 65 65 6e 73 68 6f 74  omics screenshot</text>
+<text x="32" y="2762" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009b0  22 2c 22 73 70 6c 69 74 5f 6e 6f 74 65 22 3a 22  &quot;,&quot;split_note&quot;:&quot;</text>
+<text x="32" y="2778" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009c0  54 68 65 20 32 32 2e 30 30 25 20 76 61 6c 69 64  The 22.00% valid</text>
+<text x="32" y="2794" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009d0  61 74 6f 72 2f 73 65 63 75 72 69 74 79 20 61 6c  ator/security al</text>
+<text x="32" y="2810" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009e0  6c 6f 63 61 74 69 6f 6e 20 69 73 20 73 70 6c 69  location is spli</text>
+<text x="32" y="2826" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">000009f0  74 20 69 6e 74 6f 20 74 68 65 20 56 61 6c 69 64  t into the Valid</text>
+<text x="32" y="2842" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a00  61 74 6f 72 20 53 65 63 75 72 69 74 79 20 50 6f  ator Security Po</text>
+<text x="32" y="2858" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a10  6f 6c 20 70 6c 75 73 20 66 69 76 65 20 65 78 70  ol plus five exp</text>
+<text x="32" y="2874" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a20  6c 69 63 69 74 20 67 65 6e 65 73 69 73 20 76 61  licit genesis va</text>
+<text x="32" y="2890" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a30  6c 69 64 61 74 6f 72 20 73 65 6c 66 2d 73 74 61  lidator self-sta</text>
+<text x="32" y="2906" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a40  6b 65 20 61 6c 6c 6f 63 61 74 69 6f 6e 73 2e 22  ke allocations.&quot;</text>
+<text x="32" y="2922" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a50  2c 22 74 6f 6b 65 6e 6f 6d 69 63 73 5f 70 65 72  ,&quot;tokenomics_per</text>
+<text x="32" y="2938" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a60  63 65 6e 74 22 3a 22 32 32 2e 30 30 22 7d 2c 7b  cent&quot;:&quot;22.00&quot;},{</text>
+<text x="32" y="2954" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a70  22 61 64 64 72 65 73 73 22 3a 22 73 79 6e 77 31  &quot;address&quot;:&quot;synw1</text>
+<text x="32" y="2970" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a80  37 6e 68 32 36 35 75 67 32 66 67 63 38 67 75 76  7nh265ug2fgc8guv</text>
+<text x="32" y="2986" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000a90  32 61 64 37 74 74 38 6b 76 30 77 6c 68 65 73 78  2ad7tt8kv0wlhesx</text>
+<text x="32" y="3002" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000aa0  6e 64 6c 38 22 2c 22 61 6d 6f 75 6e 74 5f 6e 77  ndl8&quot;,&quot;amount_nw</text>
+<text x="32" y="3018" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000ab0  65 69 22 3a 22 32 32 32 36 30 30 30 30 30 30 30  ei&quot;:&quot;22260000000</text>
+<text x="32" y="3034" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000ac0  30 30 30 30 30 30 30 30 22 2c 22 63 61 74 65 67  00000000&quot;,&quot;categ</text>
+<text x="32" y="3050" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">00000ad0  6f 72 79 22 3a 22 74 6f 6b 65 6e 5f 73 61 6c 65  ory&quot;:&quot;token_sale</text>
+</svg>

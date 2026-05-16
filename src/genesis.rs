@@ -37,6 +37,11 @@ pub struct GenesisDocument {
     value: Value,
     path: PathBuf,
     genesis_hash: String,
+    network_magic_bytes: String,
+    chain_id: u64,
+    network_id: u64,
+    protocol_version: String,
+    consensus_version: String,
     timestamp: u64,
     balances: Vec<GenesisBalance>,
     validators: Vec<GenesisValidator>,
@@ -68,6 +73,26 @@ impl GenesisDocument {
         &self.genesis_hash
     }
 
+    pub fn network_magic_bytes(&self) -> &str {
+        &self.network_magic_bytes
+    }
+
+    pub fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    pub fn network_id(&self) -> u64 {
+        self.network_id
+    }
+
+    pub fn protocol_version(&self) -> &str {
+        &self.protocol_version
+    }
+
+    pub fn consensus_version(&self) -> &str {
+        &self.consensus_version
+    }
+
     pub fn timestamp(&self) -> u64 {
         self.timestamp
     }
@@ -96,6 +121,10 @@ fn load_canonical_genesis_from_disk() -> Result<GenesisDocument, String> {
 
     let timestamp = parse_timestamp(required(&value, &["header", "timestamp"])?)
         .map_err(|error| format!("header.timestamp: {error}"))?;
+    let chain_id = required_u64(&value, &["network", "chain_id"])?;
+    let network_id = required_u64(&value, &["network", "network_id"])?;
+    let protocol_version = required_string(&value, &["network", "protocol_version"])?;
+    let consensus_version = required_string(&value, &["network", "consensus_version"])?;
     let balances = parse_balances(&value)?;
     let validators = parse_validators(&value)?;
     let token = parse_token_config(&value)?;
@@ -106,11 +135,20 @@ fn load_canonical_genesis_from_disk() -> Result<GenesisDocument, String> {
     if genesis_hash.is_empty() {
         return Err("integrity.genesis_hash must not be empty".to_string());
     }
+    let network_magic_bytes = required_string(&value, &["p2p_identity", "network_magic_bytes"])?;
+    if network_magic_bytes.is_empty() {
+        return Err("p2p_identity.network_magic_bytes must not be empty".to_string());
+    }
 
     Ok(GenesisDocument {
         value,
         path,
         genesis_hash,
+        network_magic_bytes,
+        chain_id,
+        network_id,
+        protocol_version,
+        consensus_version,
         timestamp,
         balances,
         validators,
@@ -179,14 +217,32 @@ fn validate_integrity_hashes(value: &Value) -> Result<(), String> {
     let empty_hash = hash_bytes(&[]);
     let allocation_hash = hash_json(required(value, &["allocations"])?);
     let validator_hash = hash_json(required(value, &["validators"])?);
+    let validator_set_hash = hash_json(required(
+        value,
+        &[
+            "contracts",
+            "validator_registry",
+            "init_params",
+            "validators",
+        ],
+    )?);
     let contract_hash = hash_json(required(value, &["contracts"])?);
     let state_root = hash_json(&json!({
         "accounts": required(value, &["accounts"])?,
         "balances": required(value, &["balances"])?,
         "allocations": required(value, &["allocations"])?,
-        "validators": required(value, &["validators"])?,
         "contracts": required(value, &["contracts"])?,
+        "consensus": required(value, &["consensus"])?,
+        "genesis_message": required(value, &["genesis_message"])?,
+        "governance": required(value, &["governance"])?,
         "modules": required(value, &["modules"])?,
+        "network": required(value, &["network"])?,
+        "network_identity": required(value, &["network_identity"])?,
+        "reserved_addresses": required(value, &["system_reserved_addresses"])?,
+        "security": required(value, &["security"])?,
+        "synergy_state": required(value, &["synergy_state"])?,
+        "token": required(value, &["token"])?,
+        "validators": required(value, &["validators"])?,
     }));
     let data_root = hash_json(&json!({
         "contracts": required(value, &["contracts"])?,
@@ -238,6 +294,23 @@ fn validate_integrity_hashes(value: &Value) -> Result<(), String> {
     )?;
     compare_hash(
         value,
+        &[
+            "contracts",
+            "validator_registry",
+            "init_params",
+            "validator_set_hash",
+        ],
+        &validator_set_hash,
+        "contracts.validator_registry.init_params.validator_set_hash",
+    )?;
+    compare_hash(
+        value,
+        &["integrity", "validator_set_hash"],
+        &validator_set_hash,
+        "integrity.validator_set_hash",
+    )?;
+    compare_hash(
+        value,
         &["integrity", "contract_hash"],
         &contract_hash,
         "integrity.contract_hash",
@@ -249,22 +322,105 @@ fn validate_integrity_hashes(value: &Value) -> Result<(), String> {
         "integrity.state_root",
     )?;
 
-    let mut genesis_for_hash = value.clone();
-    if let Some(integrity) = genesis_for_hash
-        .get_mut("integrity")
-        .and_then(Value::as_object_mut)
+    if required(value, &["integrity", "recompute_required"])?
+        .as_bool()
+        .unwrap_or(true)
     {
-        integrity.insert("genesis_hash".to_string(), Value::String(String::new()));
+        return Err("integrity.recompute_required must be false".to_string());
     }
-    let expected_genesis_hash = hash_json(&genesis_for_hash);
+
+    let expected_genesis_hash = hash_json(&genesis_hash_payload(value));
     compare_hash(
         value,
         &["integrity", "genesis_hash"],
         &expected_genesis_hash,
         "integrity.genesis_hash",
     )?;
+    let caip2 = required_string(value, &["network_identity", "canonical_caip2", "value"])?;
+    let network_magic_bytes = network_magic_bytes_for(&caip2, &expected_genesis_hash);
+    compare_hash(
+        value,
+        &["p2p_identity", "network_magic_bytes"],
+        &network_magic_bytes,
+        "p2p_identity.network_magic_bytes",
+    )?;
 
     Ok(())
+}
+
+fn genesis_hash_payload(value: &Value) -> Value {
+    let mut payload = if let Some(inputs) = value
+        .get("canonicalization")
+        .and_then(|entry| entry.get("genesis_hash_inputs"))
+        .and_then(Value::as_array)
+    {
+        let mut map = serde_json::Map::new();
+        for input in inputs.iter().filter_map(Value::as_str) {
+            if let Some(entry) = value.get(input) {
+                map.insert(input.to_string(), entry.clone());
+            }
+        }
+        Value::Object(map)
+    } else {
+        value.clone()
+    };
+
+    let mut excluded = value
+        .get("canonicalization")
+        .and_then(|entry| entry.get("excluded_from_genesis_hash"))
+        .and_then(Value::as_array)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    excluded.extend(
+        [
+            "integrity.genesis_hash",
+            "integrity.signed_by",
+            "integrity.draft_artifact_sha256",
+            "integrity.recompute_required",
+            "integrity.recompute_reason",
+            "p2p_identity.network_magic_bytes",
+            "p2p_identity.provisional_derivation_note",
+        ]
+        .iter()
+        .map(|entry| entry.to_string()),
+    );
+    excluded.sort();
+    excluded.dedup();
+    for path in excluded {
+        remove_dotted_path(&mut payload, &path);
+    }
+    payload
+}
+
+fn remove_dotted_path(value: &mut Value, dotted_path: &str) {
+    let parts = dotted_path.split('.').collect::<Vec<_>>();
+    let Some((last, parents)) = parts.split_last() else {
+        return;
+    };
+    let mut current = value;
+    for part in parents {
+        let Some(next) = current.get_mut(*part) else {
+            return;
+        };
+        current = next;
+    }
+    if let Some(map) = current.as_object_mut() {
+        map.remove(*last);
+    }
+}
+
+fn network_magic_bytes_for(caip2: &str, genesis_hash: &str) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"synergy-network-magic-v1");
+    bytes.extend_from_slice(caip2.as_bytes());
+    bytes.extend_from_slice(genesis_hash.as_bytes());
+    hex::encode(&blake3::hash(&bytes).as_bytes()[0..4])
 }
 
 fn compare_hash(value: &Value, path: &[&str], expected: &str, label: &str) -> Result<(), String> {

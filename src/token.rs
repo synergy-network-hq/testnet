@@ -8,6 +8,13 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+pub const SNRG_SYMBOL: &str = "SNRG";
+pub const FEE_COLLECTOR_ADDRESS: &str = "synf1y42p7p6jrxrg472ts6jea5y34yg7tgj6qg2j";
+pub const DAO_TREASURY_ADDRESS: &str = "synw1pqwglyfjynrxt7ms9nvggntav6x3lx9c2l4r";
+pub const VALIDATOR_REWARDS_POOL_ADDRESS: &str = "synw1at607x35rkmsmvgz069nx0j3q5km93krrvge";
+pub const RELIABILITY_BONUS_POOL_ADDRESS: &str = "synw1mct6a33g7hyt6jzkjdwrvxzf644lc4vytqcz";
+pub const BURN_SINK_ADDRESS: &str = "synb1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqjk5cn";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Token {
     pub symbol: String,
@@ -55,14 +62,14 @@ pub struct StakingInfo {
 }
 
 #[derive(Debug, Deserialize)]
-struct TestnetBetaProfileMint {
+struct TestnetProfileMint {
     wallet_address: String,
     amount_nwei: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct TestnetBetaTokenProfile {
-    genesis_mints: Vec<TestnetBetaProfileMint>,
+struct TestnetTokenProfile {
+    genesis_mints: Vec<TestnetProfileMint>,
 }
 
 fn profile_allocations_enabled() -> bool {
@@ -114,10 +121,12 @@ impl Token {
     }
 
     pub fn format_amount(&self, amount: u64) -> String {
+        let divisor = 10u64.pow(self.decimals as u32);
+        let whole = amount / divisor;
+        let fractional = amount % divisor;
         format!(
-            "{:.1$}",
-            amount as f64 / 10u64.pow(self.decimals as u32) as f64,
-            self.decimals as usize
+            "{whole}.{fractional:0width$}",
+            width = self.decimals as usize
         )
     }
 
@@ -150,7 +159,7 @@ impl TokenManager {
         let genesis_token = canonical_genesis()
             .ok()
             .map(|genesis| genesis.token().clone());
-        let minimum_supply_cap = required_testbeta_supply_cap_floor();
+        let minimum_supply_cap = required_testnet_supply_cap_floor();
         let snrg_token = Token::new(
             "SNRG".to_string(),
             genesis_token
@@ -184,9 +193,9 @@ impl TokenManager {
 
         // Distribute initial supply to genesis accounts
         self.distribute_genesis_supply();
-        self.apply_testbeta_profile_allocations();
+        self.apply_testnet_profile_allocations();
 
-        // Testnet-Beta SNRG supply is fixed after genesis bootstrap.
+        // Testnet SNRG supply is fixed after genesis bootstrap.
         if let Ok(mut tokens) = self.tokens.lock() {
             if let Some(token) = tokens.get_mut("SNRG") {
                 token.mintable = false;
@@ -261,8 +270,8 @@ impl TokenManager {
         }
     }
 
-    fn apply_testbeta_profile_allocations(&self) {
-        for (address, amount) in load_testbeta_profile_allocations() {
+    fn apply_testnet_profile_allocations(&self) {
+        for (address, amount) in load_testnet_profile_allocations() {
             if amount == 0 || address.trim().is_empty() {
                 continue;
             }
@@ -276,7 +285,7 @@ impl TokenManager {
             if let Err(error) = self.mint_tokens(&address, "SNRG", missing_amount) {
                 warn!(
                     "token",
-                    "Failed to apply Testnet-Beta profile allocation",
+                    "Failed to apply Testnet profile allocation",
                     "address" => address,
                     "amount" => missing_amount,
                     "error" => error
@@ -487,25 +496,66 @@ impl TokenManager {
             }
         }
 
-        let current_balance = self.get_balance(from, token_symbol);
-        if current_balance < amount + fee {
-            return Err("Insufficient balance for transfer and fee".to_string());
+        let current_token_balance = self.get_balance(from, token_symbol);
+        let same_asset_fee = token_symbol == SNRG_SYMBOL;
+        if same_asset_fee {
+            let required = amount
+                .checked_add(fee)
+                .ok_or_else(|| "Transfer amount plus fee overflow".to_string())?;
+            if current_token_balance < required {
+                return Err("Insufficient balance for transfer and fee".to_string());
+            }
+        } else {
+            if current_token_balance < amount {
+                return Err("Insufficient token balance for transfer".to_string());
+            }
+            let current_snrg_balance = self.get_balance(from, SNRG_SYMBOL);
+            if current_snrg_balance < fee {
+                return Err("Insufficient SNRG balance for fee".to_string());
+            }
         }
 
-        // Update sender balance
+        // Update sender, receiver, and protocol FeeCollector balances atomically under one lock.
         if let Ok(mut balances) = self.balances.lock() {
             if let Some(from_balances) = balances.get_mut(from) {
                 let current = from_balances.get(token_symbol).unwrap_or(&0);
-                from_balances.insert(token_symbol.to_string(), current - amount - fee);
+                if same_asset_fee {
+                    from_balances.insert(token_symbol.to_string(), current - amount - fee);
+                } else {
+                    from_balances.insert(token_symbol.to_string(), current - amount);
+                    let current_snrg = from_balances.get(SNRG_SYMBOL).copied().unwrap_or(0);
+                    from_balances.insert(SNRG_SYMBOL.to_string(), current_snrg - fee);
+                }
             }
 
             if let Some(to_balances) = balances.get_mut(to) {
                 let current = to_balances.get(token_symbol).unwrap_or(&0);
-                to_balances.insert(token_symbol.to_string(), current + amount);
+                to_balances.insert(
+                    token_symbol.to_string(),
+                    current
+                        .checked_add(amount)
+                        .ok_or_else(|| "Receiver balance overflow".to_string())?,
+                );
             } else {
                 let mut new_balances = HashMap::new();
                 new_balances.insert(token_symbol.to_string(), amount);
                 balances.insert(to.to_string(), new_balances);
+            }
+
+            if fee > 0 {
+                let fee_collector_balances = balances
+                    .entry(FEE_COLLECTOR_ADDRESS.to_string())
+                    .or_insert_with(HashMap::new);
+                let current_fee_balance = fee_collector_balances
+                    .get(SNRG_SYMBOL)
+                    .copied()
+                    .unwrap_or(0);
+                fee_collector_balances.insert(
+                    SNRG_SYMBOL.to_string(),
+                    current_fee_balance
+                        .checked_add(fee)
+                        .ok_or_else(|| "FeeCollector balance overflow".to_string())?,
+                );
             }
         }
 
@@ -530,6 +580,55 @@ impl TokenManager {
             "Transferred {} {} from {} to {}",
             amount, token_symbol, from, to
         ))
+    }
+
+    pub fn distribute_epoch_fees_from_collector(
+        &self,
+        epoch_id: u64,
+        total_fees_nwei: u64,
+    ) -> Result<crate::rewards::EpochFeeDistribution, String> {
+        let config = crate::rewards::RewardConfig::default();
+        config.validate()?;
+        let distribution = crate::rewards::split_epoch_fees(epoch_id, total_fees_nwei as u128, 0)?;
+
+        let collector_balance = self.get_balance(FEE_COLLECTOR_ADDRESS, SNRG_SYMBOL);
+        if collector_balance < total_fees_nwei {
+            return Err(format!(
+                "FeeCollector balance {} below epoch fees {}",
+                collector_balance, total_fees_nwei
+            ));
+        }
+
+        let validator_share = u64::try_from(distribution.validator_share_nwei)
+            .map_err(|_| "validator fee share exceeds u64".to_string())?;
+        let treasury_share = u64::try_from(distribution.treasury_share_nwei)
+            .map_err(|_| "treasury fee share exceeds u64".to_string())?;
+        let burn_share = u64::try_from(distribution.burn_share_nwei)
+            .map_err(|_| "burn fee share exceeds u64".to_string())?;
+
+        if validator_share > 0 {
+            self.transfer_tokens(
+                FEE_COLLECTOR_ADDRESS,
+                VALIDATOR_REWARDS_POOL_ADDRESS,
+                SNRG_SYMBOL,
+                validator_share,
+                0,
+            )?;
+        }
+        if treasury_share > 0 {
+            self.transfer_tokens(
+                FEE_COLLECTOR_ADDRESS,
+                DAO_TREASURY_ADDRESS,
+                SNRG_SYMBOL,
+                treasury_share,
+                0,
+            )?;
+        }
+        if burn_share > 0 {
+            self.burn_tokens(FEE_COLLECTOR_ADDRESS, SNRG_SYMBOL, burn_share)?;
+        }
+
+        Ok(distribution)
     }
 
     fn transfer_hash_exists(&self, tx_hash: &str) -> bool {
@@ -720,18 +819,19 @@ impl TokenManager {
             .unwrap_or(0)
     }
 
-    /// Distribute rewards to a cluster, then to validators in that cluster based on normalized synergy scores
+    /// Distribute rewards to a cluster, then to validators in that cluster based on normalized
+    /// integer basis-point Synergy scores.
     /// This implements the PoSy protocol where rewards are awarded to clusters first, then distributed
     /// among validators in the cluster based on their normalized Synergy Scores
     pub fn distribute_cluster_rewards(
         &self,
-        cluster_validators: &[(String, f64)], // (validator_address, normalized_synergy_score)
+        cluster_validators: &[(String, u64)], // (validator_address, normalized_synergy_score_bps)
         reward_amount: u64,
     ) -> Result<String, String> {
-        const REWARDS_POOL: &str = "synw1qjkshj3t6whfsckefry58z9wtpqv8nxnh4ze";
+        const SCORE_BPS_DENOMINATOR: u64 = 10_000;
 
         // Check rewards pool balance
-        let pool_balance = self.get_balance(REWARDS_POOL, "SNRG");
+        let pool_balance = self.get_balance(VALIDATOR_REWARDS_POOL_ADDRESS, SNRG_SYMBOL);
         if pool_balance < reward_amount {
             return Err(format!(
                 "Insufficient rewards pool balance: {} < {}",
@@ -743,26 +843,25 @@ impl TokenManager {
             return Err("No validators in cluster".to_string());
         }
 
-        // Verify normalized scores sum to approximately 1.0 (allowing for floating point precision)
-        let total_score: f64 = cluster_validators.iter().map(|(_, score)| score).sum();
-        if (total_score - 1.0).abs() > 0.01 {
+        let total_score: u64 = cluster_validators.iter().map(|(_, score)| *score).sum();
+        if total_score != SCORE_BPS_DENOMINATOR {
             return Err(format!(
-                "Invalid normalized scores: sum = {} (expected ~1.0)",
+                "Invalid normalized score bps: sum = {} (expected 10000)",
                 total_score
             ));
         }
 
         // Deduct total reward from rewards pool
         if let Ok(mut balances) = self.balances.lock() {
-            if let Some(pool_balances) = balances.get_mut(REWARDS_POOL) {
-                let current = pool_balances.get("SNRG").unwrap_or(&0);
+            if let Some(pool_balances) = balances.get_mut(VALIDATOR_REWARDS_POOL_ADDRESS) {
+                let current = pool_balances.get(SNRG_SYMBOL).unwrap_or(&0);
                 if *current < reward_amount {
                     return Err(format!(
                         "Rewards pool balance check failed: {} < {}",
                         current, reward_amount
                     ));
                 }
-                pool_balances.insert("SNRG".to_string(), current - reward_amount);
+                pool_balances.insert(SNRG_SYMBOL.to_string(), current - reward_amount);
             } else {
                 return Err("Rewards pool not found".to_string());
             }
@@ -770,8 +869,20 @@ impl TokenManager {
 
         // Distribute rewards to each validator based on their normalized synergy score
         let mut distributed_count = 0;
-        for (validator_address, normalized_score) in cluster_validators {
-            let validator_reward = ((reward_amount as f64) * normalized_score) as u64;
+        let mut distributed_total = 0u64;
+        for (index, (validator_address, normalized_score_bps)) in
+            cluster_validators.iter().enumerate()
+        {
+            let validator_reward = if index + 1 == cluster_validators.len() {
+                reward_amount.saturating_sub(distributed_total)
+            } else {
+                let share = ((reward_amount as u128) * (*normalized_score_bps as u128))
+                    / (SCORE_BPS_DENOMINATOR as u128);
+                u64::try_from(share).map_err(|_| "validator reward exceeds u64".to_string())?
+            };
+            distributed_total = distributed_total
+                .checked_add(validator_reward)
+                .ok_or_else(|| "cluster reward distribution overflow".to_string())?;
 
             if validator_reward == 0 {
                 continue; // Skip validators with zero reward
@@ -782,8 +893,13 @@ impl TokenManager {
                 let validator_balances = balances
                     .entry(validator_address.clone())
                     .or_insert_with(HashMap::new);
-                let current = validator_balances.get("SNRG").unwrap_or(&0);
-                validator_balances.insert("SNRG".to_string(), current + validator_reward);
+                let current = validator_balances.get(SNRG_SYMBOL).unwrap_or(&0);
+                validator_balances.insert(
+                    SNRG_SYMBOL.to_string(),
+                    current
+                        .checked_add(validator_reward)
+                        .ok_or_else(|| "validator reward balance overflow".to_string())?,
+                );
             }
 
             // Now distribute validator's reward to their stakers
@@ -1325,13 +1441,13 @@ impl TokenManager {
             }
         }
 
-        self.reconcile_testbeta_profile_allocations();
+        self.reconcile_testnet_profile_allocations();
 
         Ok(())
     }
 
-    fn reconcile_testbeta_profile_allocations(&self) {
-        let allocations = load_testbeta_profile_allocations();
+    fn reconcile_testnet_profile_allocations(&self) {
+        let allocations = load_testnet_profile_allocations();
         if allocations.is_empty() {
             return;
         }
@@ -1364,7 +1480,7 @@ impl TokenManager {
                     .unwrap_or(0);
                 let required_max = current_max
                     .max(updated_supply.unwrap_or(0))
-                    .max(required_testbeta_supply_cap_floor());
+                    .max(required_testnet_supply_cap_floor());
                 token.max_supply = Some(required_max.to_string());
             }
         }
@@ -1385,7 +1501,7 @@ impl TokenManager {
     }
 }
 
-fn load_testbeta_profile_allocations() -> Vec<(String, u64)> {
+fn load_testnet_profile_allocations() -> Vec<(String, u64)> {
     // Per-node profile allocations are not consensus state. Applying them at
     // validator runtime causes each machine to mint a different local token
     // ledger from its own profile.json. Keep the old behavior behind an
@@ -1394,11 +1510,11 @@ fn load_testbeta_profile_allocations() -> Vec<(String, u64)> {
         return Vec::new();
     }
 
-    for path in candidate_testbeta_profile_paths() {
+    for path in candidate_testnet_profile_paths() {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(profile) = serde_json::from_str::<TestnetBetaTokenProfile>(&contents) else {
+        let Ok(profile) = serde_json::from_str::<TestnetTokenProfile>(&contents) else {
             continue;
         };
         return profile
@@ -1417,7 +1533,7 @@ fn load_testbeta_profile_allocations() -> Vec<(String, u64)> {
     Vec::new()
 }
 
-fn required_testbeta_supply_cap_floor() -> u128 {
+fn required_testnet_supply_cap_floor() -> u128 {
     let canonical_total = canonical_genesis()
         .ok()
         .map(|genesis| {
@@ -1429,7 +1545,7 @@ fn required_testbeta_supply_cap_floor() -> u128 {
         })
         .unwrap_or(0);
 
-    let profile_total = load_testbeta_profile_allocations()
+    let profile_total = load_testnet_profile_allocations()
         .into_iter()
         .map(|(_, amount)| amount as u128)
         .sum::<u128>();
@@ -1437,7 +1553,7 @@ fn required_testbeta_supply_cap_floor() -> u128 {
     canonical_total.saturating_add(profile_total)
 }
 
-fn candidate_testbeta_profile_paths() -> Vec<PathBuf> {
+fn candidate_testnet_profile_paths() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
@@ -1559,7 +1675,7 @@ mod tests {
         let _allocations_flag = EnvVarGuard::remove("SYNERGY_ENABLE_PROFILE_ALLOCATIONS");
 
         assert!(
-            load_testbeta_profile_allocations().is_empty(),
+            load_testnet_profile_allocations().is_empty(),
             "runtime must ignore per-node profile allocations unless explicitly enabled"
         );
 
@@ -1577,7 +1693,7 @@ mod tests {
         let _allocations_flag = EnvVarGuard::set("SYNERGY_ENABLE_PROFILE_ALLOCATIONS", "1");
 
         assert_eq!(
-            load_testbeta_profile_allocations(),
+            load_testnet_profile_allocations(),
             vec![("synw1testprofileallocxxxxxxxxxxxxxxxxxxxx".to_string(), 42)]
         );
 
@@ -1589,7 +1705,7 @@ mod tests {
         let manager = TokenManager::new();
         let sender = "synw1sendernative000000000000000000000000";
         let receiver = "synw1receivernative00000000000000000000";
-        seed_snrg_balance(&manager, sender, 10_000);
+        seed_snrg_balance(&manager, sender, 100_000);
 
         let tx = Transaction::new(
             sender.to_string(),
@@ -1607,8 +1723,9 @@ mod tests {
             .process_transaction_in_block(&tx, 77)
             .expect("native SNRG transaction should apply");
 
-        assert_eq!(manager.get_balance(sender, "SNRG"), 8_480);
+        assert_eq!(manager.get_balance(sender, "SNRG"), 21_500);
         assert_eq!(manager.get_balance(receiver, "SNRG"), 1_500);
+        assert_eq!(manager.get_balance(FEE_COLLECTOR_ADDRESS, "SNRG"), 77_000);
 
         let history = manager.get_transfer_history(sender, 10);
         assert_eq!(history.len(), 1);
@@ -1619,21 +1736,23 @@ mod tests {
             .process_transaction_in_block(&tx, 77)
             .expect("replaying same transaction should be idempotent");
 
-        assert_eq!(manager.get_balance(sender, "SNRG"), 8_480);
+        assert_eq!(manager.get_balance(sender, "SNRG"), 21_500);
         assert_eq!(manager.get_balance(receiver, "SNRG"), 1_500);
+        assert_eq!(manager.get_balance(FEE_COLLECTOR_ADDRESS, "SNRG"), 77_000);
         assert_eq!(manager.get_transfer_history(sender, 10).len(), 1);
     }
 
     #[test]
     fn staking_transaction_is_not_intercepted_as_native_transfer() {
         let manager = TokenManager::new();
-        let staker = "synw1stakernative000000000000000000000";
-        let validator = "synv1validatornative000000000000000000";
-        seed_snrg_balance(&manager, staker, 10_000);
+        let staker = crate::address::generate_wallet_address("staking-transaction-staker");
+        let validator =
+            crate::address::generate_validator_address("staking-transaction-validator", 1);
+        seed_snrg_balance(&manager, &staker, 10_000);
 
         let tx = Transaction::new(
-            staker.to_string(),
-            validator.to_string(),
+            staker.clone(),
+            validator.clone(),
             3_000,
             0,
             vec![1, 2, 3],
@@ -1650,9 +1769,9 @@ mod tests {
             .process_transaction(&tx)
             .expect("staking transaction should apply as stake");
 
-        assert_eq!(manager.get_balance(staker, "SNRG"), 7_000);
-        assert_eq!(manager.get_balance(validator, "SNRG"), 0);
-        assert_eq!(manager.get_staked_balance(staker, "SNRG"), 3_000);
+        assert_eq!(manager.get_balance(&staker, "SNRG"), 7_000);
+        assert_eq!(manager.get_balance(&validator, "SNRG"), 0);
+        assert_eq!(manager.get_staked_balance(&staker, "SNRG"), 3_000);
     }
 
     #[test]

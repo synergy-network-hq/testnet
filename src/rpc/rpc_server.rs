@@ -1078,6 +1078,30 @@ fn handle_json_rpc(
             }
         }
 
+        // DAG transaction graph methods
+        "synergy_getDagStatus" => crate::dag::status_json(),
+
+        "synergy_getDagFrontier" => crate::dag::frontier_json(),
+
+        "synergy_getDagVertices" => {
+            let limit = dag_rpc_limit(&params, 100, 1_000);
+            let status = dag_rpc_status_filter(&params);
+            crate::dag::vertices_json(limit, status)
+        }
+
+        "synergy_getDagVertex" => {
+            if let Some(hash) = params.get(0).and_then(|value| value.as_str()) {
+                crate::dag::vertex_json(hash)
+            } else {
+                json!("Missing DAG vertex hash")
+            }
+        }
+
+        "synergy_getDagTopology" => {
+            let limit = dag_rpc_limit(&params, 100, 1_000);
+            crate::dag::topology_json(limit)
+        }
+
         // Transaction methods
         "synergy_sendTransaction" => {
             if let Some(tx_data) = params.get(0) {
@@ -1156,7 +1180,7 @@ fn handle_json_rpc(
         }
 
         // ---------------------------------------------------------------------
-        // SXCP (Synergy Cross-Chain Protocol) – Testnet-Beta RPC surface
+        // SXCP (Synergy Cross-Chain Protocol) – Testnet RPC surface
         // ---------------------------------------------------------------------
         "synergy_registerRelayer" => {
             if let (Some(address), Some(public_key)) = (
@@ -1241,14 +1265,14 @@ fn handle_json_rpc(
             if params
                 .get(0)
                 .and_then(|v| v.as_str())
-                .map(|token| token == "TESTBETA_RESET_SXCP_STATE")
+                .map(|token| token == "TESTNET_RESET_SXCP_STATE")
                 .unwrap_or(false)
             {
                 sxcp::reset_state()
             } else {
                 json!({
                     "success": false,
-                    "error": "Confirmation token required as first parameter: TESTBETA_RESET_SXCP_STATE"
+                    "error": "Confirmation token required as first parameter: TESTNET_RESET_SXCP_STATE"
                 })
             }
         }
@@ -2610,7 +2634,7 @@ fn handle_json_rpc(
                         // Contract address detected - AIVM currently disabled
                         json!({
                             "result": "0x",
-                            "note": "AIVM contract execution is currently disabled in testnet-beta. Contract calls will return empty results."
+                            "note": "AIVM contract execution is currently disabled in testnet. Contract calls will return empty results."
                         })
                     } else {
                         // Non-contract address - return the balance as a simple read
@@ -3055,6 +3079,37 @@ fn handle_json_rpc(
             }
         }
 
+        // synergy_getValidatorRewardStatus
+        "synergy_getValidatorRewardStatus" => {
+            if let Some(validator_id) = params.get(0).and_then(|v| v.as_str()) {
+                let current_epoch = validator_manager
+                    .registry
+                    .lock()
+                    .map(|registry| registry.current_epoch)
+                    .unwrap_or(0);
+                match crate::rewards::REWARD_LEDGER.lock() {
+                    Ok(ledger) => {
+                        json!(ledger.get_validator_reward_status(validator_id, current_epoch))
+                    }
+                    Err(_) => json!({"error": "Failed to access reward ledger"}),
+                }
+            } else {
+                json!({"error": "Missing validator ID parameter"})
+            }
+        }
+
+        // synergy_getValidatorPendingRewards
+        "synergy_getValidatorPendingRewards" => {
+            if let Some(validator_id) = params.get(0).and_then(|v| v.as_str()) {
+                match crate::rewards::REWARD_LEDGER.lock() {
+                    Ok(ledger) => json!(ledger.get_validator_pending_rewards(validator_id)),
+                    Err(_) => json!({"error": "Failed to access reward ledger"}),
+                }
+            } else {
+                json!({"error": "Missing validator ID parameter"})
+            }
+        }
+
         // synergy_getValidatorPerformance
         "synergy_getValidatorPerformance" => {
             if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
@@ -3194,6 +3249,96 @@ fn handle_json_rpc(
                 }
             } else {
                 json!({"error": "Missing address parameter"})
+            }
+        }
+
+        // synergy_getClusterStatus
+        "synergy_getClusterStatus" => {
+            if let Some(cluster_address) = params.get(0).and_then(|v| v.as_str()) {
+                match crate::cluster::CLUSTER_LEDGER.lock() {
+                    Ok(ledger) => json!(ledger.get_cluster_status(cluster_address)),
+                    Err(_) => json!({"error": "Failed to access cluster ledger"}),
+                }
+            } else {
+                json!({"error": "Missing cluster address parameter"})
+            }
+        }
+
+        // synergy_getValidatorClusterHistory
+        "synergy_getValidatorClusterHistory" => {
+            if let Some(validator_id) = params.get(0).and_then(|v| v.as_str()) {
+                let cluster_ledger = crate::cluster::CLUSTER_LEDGER.lock();
+                let reward_ledger = crate::rewards::REWARD_LEDGER.lock();
+                match (cluster_ledger, reward_ledger) {
+                    (Ok(cluster_ledger), Ok(reward_ledger)) => {
+                        let mut prior_assignments = Vec::new();
+                        let mut epochs_by_cluster: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+                        for snapshots in cluster_ledger.assignment_snapshots.values() {
+                            for snapshot in snapshots {
+                                if snapshot.validator_ids.iter().any(|id| id == validator_id) {
+                                    prior_assignments.push(snapshot.clone());
+                                    epochs_by_cluster
+                                        .entry(snapshot.cluster_address.clone())
+                                        .or_default()
+                                        .push(snapshot.epoch_id);
+                                }
+                            }
+                        }
+                        prior_assignments.sort_by_key(|snapshot| snapshot.epoch_id);
+                        let current_cluster_address = prior_assignments
+                            .last()
+                            .map(|snapshot| snapshot.cluster_address.clone());
+                        let participation_segments: Vec<_> = cluster_ledger
+                            .participation_segments
+                            .iter()
+                            .filter(|segment| segment.validator_id == validator_id)
+                            .cloned()
+                            .collect();
+                        let mut pending_rewards_by_original_cluster: BTreeMap<String, u128> =
+                            BTreeMap::new();
+                        for reward in reward_ledger.get_validator_pending_rewards(validator_id) {
+                            *pending_rewards_by_original_cluster
+                                .entry(reward.original_cluster_address)
+                                .or_default() += reward.pending_reward_nwei;
+                        }
+                        let reliability = reward_ledger
+                            .reliability_states
+                            .get(validator_id)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                crate::rewards::ValidatorReliabilityState::new(validator_id)
+                            });
+                        json!(crate::cluster::ValidatorClusterHistoryResponse {
+                            validator_id: validator_id.to_string(),
+                            current_cluster_address,
+                            prior_cluster_assignments: prior_assignments,
+                            epochs_by_cluster,
+                            pending_rewards_by_original_cluster,
+                            participation_segments,
+                            reliability_streak: reliability.current_streak_epochs,
+                            current_bonus_tier: reliability.current_bonus_tier_bps,
+                            next_bonus_tier: crate::rewards::bonus_tier_bps(
+                                reliability.current_streak_epochs.saturating_add(1),
+                                &crate::rewards::RewardConfig::default(),
+                            ),
+                        })
+                    }
+                    _ => json!({"error": "Failed to access cluster or reward ledger"}),
+                }
+            } else {
+                json!({"error": "Missing validator ID parameter"})
+            }
+        }
+
+        // synergy_getEpochClusterAssignments
+        "synergy_getEpochClusterAssignments" => {
+            if let Some(epoch_id) = params.get(0).and_then(|v| v.as_u64()) {
+                match crate::cluster::CLUSTER_LEDGER.lock() {
+                    Ok(ledger) => json!(ledger.get_epoch_cluster_assignments(epoch_id)),
+                    Err(_) => json!({"error": "Failed to access cluster ledger"}),
+                }
+            } else {
+                json!({"error": "Missing epoch ID parameter"})
             }
         }
 
@@ -3637,6 +3782,11 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getBlockRange"
         | "synergy_getTransactionByHash"
         | "synergy_getTransactionsInBlock"
+        | "synergy_getDagStatus"
+        | "synergy_getDagFrontier"
+        | "synergy_getDagVertices"
+        | "synergy_getDagVertex"
+        | "synergy_getDagTopology"
         | "synergy_getValidatorStats"
         | "synergy_getTokenStats"
         | "synergy_getAllBalances"
@@ -3665,9 +3815,14 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getChainId"
         | "synergy_getValidatorByCluster"
         | "synergy_getValidatorRewards"
+        | "synergy_getValidatorRewardStatus"
+        | "synergy_getValidatorPendingRewards"
         | "synergy_getValidatorPerformance"
         | "synergy_getValidatorQueue"
         | "synergy_getValidatorSlashingHistory"
+        | "synergy_getClusterStatus"
+        | "synergy_getValidatorClusterHistory"
+        | "synergy_getEpochClusterAssignments"
         | "synergy_getClusterInfo"
         | "synergy_getClusterRewards"
         | "synergy_getStakedBalance"
@@ -3877,7 +4032,7 @@ fn current_chain_id() -> u64 {
     crate::config::load_node_config(None)
         .ok()
         .map(|cfg| cfg.blockchain.chain_id)
-        .unwrap_or(338639)
+        .unwrap_or(1263)
 }
 
 fn parse_u64ish(value: Option<&Value>) -> Result<Option<u64>, RpcError> {
@@ -4731,6 +4886,29 @@ fn calculate_average_block_time(chain: &BlockChain) -> f64 {
     }
 
     total_diff as f64 / count as f64
+}
+
+fn dag_rpc_limit(params: &Value, default: usize, max: usize) -> usize {
+    let raw = params
+        .get(0)
+        .and_then(|value| {
+            value
+                .as_u64()
+                .or_else(|| value.get("limit").and_then(|limit| limit.as_u64()))
+        })
+        .unwrap_or(default as u64);
+    raw.max(1).min(max as u64) as usize
+}
+
+fn dag_rpc_status_filter(params: &Value) -> Option<crate::dag::DagVertexStatus> {
+    params
+        .get(0)
+        .and_then(|value| {
+            value
+                .as_str()
+                .or_else(|| value.get("status").and_then(|status| status.as_str()))
+        })
+        .and_then(|status| crate::dag::parse_status_filter(Some(status)))
 }
 
 fn tx_to_explorer_json(
