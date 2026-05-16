@@ -29,21 +29,21 @@ pub struct WalletManager {
 }
 
 #[derive(Debug, Deserialize)]
-struct TestnetBetaProfileWalletRecord {
+struct TestnetProfileWalletRecord {
     address: String,
     public_key_path: String,
     private_key_path: String,
 }
 
 #[derive(Debug, Deserialize)]
-struct TestnetBetaProfileWallets {
-    treasury_wallet: TestnetBetaProfileWalletRecord,
-    faucet_wallet: TestnetBetaProfileWalletRecord,
-    stake_vault_wallet: TestnetBetaProfileWalletRecord,
+struct TestnetProfileWallets {
+    treasury_wallet: TestnetProfileWalletRecord,
+    faucet_wallet: TestnetProfileWalletRecord,
+    stake_vault_wallet: TestnetProfileWalletRecord,
 }
 
 #[derive(Debug, Clone)]
-struct TestnetBetaWalletMaterial {
+struct TestnetWalletMaterial {
     address: String,
     public_key: String,
     private_key: String,
@@ -169,7 +169,7 @@ impl WalletManager {
         Ok(address)
     }
 
-    /// Import a wallet under an explicit address (used for testnet-beta/system identities).
+    /// Import a wallet under an explicit address (used for testnet/system identities).
     pub fn import_wallet(
         &mut self,
         address: String,
@@ -618,17 +618,17 @@ lazy_static::lazy_static! {
     pub static ref WALLET_MANAGER: std::sync::Mutex<WalletManager> = std::sync::Mutex::new(WalletManager::new());
 }
 
-/// Loads testnet beta system identities (faucet/treasury/bootnodes) into the in-memory wallet manager.
+/// Loads testnet system identities (faucet/treasury/bootnodes) into the in-memory wallet manager.
 /// This enables signing test transactions and validating known genesis identities.
-pub fn init_testbeta_wallets() {
-    let config_path = "config/testbeta_wallets.json";
+pub fn init_testnet_wallets() {
+    let config_path = "config/testnet_wallets.json";
     let mut imported = 0u64;
 
     if let Ok(cfg) = std::fs::read_to_string(config_path) {
         let json = match serde_json::from_str::<serde_json::Value>(&cfg) {
             Ok(v) => v,
             Err(e) => {
-                warn!("wallet", "Failed to parse testbeta_wallets.json", "error" => e.to_string());
+                warn!("wallet", "Failed to parse testnet_wallets.json", "error" => e.to_string());
                 serde_json::Value::Null
             }
         };
@@ -688,8 +688,8 @@ pub fn init_testbeta_wallets() {
                 continue;
             }
 
-            import_testbeta_wallet_material(
-                TestnetBetaWalletMaterial {
+            import_testnet_wallet_material(
+                TestnetWalletMaterial {
                     address,
                     public_key,
                     private_key,
@@ -699,17 +699,17 @@ pub fn init_testbeta_wallets() {
         }
     }
 
-    for wallet_material in load_testbeta_local_identity_wallets() {
-        import_testbeta_wallet_material(wallet_material, &mut imported);
+    for wallet_material in load_testnet_local_identity_wallets() {
+        import_testnet_wallet_material(wallet_material, &mut imported);
     }
 
-    for wallet_record in load_testbeta_profile_wallet_records() {
+    for wallet_record in load_testnet_profile_wallet_records() {
         let public_key = match std::fs::read_to_string(&wallet_record.public_key_path) {
             Ok(contents) => contents.trim().to_string(),
             Err(error) => {
                 warn!(
                     "wallet",
-                    "Failed to read Testnet-Beta wallet public key",
+                    "Failed to read Testnet wallet public key",
                     "path" => wallet_record.public_key_path.clone(),
                     "error" => error.to_string()
                 );
@@ -721,7 +721,7 @@ pub fn init_testbeta_wallets() {
             Err(error) => {
                 warn!(
                     "wallet",
-                    "Failed to read Testnet-Beta wallet private key",
+                    "Failed to read Testnet wallet private key",
                     "path" => wallet_record.private_key_path.clone(),
                     "error" => error.to_string()
                 );
@@ -736,8 +736,8 @@ pub fn init_testbeta_wallets() {
             continue;
         }
 
-        import_testbeta_wallet_material(
-            TestnetBetaWalletMaterial {
+        import_testnet_wallet_material(
+            TestnetWalletMaterial {
                 address: wallet_record.address.clone(),
                 public_key,
                 private_key,
@@ -747,11 +747,11 @@ pub fn init_testbeta_wallets() {
     }
 
     if imported > 0 {
-        info!("wallet", "Imported testnet beta identities", "count" => imported);
+        info!("wallet", "Imported testnet identities", "count" => imported);
     }
 }
 
-fn import_testbeta_wallet_material(wallet_material: TestnetBetaWalletMaterial, imported: &mut u64) {
+fn import_testnet_wallet_material(wallet_material: TestnetWalletMaterial, imported: &mut u64) {
     if wallet_material.address.trim().is_empty()
         || wallet_material.public_key.trim().is_empty()
         || wallet_material.private_key.trim().is_empty()
@@ -773,16 +773,14 @@ fn import_testbeta_wallet_material(wallet_material: TestnetBetaWalletMaterial, i
     }
 }
 
-fn load_testbeta_local_identity_wallets() -> Vec<TestnetBetaWalletMaterial> {
-    candidate_testbeta_local_identity_paths()
+fn load_testnet_local_identity_wallets() -> Vec<TestnetWalletMaterial> {
+    candidate_testnet_local_identity_paths()
         .into_iter()
-        .filter_map(|path| read_testbeta_identity_wallet_material(&path))
+        .filter_map(|path| read_testnet_identity_wallet_material(&path))
         .collect()
 }
 
-fn read_testbeta_identity_wallet_material(
-    identity_path: &PathBuf,
-) -> Option<TestnetBetaWalletMaterial> {
+fn read_testnet_identity_wallet_material(identity_path: &PathBuf) -> Option<TestnetWalletMaterial> {
     let identity_str = std::fs::read_to_string(identity_path).ok()?;
     let identity = serde_json::from_str::<serde_json::Value>(&identity_str).ok()?;
     let key_directory = identity_path.parent()?;
@@ -812,7 +810,7 @@ fn read_testbeta_identity_wallet_material(
         (false, Some(public_key), Some(private_key))
             if !public_key.is_empty() && !private_key.is_empty() =>
         {
-            Some(TestnetBetaWalletMaterial {
+            Some(TestnetWalletMaterial {
                 address,
                 public_key,
                 private_key,
@@ -822,7 +820,7 @@ fn read_testbeta_identity_wallet_material(
     }
 }
 
-fn candidate_testbeta_local_identity_paths() -> Vec<PathBuf> {
+fn candidate_testnet_local_identity_paths() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
@@ -860,12 +858,12 @@ fn read_trimmed_file(path: PathBuf) -> Option<String> {
         .filter(|contents| !contents.is_empty())
 }
 
-fn load_testbeta_profile_wallet_records() -> Vec<TestnetBetaProfileWalletRecord> {
-    for path in candidate_testbeta_profile_paths() {
+fn load_testnet_profile_wallet_records() -> Vec<TestnetProfileWalletRecord> {
+    for path in candidate_testnet_profile_paths() {
         let Ok(contents) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(profile) = serde_json::from_str::<TestnetBetaProfileWallets>(&contents) else {
+        let Ok(profile) = serde_json::from_str::<TestnetProfileWallets>(&contents) else {
             continue;
         };
         return vec![
@@ -878,7 +876,7 @@ fn load_testbeta_profile_wallet_records() -> Vec<TestnetBetaProfileWalletRecord>
     Vec::new()
 }
 
-fn candidate_testbeta_profile_paths() -> Vec<PathBuf> {
+fn candidate_testnet_profile_paths() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     if let Ok(project_root) = std::env::var("SYNERGY_PROJECT_ROOT") {
@@ -1004,7 +1002,7 @@ mod tests {
         .expect("identity should write");
         fs::write(keys.join("private.key"), "private-from-file").expect("private key should write");
 
-        let material = read_testbeta_identity_wallet_material(&identity_path)
+        let material = read_testnet_identity_wallet_material(&identity_path)
             .expect("local identity should load from identity.json plus private.key");
 
         assert_eq!(material.address, "synv1localidentity");

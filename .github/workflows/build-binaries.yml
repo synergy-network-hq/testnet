@@ -1,4 +1,4 @@
-name: Build Testbeta Binaries
+name: Build Testnet Binaries
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: build-testbeta-binaries-${{ github.ref }}
+  group: build-testnet-binaries-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -55,8 +55,8 @@ jobs:
           set -euo pipefail
           # Build all available binary targets
           # See src/Cargo.toml for available [[bin]] sections
-          cargo build --release --locked -p synergy-testbeta \
-            --bin synergy-testbeta \
+          cargo build --release --locked -p synergy-testnet \
+            --bin synergy-testnet \
             --bin generate-node-keys \
             --bin synergy-address-engine \
             --bin wallet-pqc-cli \
@@ -93,7 +93,7 @@ jobs:
 
           # Available binaries (matching src/Cargo.toml [[bin]] sections)
           binaries = [
-              "synergy-testbeta",
+              "synergy-testnet",
               "generate-node-keys",
               "synergy-address-engine",
               "wallet-pqc-cli",

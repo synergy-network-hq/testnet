@@ -453,7 +453,7 @@ fn normalize_expected_profile(
 }
 
 fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
-    eprintln!("Synergy Testnet Beta Node");
+    eprintln!("Synergy Testnet Node");
     if let Some(profile) = expected_profile {
         eprintln!(
             "Role-bound build: {} ({})",
@@ -491,7 +491,7 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!("EXAMPLES:");
     eprintln!("    {binary_name} start --config config/node.toml");
     eprintln!("    {binary_name} keygen --output ./keys --class 1");
-    eprintln!("    {binary_name} sync --config config/node.toml --network testbeta --check-only");
+    eprintln!("    {binary_name} sync --config config/node.toml --network testnet --check-only");
 }
 
 struct ActiveRoleServices {
@@ -677,7 +677,7 @@ fn infer_synergy_env(config: &NodeConfig) -> &'static str {
     if name.contains("devnet") {
         "devnet"
     } else if name.contains("testnet") && name.contains("beta") {
-        "testnet-beta"
+        "testnet"
     } else if name.contains("testnet") {
         "testnet"
     } else if name.contains("beta") {
@@ -1370,7 +1370,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 config.logging.max_files,
             );
 
-            info!("main", "Synergy testbeta node starting...");
+            info!("main", "Synergy testnet node starting...");
             info!(
                 "main",
                 "Configuration loaded successfully",
@@ -1438,7 +1438,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             );
             let blockchain = Arc::clone(&SHARED_CHAIN);
 
-            wallet::init_testbeta_wallets();
+            wallet::init_testnet_wallets();
             {
                 let token_manager = TOKEN_MANAGER.clone();
                 if let Err(e) = token_manager.load_state("data/token_state.json") {
@@ -1452,6 +1452,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                     let chain_guard = blockchain.lock().unwrap();
                     chain_guard.clone()
                 };
+                crate::dag::rebuild_global_from_chain(&chain_snapshot);
                 let (replayed, replay_failed) =
                     token_manager.replay_chain_transactions(&chain_snapshot);
                 if replayed > 0 || replay_failed > 0 {
@@ -1486,7 +1487,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             info!("main", "Starting the node...");
 
             let pid = std::process::id();
-            if let Err(e) = fs::write("data/synergy-testbeta.pid", pid.to_string()) {
+            if let Err(e) = fs::write("data/synergy-testnet.pid", pid.to_string()) {
                 eprintln!("Warning: Failed to write PID file: {}", e);
             }
 
@@ -1777,7 +1778,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             }
 
             info!("main", "Node shutdown gracefully");
-            fs::remove_file("data/synergy-testbeta.pid").ok();
+            fs::remove_file("data/synergy-testnet.pid").ok();
 
             for handle in role_services.worker_threads {
                 let _ = handle.join();
@@ -1909,9 +1910,9 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             }
         }
         "stop" => {
-            println!("Stopping Synergy testbeta node...");
+            println!("Stopping Synergy testnet node...");
 
-            let pid_file = "data/synergy-testbeta.pid";
+            let pid_file = "data/synergy-testnet.pid";
             if !PathBuf::from(pid_file).exists() {
                 eprintln!("Error: PID file not found. Is the node running?");
                 process::exit(1);
@@ -1952,9 +1953,9 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             }
         }
         "restart" => {
-            println!("Restarting Synergy testbeta node...");
+            println!("Restarting Synergy testnet node...");
 
-            let pid_file = "data/synergy-testbeta.pid";
+            let pid_file = "data/synergy-testnet.pid";
             if PathBuf::from(pid_file).exists() {
                 println!("Stopping running node...");
                 #[cfg(unix)]
@@ -2138,7 +2139,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                             e
                         );
                     } else {
-                        println!("✅ Validator auto-approved for testbeta");
+                        println!("✅ Validator auto-approved for testnet");
                     }
                 }
                 Err(e) => {
@@ -2149,7 +2150,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
         }
         "sync" => {
             let mut config_path: Option<String> = None;
-            let mut network = "testbeta".to_string();
+            let mut network = "testnet".to_string();
             let mut check_only = false;
 
             let mut i = 2;
@@ -2257,7 +2258,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
             }
         }
         "version" | "--version" | "-v" => {
-            println!("Synergy Testnet Beta Node v{}", env!("CARGO_PKG_VERSION"));
+            println!("Synergy Testnet Node v{}", env!("CARGO_PKG_VERSION"));
             println!("Binary: {}", binary_name);
             if let Some(profile) = expected_profile {
                 println!(

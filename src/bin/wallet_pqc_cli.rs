@@ -11,8 +11,8 @@ use pqcrypto_traits::kem::{
     SharedSecret as KemSharedSecret,
 };
 
-use synergy_testbeta::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey};
-use synergy_testbeta::transaction::Transaction;
+use synergy_testnet::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey};
+use synergy_testnet::transaction::Transaction;
 
 fn usage() {
     eprintln!(

@@ -2810,7 +2810,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "synergy-testbeta"
+name = "synergy-testnet"
 version = "1.2.0"
 dependencies = [
  "aegis-pqvm",

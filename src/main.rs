@@ -1,3 +1,3 @@
 fn main() {
-    synergy_testbeta::role_runtime::run("synergy-testbeta", None);
+    synergy_testnet::role_runtime::run("synergy-testnet", None);
 }

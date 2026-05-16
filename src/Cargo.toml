@@ -1,5 +1,5 @@
 [package]
-name = "synergy-testbeta"
+name = "synergy-testnet"
 version = "1.2.0"
 edition = "2021"
 
@@ -48,11 +48,11 @@ wasmtime = { workspace = true }
 ctrlc = "3.4"
 
 [lib]
-name = "synergy_testbeta"
+name = "synergy_testnet"
 path = "lib.rs"
 
 [[bin]]
-name = "synergy-testbeta"
+name = "synergy-testnet"
 path = "main.rs"
 
 [[bin]]

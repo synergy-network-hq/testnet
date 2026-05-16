@@ -180,7 +180,7 @@ fn try_finalize_event(
                     .find_map(|relayer| event_state.supports.get(relayer).cloned())
             })
         })
-        .unwrap_or_else(|| "sxcp-testbeta-aggregate-signature".to_string());
+        .unwrap_or_else(|| "sxcp-testnet-aggregate-signature".to_string());
 
     let submitted_by = submitted_by_hint
         .map(|s| s.to_string())
@@ -307,7 +307,7 @@ pub fn register_relayer(address: &str, public_key: &str) -> serde_json::Value {
             registered_at: ts,
         });
 
-    // Update key if re-registering (testnet-beta convenience).
+    // Update key if re-registering (testnet convenience).
     entry.public_key = public_key.to_string();
     entry.active = true;
     entry.slashed = false;

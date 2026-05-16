@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Start Synergy Testnet-Beta Node with SynQ and PQC Support
+# Start Synergy Testnet Node with SynQ and PQC Support
 
-echo "🚀 Starting Synergy Network Testnet Beta with SynQ and PQC..."
+echo "🚀 Starting Synergy Network Testnet with SynQ and PQC..."
 echo "======================================================="
 
 # Set script path to root of the project
@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 mkdir -p data/logs
 
 # Kill any existing node processes
-pkill -f synergy-testbeta || true
+pkill -f synergy-testnet || true
 sleep 1
 
 # Build the main project
@@ -82,9 +82,9 @@ echo ""
 echo "Press Ctrl+C to stop the node"
 
 # Start node in background
-nohup ./target/release/synergy-testbeta start \
-  > data/logs/testbeta.out 2>&1 &
+nohup ./target/release/synergy-testnet start \
+  > data/logs/testnet.out 2>&1 &
 
 NODE_PID=$!
-echo "✅ Synergy testbeta started with PID $NODE_PID"
-echo $NODE_PID > data/synergy-testbeta.pid
+echo "✅ Synergy testnet started with PID $NODE_PID"
+echo $NODE_PID > data/synergy-testnet.pid

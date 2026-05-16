@@ -1,7 +1,7 @@
 //! Synergy Network Consensus Module
 //!
 //! This module handles initialization and coordination of the
-//! consensus mechanism used to secure the Synergy Testnet-Beta blockchain.
+//! consensus mechanism used to secure the Synergy Testnet blockchain.
 
 pub mod cartel_detection;
 pub mod consensus_algorithm;

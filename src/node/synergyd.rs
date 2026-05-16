@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
-use synergy_testbeta::{block::Block, consensus, p2p, rpc};
-use synergy_testbeta::config::load_node_config;
+use synergy_testnet::{block::Block, consensus, p2p, rpc};
+use synergy_testnet::config::load_node_config;
 
 /// Entry point for running a Synergy Network node.
 fn main() {
