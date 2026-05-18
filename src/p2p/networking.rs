@@ -17,7 +17,8 @@ use crate::sync::SyncState;
 use crate::synergy_types::{AegisPqKeyId, AegisPqKeyRole, Epoch};
 use crate::transaction::Transaction;
 use crate::validator::{
-    apply_validator_activation_transaction, is_validator_activation_transaction, VALIDATOR_MANAGER,
+    apply_validator_activation_transaction, is_validator_activation_transaction,
+    ValidatorRegistration, VALIDATOR_MANAGER,
 };
 use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
@@ -4633,6 +4634,8 @@ fn verify_network_commit_certificate(
     block: &Block,
     qc: Option<&QuorumCertificate>,
 ) -> Result<QuorumCertificate, String> {
+    ensure_commit_verifier_validator_registry_loaded();
+
     if let Err(error) = verify_network_block(block) {
         return Err(format!("invalid Aegis PQC proposer signature: {error}"));
     }
@@ -4661,6 +4664,43 @@ fn verify_network_commit_certificate(
         &VALIDATOR_MANAGER,
     )?;
     Ok(qc)
+}
+
+fn ensure_commit_verifier_validator_registry_loaded() {
+    if !VALIDATOR_MANAGER.get_active_validators().is_empty() {
+        return;
+    }
+
+    if VALIDATOR_MANAGER
+        .load_registry("data/validator_registry.json")
+        .is_ok()
+        && !VALIDATOR_MANAGER.get_active_validators().is_empty()
+    {
+        return;
+    }
+
+    let Ok(genesis) = canonical_genesis() else {
+        return;
+    };
+
+    for validator in genesis.validators() {
+        let address = validator.operator_address.as_str();
+        if VALIDATOR_MANAGER.get_validator(address).is_none() {
+            let _ = VALIDATOR_MANAGER.register_validator(ValidatorRegistration {
+                address: validator.operator_address.clone(),
+                public_key: validator.consensus_public_key.clone(),
+                name: validator.moniker.clone(),
+                stake_amount: validator.stake_nwei,
+                submitted_at: genesis.timestamp(),
+                registration_tx_hash: "genesis".to_string(),
+            });
+        }
+        let _ = VALIDATOR_MANAGER.approve_validator(address);
+        VALIDATOR_MANAGER.update_validator_stake(address, validator.stake_nwei);
+        VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+    }
+
+    let _ = VALIDATOR_MANAGER.save_registry("data/validator_registry.json");
 }
 
 fn apply_block_if_new(
