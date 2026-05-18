@@ -105,7 +105,7 @@ rate_limit_per_minute = 1000
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `id` | integer | 1262 | Network identifier |
+| `id` | integer | 1264 | Network identifier |
 | `name` | string | "Synergy Testnet" | Human-readable network name |
 | `p2p_port` | integer | 30303 | P2P communication port |
 | `rpc_port` | integer | 8545 | RPC API port |
@@ -306,7 +306,7 @@ The genesis file defines the initial state of the blockchain:
     "dateGenerated": "2024-01-01T00:00:00Z"
   },
   "config": {
-    "chainId": 1262,
+    "chainId": 1264,
     "synergyConsensus": {
       "algorithm": "Proof of Synergy",
       "parameters": {

@@ -1,6 +1,6 @@
 # Synergy Testnet
 
-This repository contains the Synergy public testnet implementation and canonical chain `1262` genesis artifacts. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
+This repository contains the Synergy public testnet implementation and canonical chain `1264` genesis artifacts. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
 
 ## 🚀 Overview
 
@@ -196,8 +196,8 @@ We welcome contributions from the community! Here's how to get involved:
 ## 📊 Network Statistics
 
 ### Current Metrics
-- **Network ID**: 1262
-- **Chain ID**: 1262
+- **Network ID**: 1264
+- **Chain ID**: 1264
 - **Block Time**: 5 seconds
 - **Consensus**: Proof of Synergy
 - **Native Token**: SNRG (9 decimals)

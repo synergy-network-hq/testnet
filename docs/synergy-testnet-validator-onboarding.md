@@ -1,15 +1,15 @@
 # Synergy Testnet Validator Onboarding
 
-This guide covers Synergy Testnet chain `1262`. Genesis is immutable after public launch. New validators must join by finalized admission and staking state, not by editing `genesis.testnet.json`.
+This guide covers Synergy Testnet chain `1264`. Genesis is immutable after public launch. New validators must join by finalized admission and staking state, not by editing `genesis.testnet.json`.
 
 ## Canonical Network Identity
 
 | Field | Value |
 | --- | --- |
-| Chain ID | `1262` |
-| Network ID | `1262` |
+| Chain ID | `1264` |
+| Network ID | `1264` |
 | Native CAIP-2 | `synergy:testnet` |
-| Reserved EIP-155 | `eip155:1262` reserved and inactive |
+| Reserved EIP-155 | `eip155:1264` reserved and inactive |
 | Token | Synergy Testnet Token |
 | Symbol | `SNRG` |
 | Decimals | `9` |
@@ -52,8 +52,8 @@ Run these from the Synergy Testnet repository root:
 
 The node must refuse to start or peer if:
 
-- `network.chain_id` is not `1262`.
-- `network.network_id` is not `1262`.
+- `network.chain_id` is not `1264`.
+- `network.network_id` is not `1264`.
 - The local `genesis_hash` differs from `network-identifiers.testnet.json`.
 - `network_magic_bytes` differs from the published value.
 - A peer advertises the same chain ID with a different genesis hash.

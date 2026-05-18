@@ -2,7 +2,7 @@
 
 ## 🚀 Overview
 
-The **Synergy Network Testnet** is a chain `1262` blockchain implementation featuring the **Proof of Synergy (PoSy)** consensus mechanism. The public testnet serves as a proving ground for interoperability, validator behavior, wallet generation, and comprehensive testing before mainnet launch.
+The **Synergy Network Testnet** is a chain `1264` blockchain implementation featuring the **Proof of Synergy (PoSy)** consensus mechanism. The public testnet serves as a proving ground for interoperability, validator behavior, wallet generation, and comprehensive testing before mainnet launch.
 
 **Proof of Synergy** introduces a paradigm shift in consensus mechanisms by focusing on collaborative validation, community participation, and sustainable network growth rather than pure computational power.
 
@@ -163,7 +163,7 @@ synergy-testnet/
 │   ├── README.md      # This file
 │   ├── setup-guide.md # Detailed setup instructions
 │   ├── validator-guide.md # Validator setup guide
-│   ├── synergy-testnet-validator-onboarding.md # Chain 1262 genesis verification and admission guide
+│   ├── synergy-testnet-validator-onboarding.md # Chain 1264 genesis verification and admission guide
 │   ├── how-to-set-up-indexer-explorer-node.md # Step-by-step Atlas indexer/explorer node setup
 │   ├── testnet-dns-records-to-create.md # DNS records still needed for the normalized testnet hostnames
 │   ├── testnet-dns-final.csv # Final desired Testnet DNS state across NameSilo and Cloudflare
@@ -185,8 +185,8 @@ synergy-testnet/
 
 ## 🌐 Network Information
 
-- **Network ID**: 1262
-- **Chain ID**: 1262
+- **Network ID**: 1264
+- **Chain ID**: 1264
 - **Genesis Hash**: Available in `config/genesis.json`
 - **Block Time**: 5 seconds
 - **Consensus**: Proof of Synergy (PoSy)

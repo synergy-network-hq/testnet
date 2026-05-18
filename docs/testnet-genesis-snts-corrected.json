@@ -19,8 +19,8 @@
     }
   },
   "network": {
-    "chain_id": 1262,
-    "network_id": 1262,
+    "chain_id": 1264,
+    "network_id": 1264,
     "protocol_name": "Synergy Network",
     "network_type": "testnet",
     "genesis_schema_version": "v1",

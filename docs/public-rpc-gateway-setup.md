@@ -256,7 +256,7 @@ curl -s https://testnet-core-rpc.synergy-network.io/healthz
 curl -s -X POST https://testnet-core-rpc.synergy-network.io \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"net_version","params":[],"id":1}'
-# Expected: {"jsonrpc":"2.0","id":1,"result":"1262"}
+# Expected: {"jsonrpc":"2.0","id":1,"result":"1264"}
 
 # Check node logs for peer connections
 tail -f /opt/synergy/rpc-gateway/logs/node.log
