@@ -8,6 +8,7 @@ pub mod cartel_detection;
 pub mod consensus_algorithm;
 pub mod dao_governance;
 pub mod dual_quorum;
+pub mod legacy_canonical_lock;
 pub mod posy;
 pub mod synergy_score;
 #[cfg(test)]

@@ -3,6 +3,7 @@ use super::dao_governance::{DAOGovernance, GovernanceProposal, ProposalStatus};
 use super::dual_quorum::{
     DualQuorumConsensus, EntropyBeacon, QuorumCertificate, ValidatorRotation, Vote,
 };
+use super::legacy_canonical_lock::{verify_legacy_canonical_lock, write_legacy_canonical_lock};
 use super::synergy_score::SynergyScoreCalculator;
 use super::validator_keys::{consensus_algorithm_label, load_local_validator_keypair};
 use super::vrf::{VRFConsensus, VRFSeed};
@@ -28,6 +29,7 @@ use sha3::{Digest, Sha3_512};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
+use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -935,6 +937,16 @@ impl ProofOfSynergy {
                                     );
                                     continue;
                                 }
+                                if let Err(error) = verify_legacy_canonical_lock(&new_block) {
+                                    warn!(
+                                        "consensus",
+                                        "Rejecting committed block because it conflicts with canonical lock",
+                                        "height" => new_block.block_index,
+                                        "hash" => new_block.hash.clone(),
+                                        "error" => error
+                                    );
+                                    continue;
+                                }
 
                                 // Block committed - update chain.
                                 // Reset view-change state: the chain has advanced, so the next
@@ -946,6 +958,18 @@ impl ProofOfSynergy {
                                     let mut chain_guard = chain.lock().unwrap();
                                     match chain_guard.add_block_extending_tip(new_block.clone()) {
                                         Ok(true) => {
+                                            if let Err(error) =
+                                                write_legacy_canonical_lock(&new_block, &qc)
+                                            {
+                                                warn!(
+                                                    "consensus",
+                                                    "Canonical lock write failed after local commit",
+                                                    "height" => new_block.block_index,
+                                                    "hash" => new_block.hash.clone(),
+                                                    "error" => error
+                                                );
+                                                process::exit(1);
+                                            }
                                             block_appended_to_local_tip = true;
                                         }
                                         Ok(false) => {

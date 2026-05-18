@@ -1,6 +1,9 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
+use crate::consensus::legacy_canonical_lock::{
+    verify_legacy_canonical_lock, write_legacy_canonical_lock,
+};
 use crate::crypto::aegis_pqvm::{
     AegisPqvmKeyRegistry, AegisPqvmSigner, AegisPqvmVerifier, SYNERGY_P2P_HANDSHAKE_V1,
 };
@@ -4615,6 +4618,16 @@ fn apply_block_if_new(
         }
     };
     if block.block_index > 0 {
+        if let Err(error) = verify_legacy_canonical_lock(&block) {
+            warn!(
+                "p2p",
+                "Rejecting block that conflicts with canonical block lock",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => error
+            );
+            return false;
+        }
         DualQuorumConsensus::record_committed_qc(qc.clone());
     }
 
@@ -4653,6 +4666,19 @@ fn apply_block_if_new(
 
             if next_block.previous_hash != tip.hash {
                 break;
+            }
+
+            if next_block.block_index > 0 {
+                if let Err(error) = write_legacy_canonical_lock(&next_block, &next_qc) {
+                    warn!(
+                        "p2p",
+                        "Rejecting block because canonical lock could not be written",
+                        "height" => next_block.block_index,
+                        "hash" => next_block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
             }
 
             confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
@@ -4769,6 +4795,18 @@ fn apply_block_batch(
             );
             return 0;
         }
+        if block.block_index > 0 {
+            if let Err(error) = verify_legacy_canonical_lock(block) {
+                warn!(
+                    "p2p",
+                    "Rejecting block batch that conflicts with canonical block lock",
+                    "height" => block.block_index,
+                    "hash" => block.hash.clone(),
+                    "error" => error
+                );
+                return 0;
+            }
+        }
     }
 
     let mut confirmed_hashes = HashSet::new();
@@ -4828,6 +4866,21 @@ fn apply_block_batch(
 
             if block.block_index != tip.block_index + 1 || block.previous_hash != tip.hash {
                 break;
+            }
+
+            if block.block_index > 0 {
+                if let Some(qc) = qc_by_hash.get(&block.hash) {
+                    if let Err(error) = write_legacy_canonical_lock(&block, qc) {
+                        warn!(
+                            "p2p",
+                            "Rejecting block batch because canonical lock could not be written",
+                            "height" => block.block_index,
+                            "hash" => block.hash.clone(),
+                            "error" => error
+                        );
+                        break;
+                    }
+                }
             }
 
             applied_blocks.push(block.clone());
