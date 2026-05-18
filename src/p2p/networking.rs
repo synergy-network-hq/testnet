@@ -4477,7 +4477,25 @@ fn is_assigned_synergy_dial_address(value: &str) -> bool {
     !host.is_empty() && host.ends_with(".synergynode.xyz")
 }
 
+fn verify_network_block(block: &Block) -> Result<(), String> {
+    if block.block_index == 0 {
+        return Ok(());
+    }
+    block.verify_proposer_signature()
+}
+
 fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
+    if let Err(error) = verify_network_block(&block) {
+        warn!(
+            "p2p",
+            "Rejecting block with invalid Aegis PQC proposer signature",
+            "height" => block.block_index,
+            "hash" => block.hash.clone(),
+            "error" => error
+        );
+        return false;
+    }
+
     let mut applied_blocks = Vec::new();
     let mut confirmed_hashes = HashSet::new();
     let (tip_height, snapshot) = {
@@ -4541,6 +4559,17 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
 }
 
 fn cache_pending_block(block: Block) {
+    if let Err(error) = verify_network_block(&block) {
+        warn!(
+            "p2p",
+            "Rejecting pending block with invalid Aegis PQC proposer signature",
+            "height" => block.block_index,
+            "hash" => block.hash.clone(),
+            "error" => error
+        );
+        return;
+    }
+
     let Ok(mut pending) = PENDING_BLOCKS.lock() else {
         return;
     };
@@ -4580,6 +4609,19 @@ fn take_pending_block_extending_tip(tip: &Block) -> Option<Block> {
 fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 {
     if blocks.is_empty() {
         return 0;
+    }
+
+    for block in &blocks {
+        if let Err(error) = verify_network_block(block) {
+            warn!(
+                "p2p",
+                "Rejecting block batch with invalid Aegis PQC proposer signature",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => error
+            );
+            return 0;
+        }
     }
 
     let mut confirmed_hashes = HashSet::new();
@@ -4900,7 +4942,7 @@ mod tests {
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
     use crate::consensus::dual_quorum::Vote;
-    use crate::crypto::pqc::{PQCAlgorithm, PQCSignature};
+    use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
     use std::collections::HashMap;
     use std::fs;
@@ -4914,6 +4956,39 @@ mod tests {
             "SYNERGY_GENESIS_FILE",
             concat!(env!("CARGO_MANIFEST_DIR"), "/../config/genesis.json"),
         );
+    }
+
+    fn sign_test_block(block: &mut Block) {
+        let mut manager = PQCManager::new();
+        let (public_key, private_key) = manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test Aegis PQC block key should generate");
+        let signature = manager
+            .sign(&private_key, block.hash.as_bytes())
+            .expect("test Aegis PQC block signature should sign");
+        block.proposer_public_key = public_key.key_data;
+        block.block_signature = signature.signature_data;
+        block.block_signature_algorithm = "fndsa".to_string();
+    }
+
+    fn signed_block(
+        height: u64,
+        transactions: Vec<crate::transaction::Transaction>,
+        previous_hash: String,
+        validator: String,
+        nonce: u64,
+        timestamp: u64,
+    ) -> Block {
+        let mut block = Block::new_with_timestamp(
+            height,
+            transactions,
+            previous_hash,
+            validator,
+            nonce,
+            timestamp,
+        );
+        sign_test_block(&mut block);
+        block
     }
 
     #[test]
@@ -5834,7 +5909,7 @@ mod tests {
             0,
             100,
         );
-        let block_one = Block::new_with_timestamp(
+        let block_one = signed_block(
             1,
             Vec::new(),
             genesis.hash.clone(),
@@ -5842,7 +5917,7 @@ mod tests {
             1,
             102,
         );
-        let block_two = Block::new_with_timestamp(
+        let block_two = signed_block(
             2,
             Vec::new(),
             block_one.hash.clone(),
@@ -5863,6 +5938,32 @@ mod tests {
         assert_eq!(chain.last().unwrap().hash, block_two.hash);
 
         PENDING_BLOCKS.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn unsigned_network_block_is_rejected() {
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let unsigned_block = Block::new_with_timestamp(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        assert!(!apply_block_if_new(&blockchain, unsigned_block));
+        assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
     }
 
     #[test]
@@ -6324,7 +6425,7 @@ mod tests {
     }
 
     fn test_block(previous: &Block, height: u64, validator: &str, nonce: u64) -> Block {
-        Block::new_with_timestamp(
+        signed_block(
             height,
             Vec::new(),
             previous.hash.clone(),
@@ -6355,7 +6456,7 @@ mod tests {
 
         let blockchain = Arc::new(Mutex::new(chain));
 
-        let remote_block3 = Block::new_with_timestamp(
+        let remote_block3 = signed_block(
             3,
             Vec::new(),
             block2.hash.clone(),

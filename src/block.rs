@@ -5,6 +5,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPublicKey, PQCSignature};
 use crate::genesis::canonical_genesis;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +108,61 @@ impl Block {
 
         self.transactions_root == compute_merkle_root(&self.transactions)
             && self.hash == self.recompute_hash()
+    }
+
+    pub fn verify_proposer_signature(&self) -> Result<(), String> {
+        if self.block_index == 0 {
+            return if self.validate() {
+                Ok(())
+            } else {
+                Err("genesis block does not match canonical genesis".to_string())
+            };
+        }
+
+        if !self.validate() {
+            return Err(
+                "block header, transaction root, or signature metadata is invalid".to_string(),
+            );
+        }
+
+        let algorithm = match self
+            .block_signature_algorithm
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "fndsa" | "fn-dsa" | "fn-dsa-1024" => PQCAlgorithm::FNDSA,
+            "mldsa" | "ml-dsa" | "ml-dsa-65" | "ml-dsa-87" => PQCAlgorithm::MLDSA,
+            "slhdsa" | "slh-dsa" => PQCAlgorithm::SLHDSA,
+            other => {
+                return Err(format!(
+                    "unsupported Aegis PQC block signature algorithm: {other}"
+                ))
+            }
+        };
+
+        let public_key = PQCPublicKey {
+            algorithm: algorithm.clone(),
+            key_data: self.proposer_public_key.clone(),
+            key_id: format!("block-proposer:{}", self.validator_id),
+            created_at: self.timestamp,
+        };
+        let signature = PQCSignature {
+            algorithm,
+            signature_data: self.block_signature.clone(),
+            message_hash: self.hash.as_bytes().to_vec(),
+            public_key_id: public_key.key_id.clone(),
+            created_at: self.timestamp,
+        };
+
+        let manager = PQCManager::new();
+        match manager.verify(&public_key, &signature, self.hash.as_bytes()) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("Aegis PQC block signature verification failed".to_string()),
+            Err(error) => Err(format!(
+                "Aegis PQC block signature verification failed: {error}"
+            )),
+        }
     }
 
     pub fn recompute_hash(&self) -> String {

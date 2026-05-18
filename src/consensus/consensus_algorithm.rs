@@ -924,6 +924,19 @@ impl ProofOfSynergy {
 
                         match quorum_certificate {
                             Ok(qc) => {
+                                if let Err(error) =
+                                    Self::verify_legacy_precommit(&new_block, &qc, current_epoch)
+                                {
+                                    warn!(
+                                        "consensus",
+                                        "Rejecting committed block before local finalization",
+                                        "height" => new_block.block_index,
+                                        "hash" => new_block.hash.clone(),
+                                        "error" => error
+                                    );
+                                    continue;
+                                }
+
                                 // Block committed - update chain.
                                 // Reset view-change state: the chain has advanced, so the next
                                 // block starts with the primary scheduled leader again.
@@ -1794,11 +1807,12 @@ impl ProofOfSynergy {
                 panic!("Aegis PQC leader signing key unavailable: {error}")
             });
 
-        if let Ok(signature) = pqc.sign(&leader_private_key, block.hash.as_bytes()) {
-            block.proposer_public_key = leader_public_key.key_data;
-            block.block_signature = signature.signature_data;
-            block.block_signature_algorithm = "fndsa".to_string();
-        }
+        let signature = pqc
+            .sign(&leader_private_key, block.hash.as_bytes())
+            .unwrap_or_else(|error| panic!("Aegis PQC block signing failed: {error}"));
+        block.proposer_public_key = leader_public_key.key_data;
+        block.block_signature = signature.signature_data;
+        block.block_signature_algorithm = "fndsa".to_string();
 
         if let Err(error) = Self::persist_cached_block_proposal(&block) {
             warn!(
@@ -1811,6 +1825,33 @@ impl ProofOfSynergy {
         }
 
         block
+    }
+
+    fn verify_legacy_precommit(
+        block: &Block,
+        qc: &QuorumCertificate,
+        expected_epoch: u64,
+    ) -> Result<(), String> {
+        block.verify_proposer_signature()?;
+        if qc.block_hash != block.hash {
+            return Err("QC block hash does not match exact block".to_string());
+        }
+        if qc.epoch_number != expected_epoch {
+            return Err("QC epoch does not match block epoch".to_string());
+        }
+        if !qc.validation_quorum_met || !qc.cooperation_quorum_met {
+            return Err("QC does not prove both validation and cooperation quorum".to_string());
+        }
+        if qc.aggregate_signature.is_empty() {
+            return Err("QC aggregate signature is missing".to_string());
+        }
+        if qc.participant_bitmap.is_empty() {
+            return Err("QC signer bitmap is missing".to_string());
+        }
+        if qc.cumulative_weight <= 0.0 {
+            return Err("QC signed weight is zero".to_string());
+        }
+        Ok(())
     }
 
     fn proposal_cache_dir() -> PathBuf {
@@ -1849,7 +1890,20 @@ impl ProofOfSynergy {
         );
         let contents = fs::read_to_string(path).ok()?;
         let block = serde_json::from_str::<Block>(&contents).ok()?;
-        Self::block_matches_proposal_context(&block, previous_block, leader).then_some(block)
+        if !Self::block_matches_proposal_context(&block, previous_block, leader) {
+            return None;
+        }
+        if let Err(error) = block.verify_proposer_signature() {
+            warn!(
+                "consensus",
+                "Discarding cached block proposal with invalid Aegis PQC signature",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => error
+            );
+            return None;
+        }
+        Some(block)
     }
 
     fn persist_cached_block_proposal(block: &Block) -> Result<(), std::io::Error> {
