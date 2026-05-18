@@ -26,7 +26,7 @@ from pathlib import Path
 
 root_dir, inventory_file, addresses_file, output_file = sys.argv[1:5]
 
-chain_id = int(os.environ.get("TESTNET_CHAIN_ID", "1263"))
+chain_id = int(os.environ.get("TESTNET_CHAIN_ID", "1264"))
 genesis_time = os.environ.get("TESTNET_GENESIS_TIME", "2026-01-01T00:00:00Z")
 validator_stake = int(os.environ.get("TESTNET_VALIDATOR_STAKE", "50000000000000"))
 validator_limit = int(os.environ.get("TESTNET_GENESIS_VALIDATOR_LIMIT", "4"))

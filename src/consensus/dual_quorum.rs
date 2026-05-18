@@ -4,7 +4,7 @@ use crate::crypto::pqc::{
 };
 use crate::validator::{
     consensus_membership_validators, Validator, ValidatorManager, ValidatorPerformanceUpdate,
-    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+    TESTNET_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::{debug, warn};
 use serde::{Deserialize, Serialize};
@@ -2133,7 +2133,7 @@ impl ValidatorRotation {
         ValidatorRotation {
             validator_manager,
             entropy_beacon,
-            target_cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
+            target_cluster_size: TESTNET_VALIDATOR_CLUSTER_SIZE,
         }
     }
 

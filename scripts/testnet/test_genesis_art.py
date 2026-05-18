@@ -16,8 +16,8 @@ ROOT = Path(__file__).resolve().parents[2]
 GENERATOR = ROOT / "scripts" / "testnet" / "genesis_art.py"
 GENESIS = ROOT / "genesis.testnet.json"
 NETWORK_IDENTIFIERS = ROOT / "network-identifiers.testnet.json"
-EXPECTED_GENESIS_HASH = "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8"
-EXPECTED_NETWORK_MAGIC = "d5d5bb99"
+EXPECTED_GENESIS_HASH = "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75"
+EXPECTED_NETWORK_MAGIC = "e312fa40"
 
 REQUIRED_FILES = [
     "synergy-art-styleguide.json",
@@ -142,9 +142,9 @@ class GenesisArtworkTests(unittest.TestCase):
 
     def test_visible_full_sigil_metadata_requirements(self) -> None:
         svg = (self.out_a / "synergy-testnet-genesis-sigil.svg").read_text(encoding="utf-8")
-        self.assertIn("CHAIN 1263", svg)
-        self.assertIn("MAGIC d5d5bb99", svg)
-        self.assertIn("GENESIS HASH dd9ad8cf...5e450b8", svg)
+        self.assertIn("CHAIN 1264", svg)
+        self.assertIn("MAGIC e312fa40", svg)
+        self.assertIn("GENESIS HASH 85b26d52...c4394c75", svg)
 
     def test_minimal_sigil_has_no_raw_genesis_dump(self) -> None:
         svg = (self.out_a / "synergy-testnet-genesis-sigil-minimal.svg").read_text(encoding="utf-8")
@@ -191,7 +191,7 @@ class GenesisArtworkTests(unittest.TestCase):
         manifest = self.read_manifest(self.out_a)
         self.assertEqual(manifest["genesis_hash"], EXPECTED_GENESIS_HASH)
         self.assertEqual(manifest["network_magic_bytes"], EXPECTED_NETWORK_MAGIC)
-        self.assertEqual(manifest["chain_id"], 1263)
+        self.assertEqual(manifest["chain_id"], 1264)
         self.assertEqual(manifest["creation_mode"], "deterministic")
         self.assertEqual(len(manifest["validators"]), 5)
         self.assertEqual(len({entry["validator_art_fingerprint"] for entry in manifest["validators"]}), 5)

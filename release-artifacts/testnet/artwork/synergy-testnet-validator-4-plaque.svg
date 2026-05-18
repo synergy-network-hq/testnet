@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="3600" height="2400" viewBox="0 0 3600 2400" role="img" aria-label="Synergy Testnet genesis validator plaque">
-<metadata>{&quot;art_seed&quot;:&quot;c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65&quot;,&quot;chain_id&quot;:1263,&quot;dag_topology_seed&quot;:&quot;6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8&quot;,&quot;kind&quot;:&quot;validator 4 plaque&quot;,&quot;network_magic_bytes&quot;:&quot;d5d5bb99&quot;,&quot;state_root&quot;:&quot;14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
+<metadata>{&quot;art_seed&quot;:&quot;e5b9fcdcfbaf9aaba759afee722b7bae9da187a61f7dcbb1ae122cccc0f2707c&quot;,&quot;chain_id&quot;:1264,&quot;dag_topology_seed&quot;:&quot;22a0e56bc1c8dbbea6de4c22a6837566e292100f1c7558f8ec743e12d0248f89&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75&quot;,&quot;kind&quot;:&quot;validator 4 plaque&quot;,&quot;network_magic_bytes&quot;:&quot;e312fa40&quot;,&quot;state_root&quot;:&quot;989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
 <defs>
 <style><![CDATA[text{font-family:Sora,Rajdhani,Segoe UI,Arial,sans-serif} .mono{font-family:SFMono-Regular,Consolas,Menlo,monospace}]]></style>
 <radialGradient id="bg-radial" cx="50%" cy="45%" r="72%"><stop offset="0%" stop-color="#111622"/><stop offset="50%" stop-color="#05070d"/><stop offset="100%" stop-color="#030206"/></radialGradient>
@@ -14,96 +14,94 @@
 <rect x="140" y="140" width="3320" height="2120" fill="none" stroke="#ffd700" stroke-width="2" opacity="0.56"/>
 <g id="synergy-genesis-motif">
 <g opacity="0.38" fill="none">
-<circle cx="920" cy="1120" r="178.6" stroke="#00ff66" stroke-width="2.66" stroke-dasharray="2 24" transform="rotate(250 920 1120)"/>
-<circle cx="920" cy="1120" r="288.8" stroke="#00ced1" stroke-width="2.66" stroke-dasharray="18 30" transform="rotate(267 920 1120)"/>
-<circle cx="920" cy="1120" r="395.2" stroke="#0060ff" stroke-width="2.66" stroke-dasharray="2 24" transform="rotate(284 920 1120)"/>
-<circle cx="920" cy="1120" r="501.6" stroke="#7d00ff" stroke-width="2.66" stroke-dasharray="18 30" transform="rotate(301 920 1120)"/>
+<circle cx="920" cy="1120" r="178.6" stroke="#00ff66" stroke-width="2.66" stroke-dasharray="2 24" transform="rotate(154 920 1120)"/>
+<circle cx="920" cy="1120" r="288.8" stroke="#00ced1" stroke-width="2.66" stroke-dasharray="18 30" transform="rotate(171 920 1120)"/>
+<circle cx="920" cy="1120" r="395.2" stroke="#0060ff" stroke-width="2.66" stroke-dasharray="2 24" transform="rotate(188 920 1120)"/>
+<circle cx="920" cy="1120" r="501.6" stroke="#7d00ff" stroke-width="2.66" stroke-dasharray="18 30" transform="rotate(205 920 1120)"/>
 </g>
 <g opacity="0.38" stroke="#ffd700" stroke-width="2" stroke-linecap="round">
-<line x1="725.049" y1="584.375" x2="714.651" y2="555.809"/>
-<line x1="1045.577" y1="564.005" x2="1048.089" y2="552.885"/>
-<line x1="1197.132" y1="621.906" x2="1202.675" y2="611.944"/>
-<line x1="1422.428" y1="850.805" x2="1449.225" y2="836.448"/>
-<line x1="1477.917" y1="1003.26" x2="1489.076" y2="1000.925"/>
-<line x1="1452.464" y1="1323.425" x2="1463.114" y2="1327.494"/>
-<line x1="1373.584" y1="1465.198" x2="1382.656" y2="1472.101"/>
-<line x1="1114.951" y1="1655.625" x2="1118.851" y2="1666.337"/>
-<line x1="956.152" y1="1688.852" x2="956.875" y2="1700.229"/>
-<line x1="642.868" y1="1618.094" x2="637.325" y2="1628.056"/>
-<line x1="513.764" y1="1519.841" x2="492.098" y2="1541.166"/>
-<line x1="362.083" y1="1236.74" x2="350.924" y2="1239.075"/>
-<line x1="351.793" y1="1074.828" x2="340.429" y2="1073.924"/>
-<line x1="466.416" y1="774.802" x2="442.225" y2="756.392"/>
-<line x1="582.042" y1="660.996" x2="575.283" y2="651.816"/>
+<line x1="407.687" y1="1369.872" x2="380.364" y2="1383.198"/>
+<line x1="358.66" y1="1021.021" x2="347.433" y2="1019.041"/>
+<line x1="416.72" y1="852.401" x2="406.654" y2="847.049"/>
+<line x1="670.128" y1="607.687" x2="656.802" y2="580.364"/>
+<line x1="840.671" y1="555.547" x2="839.085" y2="544.258"/>
+<line x1="1187.599" y1="616.72" x2="1192.951" y2="606.654"/>
+<line x1="1330.024" y1="724.045" x2="1338.224" y2="716.126"/>
+<line x1="1484.453" y1="1040.671" x2="1495.742" y2="1039.085"/>
+<line x1="1481.34" y1="1218.979" x2="1492.567" y2="1220.959"/>
+<line x1="1315.955" y1="1530.024" x2="1323.874" y2="1538.224"/>
+<line x1="1169.872" y1="1632.313" x2="1183.198" y2="1659.636"/>
+<line x1="821.021" y1="1681.34" x2="819.041" y2="1692.567"/>
+<line x1="652.401" y1="1623.28" x2="647.049" y2="1633.346"/>
 </g>
-<path d="M 660.758 1504.342 L 474.359 992.215 L 903.821 656.682 L 1355.641 961.439 L 1205.421 1485.322 Z" fill="#05070d" opacity="0.16" stroke="#00ced1" stroke-width="0.76"/>
+<path d="M 485.957 978.971 L 920 663.62 L 1354.043 978.971 L 1188.253 1489.219 L 651.747 1489.219 Z" fill="#05070d" opacity="0.16" stroke="#00ced1" stroke-width="0.76"/>
 <g stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="1">
-<path d="M 660.758 1504.342 L 474.359 992.215" stroke="#00ff66" stroke-width="20.52" fill="none"/>
-<path d="M 660.758 1504.342 L 474.359 992.215" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
-<path d="M 474.359 992.215 L 903.821 656.682" stroke="#00ced1" stroke-width="20.52" fill="none"/>
-<path d="M 474.359 992.215 L 903.821 656.682" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
-<path d="M 903.821 656.682 L 1355.641 961.439" stroke="#0060ff" stroke-width="20.52" fill="none"/>
-<path d="M 903.821 656.682 L 1355.641 961.439" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
-<path d="M 1355.641 961.439 L 1205.421 1485.322" stroke="#7d00ff" stroke-width="20.52" fill="none"/>
-<path d="M 1355.641 961.439 L 1205.421 1485.322" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
-<path d="M 1205.421 1485.322 L 660.758 1504.342" stroke="#00ff66" stroke-width="20.52" fill="none"/>
-<path d="M 1205.421 1485.322 L 660.758 1504.342" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
+<path d="M 485.957 978.971 L 920 663.62" stroke="#00ff66" stroke-width="20.52" fill="none"/>
+<path d="M 485.957 978.971 L 920 663.62" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
+<path d="M 920 663.62 L 1354.043 978.971" stroke="#00ced1" stroke-width="20.52" fill="none"/>
+<path d="M 920 663.62 L 1354.043 978.971" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
+<path d="M 1354.043 978.971 L 1188.253 1489.219" stroke="#0060ff" stroke-width="20.52" fill="none"/>
+<path d="M 1354.043 978.971 L 1188.253 1489.219" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
+<path d="M 1188.253 1489.219 L 651.747 1489.219" stroke="#7d00ff" stroke-width="20.52" fill="none"/>
+<path d="M 1188.253 1489.219 L 651.747 1489.219" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
+<path d="M 651.747 1489.219 L 485.957 978.971" stroke="#00ff66" stroke-width="20.52" fill="none"/>
+<path d="M 651.747 1489.219 L 485.957 978.971" stroke="#00ffd4" stroke-width="3.8" fill="none" opacity="0.5"/>
 </g>
 <g stroke-linecap="round" fill="none" opacity="0.24">
-<path d="M 660.758 1504.342 Q 834.619 1095.518 903.821 656.682" stroke="#00ced1" stroke-width="3.04"/>
-<path d="M 474.359 992.215 Q 916.9 1031.233 1355.641 961.439" stroke="#00ced1" stroke-width="3.04"/>
-<path d="M 660.758 1504.342 Q 974.684 1189.992 1355.641 961.439" stroke="#00ced1" stroke-width="3.04"/>
+<path d="M 485.957 978.971 Q 920 1032.562 1354.043 978.971" stroke="#00ced1" stroke-width="3.04"/>
+<path d="M 920 663.62 Q 836.841 1092.98 651.747 1489.219" stroke="#00ced1" stroke-width="3.04"/>
+<path d="M 485.957 978.971 Q 868.605 1190.739 1188.253 1489.219" stroke="#00ced1" stroke-width="3.04"/>
 </g>
 <g opacity="0.22" stroke="#7d00ff" stroke-width="1.14" fill="none">
-<line x1="994.23" y1="1182.286" x2="947.501" y2="1315.677"/>
-<line x1="917.584" y1="1216.87" x2="784.16" y2="1263.503"/>
-<line x1="842.758" y1="1178.509" x2="723.11" y2="1103.269"/>
-<line x1="826.096" y1="1096.089" x2="810.322" y2="955.633"/>
-<line x1="880.146" y1="1031.675" x2="980.124" y2="931.769"/>
-<line x1="964.207" y1="1033.771" x2="1104.651" y2="1049.647"/>
-<line x1="1014.979" y1="1100.8" x2="1090.133" y2="1220.502"/>
+<line x1="825.584" y1="1141.798" x2="747.175" y2="1024.202"/>
+<line x1="844.09" y1="1059.773" x2="887.144" y2="925.151"/>
+<line x1="919.758" y1="1023.1" x2="1051.854" y2="972.825"/>
+<line x1="995.609" y1="1059.395" x2="1117.275" y2="1131.325"/>
+<line x1="1014.524" y1="1141.327" x2="1034.144" y2="1281.297"/>
+<line x1="962.261" y1="1207.199" x2="865.061" y2="1309.809"/>
+<line x1="878.174" y1="1207.408" x2="737.347" y2="1195.391"/>
 </g>
 <g id="genesis-core" filter="url(#core-glow)">
-<polygon points="995.72,1029.76 1029.222,1164.129 911.783,1237.513 805.699,1148.498 857.576,1020.1" fill="#0a0e18" stroke="url(#energy-gradient)" stroke-width="4.94" opacity="0.94"/>
-<polygon points="948.853,1199.272 865.774,1184.624 836.922,1105.351 891.147,1040.728 974.226,1055.376 1003.078,1134.649" fill="none" stroke="#00ffd4" stroke-width="3.04" opacity="0.82"/>
-<polygon points="876.033,1172.397 896.606,1055.725 987.361,1131.878" fill="#00ffd4" opacity="0.18" stroke="#ffffff" stroke-width="1.14"/>
-<polygon points="963.967,1067.603 943.394,1184.275 852.639,1108.122" fill="#7d00ff" opacity="0.2" stroke="#00ced1" stroke-width="1.14"/>
-<polygon points="923.908,1164.669 875.331,1123.908 916.092,1075.331 964.669,1116.092" fill="url(#core-gradient)" stroke="#ffffff" stroke-width="1.52"/>
+<polygon points="946.499,1234.781 819.026,1180.671 831.095,1042.716 966.028,1011.565 1037.352,1130.267" fill="#0a0e18" stroke="url(#energy-gradient)" stroke-width="4.94" opacity="0.94"/>
+<polygon points="839.326,1095.336 901.023,1037.802 981.697,1062.467 1000.674,1144.664 938.977,1202.198 858.303,1177.533" fill="none" stroke="#00ffd4" stroke-width="3.04" opacity="0.82"/>
+<polygon points="904.613,1053.353 985.411,1139.998 869.975,1166.649" fill="#00ffd4" opacity="0.18" stroke="#ffffff" stroke-width="1.14"/>
+<polygon points="935.387,1186.647 854.589,1100.002 970.025,1073.351" fill="#7d00ff" opacity="0.2" stroke="#00ced1" stroke-width="1.14"/>
+<polygon points="881.974,1096.238 943.762,1081.974 958.026,1143.762 896.238,1158.026" fill="url(#core-gradient)" stroke="#ffffff" stroke-width="1.52"/>
 <circle cx="920" cy="1120" r="10.64" fill="#ffffff"/>
 </g>
 <g id="genesis-validators">
 <g id="validator-1-node">
-<circle cx="660.758" cy="1504.342" r="47.88" fill="#030206" stroke="#00ff66" stroke-width="3.04" opacity="0.98"/>
-<circle cx="660.758" cy="1504.342" r="38.76" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
-<polygon points="643.654,1517.705 642.763,1492.204 666.741,1483.477 682.451,1503.584 668.182,1524.738" fill="#00ff66" opacity="0.34"/>
-<circle cx="660.758" cy="1504.342" r="6.977" fill="#ffd700"/>
+<circle cx="485.957" cy="978.971" r="46.36" fill="#030206" stroke="#00ff66" stroke-width="3.04" opacity="0.98"/>
+<circle cx="485.957" cy="978.971" r="37.24" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
+<polygon points="469.085,966.713 492.401,959.137 506.811,978.971 492.401,998.805 469.085,991.229" fill="#00ff66" opacity="0.34"/>
+<circle cx="485.957" cy="978.971" r="6.703" fill="#ffd700"/>
 </g>
 <g id="validator-2-node">
-<circle cx="474.359" cy="992.215" r="47.88" fill="#030206" stroke="#00ced1" stroke-width="3.04" opacity="0.98"/>
-<circle cx="474.359" cy="992.215" r="38.76" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
-<polygon points="456.364,980.077 480.342,971.35 496.051,991.457 481.783,1012.611 457.255,1005.578" fill="#00ced1" opacity="0.34"/>
-<circle cx="474.359" cy="992.215" r="6.977" fill="#ffd700"/>
+<circle cx="920" cy="663.62" r="46.36" fill="#030206" stroke="#00ced1" stroke-width="3.04" opacity="0.98"/>
+<circle cx="920" cy="663.62" r="37.24" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
+<polygon points="926.444,643.786 940.854,663.62 926.444,683.454 903.128,675.878 903.128,651.362" fill="#00ced1" opacity="0.34"/>
+<circle cx="920" cy="663.62" r="6.703" fill="#ffd700"/>
 </g>
 <g id="validator-3-node">
-<circle cx="903.821" cy="656.682" r="47.88" fill="#030206" stroke="#0060ff" stroke-width="3.04" opacity="0.98"/>
-<circle cx="903.821" cy="656.682" r="38.76" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
-<polygon points="909.803,635.818 925.513,655.925 911.244,677.079 886.716,670.046 885.826,644.545" fill="#0060ff" opacity="0.34"/>
-<circle cx="903.821" cy="656.682" r="6.977" fill="#ffd700"/>
+<circle cx="1354.043" cy="978.971" r="46.36" fill="#030206" stroke="#0060ff" stroke-width="3.04" opacity="0.98"/>
+<circle cx="1354.043" cy="978.971" r="37.24" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
+<polygon points="1374.898,978.971 1360.488,998.805 1337.172,991.229 1337.172,966.713 1360.488,959.137" fill="#0060ff" opacity="0.34"/>
+<circle cx="1354.043" cy="978.971" r="6.703" fill="#ffd700"/>
 </g>
 <g id="validator-4-node">
-<circle cx="1355.641" cy="961.439" r="47.88" fill="#030206" stroke="#7d00ff" stroke-width="3.04" opacity="0.98"/>
-<circle cx="1355.641" cy="961.439" r="38.76" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
-<polygon points="1377.334,960.682 1363.065,981.836 1338.537,974.803 1337.647,949.302 1361.624,940.575" fill="#7d00ff" opacity="0.34"/>
-<circle cx="1355.641" cy="961.439" r="6.977" fill="#ffd700"/>
+<circle cx="1188.253" cy="1489.219" r="46.36" fill="#030206" stroke="#7d00ff" stroke-width="3.04" opacity="0.98"/>
+<circle cx="1188.253" cy="1489.219" r="37.24" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
+<polygon points="1194.698,1509.053 1171.382,1501.477 1171.382,1476.961 1194.698,1469.385 1209.108,1489.219" fill="#7d00ff" opacity="0.34"/>
+<circle cx="1188.253" cy="1489.219" r="6.703" fill="#ffd700"/>
 </g>
 <g id="validator-5-node">
-<circle cx="1205.421" cy="1485.322" r="47.88" fill="#030206" stroke="#00ffd4" stroke-width="3.04" opacity="0.98"/>
-<circle cx="1205.421" cy="1485.322" r="38.76" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
-<polygon points="1212.844,1505.718 1188.316,1498.685 1187.426,1473.184 1211.404,1464.457 1227.113,1484.564" fill="#00ffd4" opacity="0.34"/>
-<circle cx="1205.421" cy="1485.322" r="6.977" fill="#ffd700"/>
+<circle cx="651.747" cy="1489.219" r="46.36" fill="#030206" stroke="#00ffd4" stroke-width="3.04" opacity="0.98"/>
+<circle cx="651.747" cy="1489.219" r="37.24" fill="#111622" stroke="url(#energy-gradient)" stroke-width="1.9"/>
+<polygon points="634.875,1501.477 634.875,1476.961 658.191,1469.385 672.601,1489.219 658.191,1509.053" fill="#00ffd4" opacity="0.34"/>
+<circle cx="651.747" cy="1489.219" r="6.703" fill="#ffd700"/>
 </g>
 </g>
-<text x="920" y="1705.2" text-anchor="middle" font-size="50" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="0.72">1263</text>
+<text x="920" y="1705.2" text-anchor="middle" font-size="50" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="0.72">1264</text>
 </g>
 <text x="2180" y="470" text-anchor="start" font-size="84" font-weight="850" letter-spacing="0" fill="#ffffff" opacity="1">SYNERGY GENESIS VALIDATOR 4</text>
 <text x="2180" y="610" text-anchor="start" font-size="46" font-weight="700" letter-spacing="0" fill="#c5d9e8" opacity="1">GENESIS VALIDATOR PLAQUE</text>
@@ -114,10 +112,10 @@
 <text x="2180" y="1270" text-anchor="start" font-size="34" font-weight="750" letter-spacing="0" fill="#5e7280" opacity="1">CONSENSUS KEY</text>
 <text class="mono" x="2180" y="1340" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">f89e645d72</text>
 <text x="2180" y="1480" text-anchor="start" font-size="34" font-weight="750" letter-spacing="0" fill="#5e7280" opacity="1">CHAIN</text>
-<text class="mono" x="2180" y="1550" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">1263</text>
+<text class="mono" x="2180" y="1550" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">1264</text>
 <text x="2180" y="1690" text-anchor="start" font-size="34" font-weight="750" letter-spacing="0" fill="#5e7280" opacity="1">MAGIC</text>
-<text class="mono" x="2180" y="1760" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">d5d5bb99</text>
+<text class="mono" x="2180" y="1760" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">e312fa40</text>
 <text x="2180" y="1900" text-anchor="start" font-size="34" font-weight="750" letter-spacing="0" fill="#5e7280" opacity="1">GENESIS HASH</text>
-<text class="mono" x="2180" y="1970" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">dd9ad8cf...5e450b8</text>
+<text class="mono" x="2180" y="1970" text-anchor="start" font-size="46" font-weight="650" letter-spacing="0" fill="#f2f7ff" opacity="1">85b26d52...c4394c75</text>
 <text x="2180" y="2140" text-anchor="start" font-size="34" font-weight="700" letter-spacing="0" fill="#00ffd4" opacity="1">POST-QUANTUM DAG CONSENSUS / SYNERGY TESTNET</text>
 </svg>

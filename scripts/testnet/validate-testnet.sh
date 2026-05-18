@@ -79,10 +79,10 @@ if genesis.get("schema_version") != "v1":
     errors.append("genesis schema_version must be v1")
 if genesis.get("env") != "testnet":
     errors.append("genesis env must be testnet")
-if genesis.get("network", {}).get("chain_id") != 1263:
-    errors.append("genesis network.chain_id must be 1263")
-if genesis.get("network", {}).get("network_id") != 1263:
-    errors.append("genesis network.network_id must be 1263")
+if genesis.get("network", {}).get("chain_id") != 1264:
+    errors.append("genesis network.chain_id must be 1264")
+if genesis.get("network", {}).get("network_id") != 1264:
+    errors.append("genesis network.network_id must be 1264")
 if genesis.get("header", {}).get("block_height") != 0:
     errors.append("genesis header.block_height must be 0")
 if genesis.get("header", {}).get("parent_hash") != zero_hash:
@@ -140,12 +140,12 @@ for field in ("genesis_hash", "state_root", "allocation_hash", "validator_hash",
     if not is_hex_hash(integrity.get(field)):
         errors.append(f"genesis integrity.{field} must be a 64-character lowercase hex hash")
 
-if manifest.get("network_id") != 1263:
-    errors.append("operational manifest network_id must be 1263")
+if manifest.get("network_id") != 1264:
+    errors.append("operational manifest network_id must be 1264")
 if manifest.get("environment_id") != "testnet":
     errors.append("operational manifest environment_id must be testnet")
-if manifest.get("chain_id") != 1263:
-    errors.append("operational manifest chain_id must be 1263")
+if manifest.get("chain_id") != 1264:
+    errors.append("operational manifest chain_id must be 1264")
 if manifest.get("token", {}).get("symbol") != "SNRG":
     errors.append("operational manifest token.symbol must be SNRG")
 if len(manifest.get("bootstrap", {}).get("bootnodes", [])) != 3:

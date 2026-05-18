@@ -10,7 +10,7 @@ compiled_profile = "rpc_gateway_node"
 services = ["rpc-gateway"]
 
 [network]
-id = 1263
+id = 1264
 name = "synergy-testnet"
 p2p_port = 5623
 rpc_port = 5641
@@ -25,7 +25,7 @@ persistent_peers = []
 [blockchain]
 block_time = 2
 max_gas_limit = "0x2fefd8"
-chain_id = 1263
+chain_id = 1264
 
 [consensus]
 algorithm = "Proof of Synergy"

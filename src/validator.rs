@@ -11,8 +11,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERBOSE_VALIDATOR_LOGS: bool = false;
 pub const INITIAL_VALIDATOR_SYNERGY_SCORE: f64 = 100.0;
-pub const TESTNET_BETA_VALIDATOR_CLUSTER_SIZE: usize = 7;
-pub const TESTNET_BETA_FIRST_CLUSTER_SPLIT_THRESHOLD: usize = 6;
+pub const TESTNET_VALIDATOR_CLUSTER_SIZE: usize = 7;
+pub const TESTNET_FIRST_CLUSTER_SPLIT_THRESHOLD: usize = 6;
 pub const MISSED_VOTE_JAIL_THRESHOLD: u64 = 3;
 pub const MISSED_VOTE_SLASH_THRESHOLD: u64 = 6;
 const MISSED_VOTE_WINDOW_DECAY: u64 = 1;
@@ -21,7 +21,7 @@ const MISSED_VOTE_ACCURACY_PENALTY: f64 = 2.0;
 const MISSED_VOTE_REPUTATION_PENALTY: f64 = 4.0;
 const MISSED_VOTE_SLASHING_INCREMENT: f64 = 0.05;
 const VOTE_PARTICIPATION_RECOVERY: f64 = 0.5;
-pub const TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI: u64 = 50_000_000_000_000;
+pub const TESTNET_MIN_VALIDATOR_STAKE_NWEI: u64 = 50_000_000_000_000;
 
 macro_rules! validator_log {
     ($($arg:tt)*) => {
@@ -34,10 +34,10 @@ macro_rules! validator_log {
 pub fn target_validator_cluster_count(active_validator_count: usize) -> usize {
     if active_validator_count == 0 {
         0
-    } else if active_validator_count < TESTNET_BETA_FIRST_CLUSTER_SPLIT_THRESHOLD {
+    } else if active_validator_count < TESTNET_FIRST_CLUSTER_SPLIT_THRESHOLD {
         1
     } else {
-        2.max(active_validator_count.div_ceil(TESTNET_BETA_VALIDATOR_CLUSTER_SIZE))
+        2.max(active_validator_count.div_ceil(TESTNET_VALIDATOR_CLUSTER_SIZE))
     }
 }
 
@@ -307,7 +307,7 @@ impl ValidatorRegistry {
             jailed_validators: HashSet::new(),
             min_stake_amount: 0, // Lowered for testnet (production: 1000)
             max_validators: 100,
-            cluster_size: TESTNET_BETA_VALIDATOR_CLUSTER_SIZE,
+            cluster_size: TESTNET_VALIDATOR_CLUSTER_SIZE,
             epoch_length: 30000,
             current_epoch: 0,
         }
@@ -1111,7 +1111,7 @@ fn canonical_minimum_validator_stake_nwei() -> u64 {
                 .map(|validator| validator.stake_nwei)
                 .min()
         })
-        .unwrap_or(TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI)
+        .unwrap_or(TESTNET_MIN_VALIDATOR_STAKE_NWEI)
 }
 
 pub fn consensus_membership_validators(active_validators: Vec<Validator>) -> Vec<Validator> {
@@ -1259,7 +1259,7 @@ mod tests {
     fn chain_activation_registers_bonded_validator_with_activation_hash() {
         let public_key = "activation-public-key";
         let validator_address = crate::address::generate_validator_address(public_key, 1);
-        let bonded_stake = TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI;
+        let bonded_stake = TESTNET_MIN_VALIDATOR_STAKE_NWEI;
         let funding_source = funded_test_address(bonded_stake);
         let token_manager = crate::token::TokenManager::new();
         token_manager
@@ -1304,7 +1304,7 @@ mod tests {
     fn replay_validator_activations_restores_registry_from_chain() {
         let public_key = "replay-public-key";
         let validator_address = crate::address::generate_validator_address(public_key, 1);
-        let bonded_stake = TESTNET_BETA_MIN_VALIDATOR_STAKE_NWEI;
+        let bonded_stake = TESTNET_MIN_VALIDATOR_STAKE_NWEI;
         let funding_source = funded_test_address(bonded_stake);
         let token_manager = crate::token::TokenManager::new();
         token_manager

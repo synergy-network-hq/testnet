@@ -189,9 +189,9 @@
       "eip155": {
         "activation_condition": "Activate only when EVM/EIP-155 compatibility is implemented and publicly supported.",
         "namespace": "eip155",
-        "reference": "1263",
+        "reference": "1264",
         "status": "reserved_inactive",
-        "value": "eip155:1263"
+        "value": "eip155:1264"
       }
     },
     "reserved_range": {
@@ -201,16 +201,16 @@
     },
     "synergy_native": {
       "canonical_caip2": "synergy:testnet",
-      "decimal": 1263,
+      "decimal": 1264,
       "hex": "0x4ef",
       "status": "active",
       "type": "uint64"
     }
   },
   "cryptographic_identity": {
-    "genesis_artifact_sha256": "89250b9957cdc821004445bc9f6f87debd863536b490c1f25283eec2753302c1",
+    "genesis_artifact_sha256": "990f651c97311957953790cedfda6c05050c0505f2ab1f73143bc6fbd73de83d",
     "genesis_file": "genesis.testnet.json",
-    "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
+    "genesis_hash": "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75",
     "genesis_hash_algorithm": "blake3-256",
     "genesis_hash_format": "lowercase_hex_without_0x",
     "genesis_hash_status": "final",
@@ -219,7 +219,7 @@
       "format": "lowercase_hex_without_0x",
       "length_bytes": 4,
       "status": "final",
-      "value": "d5d5bb99"
+      "value": "e312fa40"
     }
   },
   "endpoints": {
@@ -266,7 +266,7 @@
         "status": "reserved"
       },
       "hyperlane": {
-        "domain_id": 1263,
+        "domain_id": 1264,
         "status": "reserved"
       },
       "ibc": {
@@ -287,7 +287,7 @@
     },
     "sxcp": {
       "chain_reference": "synergy:testnet",
-      "domain_id": 1263,
+      "domain_id": 1264,
       "status": "planned_or_active_depending_on_module_activation",
       "transaction_prefix": "synxxn"
     }

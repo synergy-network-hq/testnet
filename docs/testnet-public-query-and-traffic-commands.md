@@ -290,4 +290,4 @@ All commands in this guide use:
 https://testnet-core-rpc.synergy-network.io
 ```
 
-Do not use `testbeta` endpoints for this Testnet.
+Do not use `testnet` endpoints for this Testnet.

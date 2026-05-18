@@ -16,7 +16,7 @@ use crate::token::TOKEN_MANAGER;
 use crate::validator::{
     apply_validator_activation_transaction, consensus_membership_validators,
     is_validator_activation_transaction, replay_validator_activation_transactions, Validator,
-    ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+    ValidatorManager, TESTNET_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 use crate::{debug, info, warn};
@@ -350,7 +350,7 @@ impl ProofOfSynergy {
         let cluster_size = consensus_cfg
             .as_ref()
             .map(|c| c.validator_cluster_size)
-            .unwrap_or(TESTNET_BETA_VALIDATOR_CLUSTER_SIZE);
+            .unwrap_or(TESTNET_VALIDATOR_CLUSTER_SIZE);
         let vrf_enabled = consensus_cfg
             .as_ref()
             .map(|c| c.vrf_enabled)

@@ -60,7 +60,7 @@ const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 1
 const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
 const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
 const TESTNET_NATIVE_CAIP2: &str = "synergy:testnet";
-const TESTNET_RESERVED_EIP155: &str = "eip155:1263";
+const TESTNET_RESERVED_EIP155: &str = "eip155:1264";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {

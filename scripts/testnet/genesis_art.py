@@ -24,11 +24,11 @@ from blake3 import blake3
 
 
 GENERATOR_VERSION = "synergy-genesis-art-v2.0.0"
-EXPECTED_GENESIS_HASH = "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8"
-EXPECTED_NETWORK_MAGIC = "d5d5bb99"
-EXPECTED_CHAIN_ID = 1263
+EXPECTED_GENESIS_HASH = "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75"
+EXPECTED_NETWORK_MAGIC = "e312fa40"
+EXPECTED_CHAIN_ID = 1264
 
-GENESIS_SHORT = "dd9ad8cf...5e450b8"
+GENESIS_SHORT = "85b26d52...c4394c75"
 FONT_STACK = "Sora, Rajdhani, Segoe UI, Arial, sans-serif"
 
 BRAND = {
@@ -534,7 +534,7 @@ def draw_motif(
         out.append("</g>")
     out.append("</g>")
     if minimal:
-        out.append(text(cx, cy + tr(1540), "1263", int(132 * scale), BRAND["text_primary"], weight=800, opacity=0.72))
+        out.append(text(cx, cy + tr(1540), "1264", int(132 * scale), BRAND["text_primary"], weight=800, opacity=0.72))
     out.append("</g>")
     return out
 
@@ -551,7 +551,7 @@ def render_sigil(canonical: CanonicalInputs, validators: list[ValidatorArt], edg
     out += draw_grid(4096, 4096, 192)
     out += draw_motif(validators, edges, geometry, labels=False)
     out.append(text(2048, 440, "SYNERGY TESTNET", 132, BRAND["text_bright"], weight=800))
-    out.append(text(2048, 570, "CHAIN 1263   /   MAGIC d5d5bb99   /   POST-QUANTUM DAG CONSENSUS", 56, BRAND["text_secondary"], weight=650))
+    out.append(text(2048, 570, "CHAIN 1264   /   MAGIC e312fa40   /   POST-QUANTUM DAG CONSENSUS", 56, BRAND["text_secondary"], weight=650))
     out.append(text(2048, 3620, f"GENESIS HASH {GENESIS_SHORT}", 70, BRAND["text_primary"], weight=700, cls="mono"))
     out.append(text(2048, 3820, f"FULL GENESIS HASH {canonical.genesis_hash}", 34, BRAND["text_muted"], weight=400, cls="mono", opacity=0.7))
     out.append("</svg>")
@@ -591,7 +591,7 @@ def render_engraving(canonical: CanonicalInputs, validators: list[ValidatorArt],
         out.append(f'<circle cx="{fmt(validator.x)}" cy="{fmt(validator.y)}" r="112" stroke="{accent}" stroke-width="14"/>')
         out.append(f'<circle cx="{fmt(validator.x)}" cy="{fmt(validator.y)}" r="36" stroke="{ink}" stroke-width="10"/>')
     out.append("</g>")
-    out.append(text(2048, 3635, "SYNERGY TESTNET / CHAIN 1263", 72, ink, weight=800))
+    out.append(text(2048, 3635, "SYNERGY TESTNET / CHAIN 1264", 72, ink, weight=800))
     out.append("</svg>")
     return "\n".join(out) + "\n"
 
@@ -603,7 +603,7 @@ def render_poster(canonical: CanonicalInputs, validators: list[ValidatorArt], ed
     out.append(text(2700, 650, "SYNERGY TESTNET", 218, BRAND["text_bright"], weight=850))
     out.append(text(2700, 850, "DETERMINISTIC GENESIS ARTIFACT", 88, BRAND["text_secondary"], weight=700))
     out.append(text(2700, 5450, "POST-QUANTUM DAG CONSENSUS", 98, BRAND["electric_mint"], weight=800))
-    out.append(text(2700, 5625, "CHAIN 1263   /   MAGIC d5d5bb99   /   FIVE GENESIS VALIDATORS", 70, BRAND["text_primary"], weight=650))
+    out.append(text(2700, 5625, "CHAIN 1264   /   MAGIC e312fa40   /   FIVE GENESIS VALIDATORS", 70, BRAND["text_primary"], weight=650))
     out.append(text(2700, 5875, f"GENESIS HASH {GENESIS_SHORT}", 74, BRAND["text_secondary"], weight=700, cls="mono"))
     out.append(text(2700, 6800, f"FULL GENESIS HASH {canonical.genesis_hash}", 42, BRAND["text_muted"], weight=400, cls="mono", opacity=0.72))
     out.append(text(2700, 6905, f"ART SEED {art_seed}", 38, BRAND["text_muted"], weight=400, cls="mono", opacity=0.56))
@@ -618,7 +618,7 @@ def render_certificate(canonical: CanonicalInputs, validators: list[ValidatorArt
     out += draw_motif(validators, edges, geometry, cx=1650, cy=1040, scale=0.47, minimal=True)
     out.append(text(1650, 360, "SYNERGY TESTNET", 120, BRAND["text_bright"], weight=850))
     out.append(text(1650, 530, "GENESIS CERTIFICATE", 70, BRAND["text_secondary"], weight=700))
-    out.append(text(1650, 1765, "CHAIN 1263 / MAGIC d5d5bb99 / POST-QUANTUM DAG CONSENSUS", 46, BRAND["electric_mint"], weight=700))
+    out.append(text(1650, 1765, "CHAIN 1264 / MAGIC e312fa40 / POST-QUANTUM DAG CONSENSUS", 46, BRAND["electric_mint"], weight=700))
     out.append(text(1650, 1905, f"GENESIS HASH {GENESIS_SHORT}", 46, BRAND["text_primary"], weight=700, cls="mono"))
     out.append(text(1650, 2165, canonical.genesis_hash, 30, BRAND["text_muted"], weight=400, cls="mono", opacity=0.68))
     out.append("</svg>")
@@ -636,7 +636,7 @@ def render_plaque(canonical: CanonicalInputs, validator: ValidatorArt, validator
         ("VALIDATOR ADDRESS", validator.validator_address),
         ("VALIDATOR FINGERPRINT", validator.validator_art_fingerprint),
         ("CONSENSUS KEY", validator.consensus_key_fingerprint),
-        ("CHAIN", "1263"),
+        ("CHAIN", "1264"),
         ("MAGIC", canonical.network_magic_bytes),
         ("GENESIS HASH", GENESIS_SHORT),
     ]
@@ -718,7 +718,7 @@ def styleguide(canonical: CanonicalInputs, art_seed: str, dag_seed: str, validat
         "typography_assumptions": {
             "svg_font_family": FONT_STACK,
             "external_fonts_required": False,
-            "hierarchy": ["SYNERGY TESTNET", "CHAIN 1263 / MAGIC d5d5bb99", "GENESIS HASH fingerprint", "full provenance hash"],
+            "hierarchy": ["SYNERGY TESTNET", "CHAIN 1264 / MAGIC e312fa40", "GENESIS HASH fingerprint", "full provenance hash"],
         },
         "svg_dimensions": {
             "minimal_sigil": {"width": 2048, "height": 2048, "viewBox": "0 0 4096 4096"},

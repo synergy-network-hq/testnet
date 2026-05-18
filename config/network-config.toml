@@ -1,5 +1,5 @@
 [network]
-id = 1263
+id = 1264
 name = "synergy-testnet"
 p2p_port = 5622
 rpc_port = 5640
@@ -44,7 +44,7 @@ bootstrap_refresh_secs = 60
 [blockchain]
 block_time = 2
 max_gas_limit = "0x2fefd8"
-chain_id = 1263
+chain_id = 1264
 
 [consensus]
 algorithm = "Proof of Synergy"

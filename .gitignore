@@ -16,12 +16,12 @@ logs/
 config/**/*.key
 config/**/*.pem
 config/**/identity.json
-config/testbeta_wallets.json
-testbeta/runtime/keys/*
-!testbeta/runtime/keys/README.md
-testbeta/runtime/hosts.env
-testbeta/runtime/installers/
-testbeta/runtime/reports/
+config/testnet_wallets.json
+testnet/runtime/keys/*
+!testnet/runtime/keys/README.md
+testnet/runtime/hosts.env
+testnet/runtime/installers/
+testnet/runtime/reports/
 
 # Local workspace copies and nested app builds
 tools/control-panel-workspace-files-copies/

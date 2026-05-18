@@ -308,10 +308,10 @@ address = "${validator_address}"
 label = "Smoke Validator ${index}"
 
 [network]
-id = 1263
+id = 1264
 name = "synergy-testnet"
 chain_name = "synergy-testnet"
-chain_id = 1263
+chain_id = 1264
 p2p_port = ${p2p_port}
 rpc_port = ${rpc_port}
 ws_port = ${ws_port}
@@ -326,7 +326,7 @@ public_host = "127.0.0.1"
 [blockchain]
 block_time = 2
 max_gas_limit = "0x2fefd8"
-chain_id = 1263
+chain_id = 1264
 
 [consensus]
 algorithm = "Proof of Synergy"

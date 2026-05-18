@@ -1,17 +1,17 @@
 SYNERGY GENESIS BLOCK ANNOTATED EXPORT
 
-chain_id: 1263
-network_id: 1263
+chain_id: 1264
+network_id: 1264
 native_caip2: synergy:testnet
 timestamp: 1775044800
 parent_hash: 0000000000000000000000000000000000000000000000000000000000000000
-state_root: 14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76
+state_root: 989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3
 validator_set_hash: 8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc
 allocation_hash: e4db5cbe7fccce3efb9cc452df0936ee226338866368059defeb4c5eb3288a13
 contract_hash: 34baa1f3afd82115b68dc1e995131d647f8918fe7917a0f6660cfd7006421425
-network_magic_bytes: d5d5bb99
-genesis_hash: dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8
-canonical_bytes: 155759
+network_magic_bytes: e312fa40
+genesis_hash: 85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75
+canonical_bytes: 154934
 
 block_header:
 {
@@ -24,16 +24,16 @@ block_header:
     "seal": null
   },
   "data_root": "8ad43956cdf5b48e70c76cb9a2833acb17d4e695df81297b53ca6398bcc81b71",
-  "extra_data": "16 May 2026 - Synergy Testnet chain 1263 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.",
+  "extra_data": "16 May 2026 - Synergy Testnet chain 1264 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.",
   "parent_hash": "0000000000000000000000000000000000000000000000000000000000000000",
   "receipts_root": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262",
-  "state_root": "14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76",
+  "state_root": "989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3",
   "timestamp": 1775044800,
   "transactions_root": "af1349b9f5f9a1a6a0404dea36dcc9499bcb25c9adc112b7cc9a93cae41f3262"
 }
 
 genesis_message:
-16 May 2026 - Synergy Testnet chain 1263 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.
+16 May 2026 - Synergy Testnet chain 1264 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.
 
 dag_posy_consensus_metadata:
 {

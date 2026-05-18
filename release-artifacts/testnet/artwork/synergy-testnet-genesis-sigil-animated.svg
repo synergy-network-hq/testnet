@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="2048" height="2048" viewBox="0 0 4096 4096" role="img" aria-label="Synergy Testnet genesis animated sigil">
-<metadata>{&quot;art_seed&quot;:&quot;c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65&quot;,&quot;chain_id&quot;:1263,&quot;dag_topology_seed&quot;:&quot;6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8&quot;,&quot;kind&quot;:&quot;animated sigil&quot;,&quot;network_magic_bytes&quot;:&quot;d5d5bb99&quot;,&quot;state_root&quot;:&quot;14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
+<metadata>{&quot;art_seed&quot;:&quot;e5b9fcdcfbaf9aaba759afee722b7bae9da187a61f7dcbb1ae122cccc0f2707c&quot;,&quot;chain_id&quot;:1264,&quot;dag_topology_seed&quot;:&quot;22a0e56bc1c8dbbea6de4c22a6837566e292100f1c7558f8ec743e12d0248f89&quot;,&quot;generator_version&quot;:&quot;synergy-genesis-art-v2.0.0&quot;,&quot;genesis_hash&quot;:&quot;85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75&quot;,&quot;kind&quot;:&quot;animated sigil&quot;,&quot;network_magic_bytes&quot;:&quot;e312fa40&quot;,&quot;state_root&quot;:&quot;989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3&quot;,&quot;validator_set_hash&quot;:&quot;8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc&quot;}</metadata>
 <defs>
 <style><![CDATA[text{font-family:Sora,Rajdhani,Segoe UI,Arial,sans-serif} .mono{font-family:SFMono-Regular,Consolas,Menlo,monospace}]]></style>
 <radialGradient id="bg-radial" cx="50%" cy="45%" r="72%"><stop offset="0%" stop-color="#111622"/><stop offset="50%" stop-color="#05070d"/><stop offset="100%" stop-color="#030206"/></radialGradient>
@@ -13,97 +13,95 @@
 <rect width="100%" height="100%" fill="url(#bg-radial)"/>
 <g id="synergy-genesis-motif">
 <g opacity="0.38" fill="none">
-<circle class="pulse-ring" cx="2048" cy="2048" r="470" stroke="#00ff66" stroke-width="7" stroke-dasharray="2 24" transform="rotate(250 2048 2048)"/>
-<circle class="pulse-ring" cx="2048" cy="2048" r="760" stroke="#00ced1" stroke-width="7" stroke-dasharray="18 30" transform="rotate(267 2048 2048)"/>
-<circle class="pulse-ring" cx="2048" cy="2048" r="1040" stroke="#0060ff" stroke-width="7" stroke-dasharray="2 24" transform="rotate(284 2048 2048)"/>
-<circle class="pulse-ring" cx="2048" cy="2048" r="1320" stroke="#7d00ff" stroke-width="7" stroke-dasharray="18 30" transform="rotate(301 2048 2048)"/>
+<circle class="pulse-ring" cx="2048" cy="2048" r="470" stroke="#00ff66" stroke-width="7" stroke-dasharray="2 24" transform="rotate(154 2048 2048)"/>
+<circle class="pulse-ring" cx="2048" cy="2048" r="760" stroke="#00ced1" stroke-width="7" stroke-dasharray="18 30" transform="rotate(171 2048 2048)"/>
+<circle class="pulse-ring" cx="2048" cy="2048" r="1040" stroke="#0060ff" stroke-width="7" stroke-dasharray="2 24" transform="rotate(188 2048 2048)"/>
+<circle class="pulse-ring" cx="2048" cy="2048" r="1320" stroke="#7d00ff" stroke-width="7" stroke-dasharray="18 30" transform="rotate(205 2048 2048)"/>
 </g>
 <g opacity="0.38" stroke="#ffd700" stroke-width="5" stroke-linecap="round">
-<line x1="1534.97" y1="638.461" x2="1507.608" y2="563.286"/>
-<line x1="2378.466" y1="584.855" x2="2385.075" y2="555.592"/>
-<line x1="2777.295" y1="737.226" x2="2791.881" y2="711.01"/>
-<line x1="3370.18" y1="1339.593" x2="3440.696" y2="1301.812"/>
-<line x1="3516.204" y1="1740.79" x2="3545.568" y2="1734.646"/>
-<line x1="3449.222" y1="2583.329" x2="3477.246" y2="2594.036"/>
-<line x1="3241.643" y1="2956.415" x2="3265.516" y2="2974.583"/>
-<line x1="2561.03" y1="3457.539" x2="2571.291" y2="3485.73"/>
-<line x1="2143.136" y1="3544.98" x2="2145.039" y2="3574.92"/>
-<line x1="1318.705" y1="3358.774" x2="1304.119" y2="3384.99"/>
-<line x1="978.959" y1="3100.212" x2="921.943" y2="3156.33"/>
-<line x1="579.796" y1="2355.21" x2="550.432" y2="2361.354"/>
-<line x1="552.718" y1="1929.125" x2="522.812" y2="1926.748"/>
-<line x1="854.357" y1="1139.585" x2="790.696" y2="1091.137"/>
-<line x1="1158.638" y1="840.095" x2="1140.851" y2="815.937"/>
+<line x1="699.809" y1="2705.557" x2="627.905" y2="2740.626"/>
+<line x1="570.788" y1="1787.528" x2="541.244" y2="1782.318"/>
+<line x1="723.579" y1="1343.793" x2="697.09" y2="1329.709"/>
+<line x1="1390.443" y1="699.809" x2="1355.374" y2="627.905"/>
+<line x1="1839.24" y1="562.598" x2="1835.065" y2="532.89"/>
+<line x1="2752.207" y1="723.579" x2="2766.291" y2="697.09"/>
+<line x1="3127.01" y1="1006.012" x2="3148.59" y2="985.173"/>
+<line x1="3533.402" y1="1839.24" x2="3563.11" y2="1835.065"/>
+<line x1="3525.212" y1="2308.472" x2="3554.756" y2="2313.682"/>
+<line x1="3089.988" y1="3127.01" x2="3110.827" y2="3148.59"/>
+<line x1="2705.557" y1="3396.191" x2="2740.626" y2="3468.095"/>
+<line x1="1787.528" y1="3525.212" x2="1782.318" y2="3554.756"/>
+<line x1="1343.793" y1="3372.421" x2="1329.709" y2="3398.91"/>
 </g>
-<path d="M 1365.785 3059.426 L 875.261 1711.722 L 2005.423 828.743 L 3194.425 1630.735 L 2799.107 3009.373 Z" fill="#05070d" opacity="0.16" stroke="#00ced1" stroke-width="2"/>
+<path d="M 905.781 1676.871 L 2048 847 L 3190.219 1676.871 L 2753.93 3019.629 L 1342.07 3019.629 Z" fill="#05070d" opacity="0.16" stroke="#00ced1" stroke-width="2"/>
 <g stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="1">
-<path d="M 1365.785 3059.426 L 875.261 1711.722" stroke="#00ff66" stroke-width="54" fill="none"/>
-<path d="M 1365.785 3059.426 L 875.261 1711.722" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
-<path d="M 875.261 1711.722 L 2005.423 828.743" stroke="#00ced1" stroke-width="54" fill="none"/>
-<path d="M 875.261 1711.722 L 2005.423 828.743" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
-<path d="M 2005.423 828.743 L 3194.425 1630.735" stroke="#0060ff" stroke-width="54" fill="none"/>
-<path d="M 2005.423 828.743 L 3194.425 1630.735" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
-<path d="M 3194.425 1630.735 L 2799.107 3009.373" stroke="#7d00ff" stroke-width="54" fill="none"/>
-<path d="M 3194.425 1630.735 L 2799.107 3009.373" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
-<path d="M 2799.107 3009.373 L 1365.785 3059.426" stroke="#00ff66" stroke-width="54" fill="none"/>
-<path d="M 2799.107 3009.373 L 1365.785 3059.426" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 905.781 1676.871 L 2048 847" stroke="#00ff66" stroke-width="54" fill="none"/>
+<path d="M 905.781 1676.871 L 2048 847" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 2048 847 L 3190.219 1676.871" stroke="#00ced1" stroke-width="54" fill="none"/>
+<path d="M 2048 847 L 3190.219 1676.871" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 3190.219 1676.871 L 2753.93 3019.629" stroke="#0060ff" stroke-width="54" fill="none"/>
+<path d="M 3190.219 1676.871 L 2753.93 3019.629" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 2753.93 3019.629 L 1342.07 3019.629" stroke="#7d00ff" stroke-width="54" fill="none"/>
+<path d="M 2753.93 3019.629 L 1342.07 3019.629" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
+<path d="M 1342.07 3019.629 L 905.781 1676.871" stroke="#00ff66" stroke-width="54" fill="none"/>
+<path d="M 1342.07 3019.629 L 905.781 1676.871" stroke="#00ffd4" stroke-width="10" fill="none" opacity="0.5"/>
 </g>
-<path class="energy-path" d="M 1365.785 3059.426 L 875.261 1711.722 L 2005.423 828.743 L 3194.425 1630.735 L 2799.107 3009.373 Z" fill="none" stroke="#00ffd4" stroke-width="10" stroke-linejoin="round" opacity="0.82"/>
+<path class="energy-path" d="M 905.781 1676.871 L 2048 847 L 3190.219 1676.871 L 2753.93 3019.629 L 1342.07 3019.629 Z" fill="none" stroke="#00ffd4" stroke-width="10" stroke-linejoin="round" opacity="0.82"/>
 <g stroke-linecap="round" fill="none" opacity="0.24">
-<path d="M 1365.785 3059.426 Q 1823.314 1983.572 2005.423 828.743" stroke="#00ced1" stroke-width="8"/>
-<path d="M 875.261 1711.722 Q 2039.843 1814.402 3194.425 1630.735" stroke="#00ced1" stroke-width="8"/>
-<path d="M 1365.785 3059.426 Q 2191.905 2232.19 3194.425 1630.735" stroke="#00ced1" stroke-width="8"/>
+<path d="M 905.781 1676.871 Q 2048 1817.9 3190.219 1676.871" stroke="#00ced1" stroke-width="8"/>
+<path d="M 2048 847 Q 1829.162 1976.895 1342.07 3019.629" stroke="#00ced1" stroke-width="8"/>
+<path d="M 905.781 1676.871 Q 1912.75 2234.155 2753.93 3019.629" stroke="#00ced1" stroke-width="8"/>
 </g>
 <g opacity="0.22" stroke="#7d00ff" stroke-width="3" fill="none">
-<line x1="2243.341" y1="2211.911" x2="2120.37" y2="2562.939"/>
-<line x1="2041.643" y1="2302.921" x2="1690.526" y2="2425.641"/>
-<line x1="1844.731" y1="2201.97" x2="1529.867" y2="2003.971"/>
-<line x1="1800.885" y1="1985.077" x2="1759.373" y2="1615.456"/>
-<line x1="1943.122" y1="1815.566" x2="2206.221" y2="1552.655"/>
-<line x1="2164.334" y1="1821.083" x2="2533.925" y2="1862.86"/>
-<line x1="2297.944" y1="1997.473" x2="2495.718" y2="2312.478"/>
+<line x1="1799.536" y1="2105.363" x2="1593.198" y2="1795.899"/>
+<line x1="1848.237" y1="1889.508" x2="1961.536" y2="1535.239"/>
+<line x1="2047.364" y1="1793.001" x2="2394.983" y2="1660.698"/>
+<line x1="2246.97" y1="1888.514" x2="2567.145" y2="2077.804"/>
+<line x1="2296.747" y1="2104.123" x2="2348.38" y2="2472.466"/>
+<line x1="2159.213" y1="2277.47" x2="1903.423" y2="2547.497"/>
+<line x1="1937.933" y1="2278.022" x2="1567.335" y2="2246.396"/>
 </g>
 <g id="genesis-core" filter="url(#core-glow)">
-<polygon class="core-aura" points="2247.264,1810.526 2335.427,2164.128 2026.375,2357.245 1747.208,2122.996 1883.725,1785.105" fill="#0a0e18" stroke="url(#energy-gradient)" stroke-width="13" opacity="0.94"/>
-<polygon points="2123.928,2256.612 1905.301,2218.062 1829.373,2009.45 1972.072,1839.388 2190.699,1877.938 2266.627,2086.55" fill="none" stroke="#00ffd4" stroke-width="8" opacity="0.82"/>
-<polygon points="1932.298,2185.888 1986.436,1878.855 2225.265,2079.257" fill="#00ffd4" opacity="0.18" stroke="#ffffff" stroke-width="3"/>
-<polygon points="2163.702,1910.112 2109.564,2217.145 1870.735,2016.743" fill="#7d00ff" opacity="0.2" stroke="#00ced1" stroke-width="3"/>
-<polygon points="2058.284,2165.551 1930.449,2058.284 2037.716,1930.449 2165.551,2037.716" fill="url(#core-gradient)" stroke="#ffffff" stroke-width="4"/>
+<polygon class="core-aura" points="2117.735,2350.055 1782.278,2207.662 1814.04,1844.622 2169.127,1762.643 2356.82,2075.018" fill="#0a0e18" stroke="url(#energy-gradient)" stroke-width="13" opacity="0.94"/>
+<polygon points="1835.7,1983.093 1998.061,1831.69 2210.361,1896.596 2260.3,2112.907 2097.939,2264.31 1885.639,2199.404" fill="none" stroke="#00ffd4" stroke-width="8" opacity="0.82"/>
+<polygon points="2007.509,1872.613 2220.135,2100.627 1916.356,2170.76" fill="#00ffd4" opacity="0.18" stroke="#ffffff" stroke-width="3"/>
+<polygon points="2088.491,2223.387 1875.865,1995.373 2179.644,1925.24" fill="#7d00ff" opacity="0.2" stroke="#00ced1" stroke-width="3"/>
+<polygon points="1947.93,1985.47 2110.53,1947.93 2148.07,2110.53 1985.47,2148.07" fill="url(#core-gradient)" stroke="#ffffff" stroke-width="4"/>
 <circle cx="2048" cy="2048" r="28" fill="#ffffff"/>
 </g>
 <g id="genesis-validators">
 <g id="validator-1-node">
-<circle cx="1365.785" cy="3059.426" r="126" fill="#030206" stroke="#00ff66" stroke-width="8" opacity="0.98"/>
-<circle cx="1365.785" cy="3059.426" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
-<polygon points="1320.773,3094.592 1318.43,3027.485 1381.529,3004.519 1422.87,3057.432 1385.321,3113.101" fill="#00ff66" opacity="0.34"/>
-<circle cx="1365.785" cy="3059.426" r="18.36" fill="#ffd700"/>
+<circle cx="905.781" cy="1676.871" r="122" fill="#030206" stroke="#00ff66" stroke-width="8" opacity="0.98"/>
+<circle cx="905.781" cy="1676.871" r="98" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="861.382,1644.613 922.74,1624.677 960.661,1676.871 922.74,1729.065 861.382,1709.128" fill="#00ff66" opacity="0.34"/>
+<circle cx="905.781" cy="1676.871" r="17.64" fill="#ffd700"/>
 </g>
 <g id="validator-2-node">
-<circle cx="875.261" cy="1711.722" r="126" fill="#030206" stroke="#00ced1" stroke-width="8" opacity="0.98"/>
-<circle cx="875.261" cy="1711.722" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
-<polygon points="827.906,1679.781 891.005,1656.815 932.346,1709.729 894.797,1765.398 830.25,1746.889" fill="#00ced1" opacity="0.34"/>
-<circle cx="875.261" cy="1711.722" r="18.36" fill="#ffd700"/>
+<circle cx="2048" cy="847" r="122" fill="#030206" stroke="#00ced1" stroke-width="8" opacity="0.98"/>
+<circle cx="2048" cy="847" r="98" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="2064.959,794.806 2102.88,847 2064.959,899.194 2003.601,879.258 2003.601,814.742" fill="#00ced1" opacity="0.34"/>
+<circle cx="2048" cy="847" r="17.64" fill="#ffd700"/>
 </g>
 <g id="validator-3-node">
-<circle cx="2005.423" cy="828.743" r="126" fill="#030206" stroke="#0060ff" stroke-width="8" opacity="0.98"/>
-<circle cx="2005.423" cy="828.743" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
-<polygon points="2021.167,773.836 2062.508,826.75 2024.959,882.418 1960.411,863.91 1958.068,796.802" fill="#0060ff" opacity="0.34"/>
-<circle cx="2005.423" cy="828.743" r="18.36" fill="#ffd700"/>
+<circle cx="3190.219" cy="1676.871" r="122" fill="#030206" stroke="#0060ff" stroke-width="8" opacity="0.98"/>
+<circle cx="3190.219" cy="1676.871" r="98" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="3245.099,1676.871 3207.178,1729.065 3145.82,1709.128 3145.82,1644.613 3207.178,1624.677" fill="#0060ff" opacity="0.34"/>
+<circle cx="3190.219" cy="1676.871" r="17.64" fill="#ffd700"/>
 </g>
 <g id="validator-4-node">
-<circle cx="3194.425" cy="1630.735" r="126" fill="#030206" stroke="#7d00ff" stroke-width="8" opacity="0.98"/>
-<circle cx="3194.425" cy="1630.735" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
-<polygon points="3251.51,1628.742 3213.961,1684.411 3149.414,1665.902 3147.07,1598.794 3210.169,1575.828" fill="#7d00ff" opacity="0.34"/>
-<circle cx="3194.425" cy="1630.735" r="18.36" fill="#ffd700"/>
+<circle cx="2753.93" cy="3019.629" r="122" fill="#030206" stroke="#7d00ff" stroke-width="8" opacity="0.98"/>
+<circle cx="2753.93" cy="3019.629" r="98" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="2770.889,3071.823 2709.531,3051.887 2709.531,2987.372 2770.889,2967.435 2808.81,3019.629" fill="#7d00ff" opacity="0.34"/>
+<circle cx="2753.93" cy="3019.629" r="17.64" fill="#ffd700"/>
 </g>
 <g id="validator-5-node">
-<circle cx="2799.107" cy="3009.373" r="126" fill="#030206" stroke="#00ffd4" stroke-width="8" opacity="0.98"/>
-<circle cx="2799.107" cy="3009.373" r="102" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
-<polygon points="2818.643,3063.048 2754.096,3044.54 2751.752,2977.432 2814.851,2954.466 2856.192,3007.38" fill="#00ffd4" opacity="0.34"/>
-<circle cx="2799.107" cy="3009.373" r="18.36" fill="#ffd700"/>
+<circle cx="1342.07" cy="3019.629" r="122" fill="#030206" stroke="#00ffd4" stroke-width="8" opacity="0.98"/>
+<circle cx="1342.07" cy="3019.629" r="98" fill="#111622" stroke="url(#energy-gradient)" stroke-width="5"/>
+<polygon points="1297.671,3051.887 1297.671,2987.372 1359.029,2967.435 1396.95,3019.629 1359.029,3071.823" fill="#00ffd4" opacity="0.34"/>
+<circle cx="1342.07" cy="3019.629" r="17.64" fill="#ffd700"/>
 </g>
 </g>
-<text x="2048" y="3588" text-anchor="middle" font-size="132" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="0.72">1263</text>
+<text x="2048" y="3588" text-anchor="middle" font-size="132" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="0.72">1264</text>
 </g>
 <text x="2048" y="3650" text-anchor="middle" font-size="88" font-weight="800" letter-spacing="0" fill="#f2f7ff" opacity="0.72">SYNERGY GENESIS</text>
 </svg>

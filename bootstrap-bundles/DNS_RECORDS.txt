@@ -1,4 +1,4 @@
-Synergy Public Testnet 1263 DNS Records
+Synergy Public Testnet 1264 DNS Records
 
 bootnode1.synergynode.xyz -> 170.64.187.206
 bootnode2.synergynode.xyz -> 146.190.210.121
@@ -14,6 +14,6 @@ testnet-api.synergy-network.io -> RPC Gateway
 testnet-explorer.synergy-network.io -> Atlas Explorer
 testnet-indexer.synergy-network.io -> Atlas Indexer
 
-Canonical chain ID: 1263
+Canonical chain ID: 1264
 Canonical genesis hash: dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8
 Network magic bytes: d5d5bb99

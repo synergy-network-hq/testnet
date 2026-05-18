@@ -26,10 +26,10 @@ from typing import Any
 import blake3
 
 
-CHAIN_ID = 1263
-NETWORK_ID = 1263
+CHAIN_ID = 1264
+NETWORK_ID = 1264
 CAIP2 = "synergy:testnet"
-EIP155 = "eip155:1263"
+EIP155 = "eip155:1264"
 TOKEN_NAME = "Synergy Testnet Token"
 TOKEN_SYMBOL = "SNRG"
 TOKEN_DECIMALS = 9
@@ -42,7 +42,7 @@ VALIDATOR_SELF_STAKE_NWEI = 50_000 * NWEI_PER_SNRG
 ZERO_HASH = "0" * 64
 EMPTY_HASH = blake3.blake3(b"").hexdigest()
 GENESIS_MESSAGE = (
-    "16 May 2026 - Synergy Testnet chain 1263 resets the public testnet with a post-quantum "
+    "16 May 2026 - Synergy Testnet chain 1264 resets the public testnet with a post-quantum "
     "Proof of Synergy network with cluster-local certified DAG data "
     "availability and dual-quorum finality."
 )
@@ -1071,7 +1071,7 @@ def hexdump(data: bytes) -> str:
         hex_bytes = " ".join(f"{byte:02x}" for byte in chunk)
         grouped = f"{hex_bytes:<47}"
         ascii_text = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in chunk)
-        lines.append(f"{offset:08x}  {grouped}  {ascii_text}")
+        lines.append(f"{offset:08x}  {grouped}  {ascii_text}".rstrip())
     return "\n".join(lines) + "\n"
 
 
@@ -1347,20 +1347,32 @@ def build_genesis_from_public_inputs(public_inputs: dict[str, Any], template_pat
 
     with tempfile.TemporaryDirectory(prefix="synergy-public-genesis-") as tmp:
         tmp_dir = Path(tmp)
+        new_address_dir = tmp_dir / "new-network-addresses"
+        new_address_dir.mkdir(parents=True, exist_ok=True)
         validator_dir = tmp_dir / "validator-addresses"
         validator_dir.mkdir(parents=True, exist_ok=True)
+        new_wallet_aliases = {
+            "dao_governance_reserve": "DAOGovernanceReserve",
+            "foundation_treasury": "FoundationTreasury",
+            "liquidity_market_infra": "LiquidityMarketInfra",
+            "marketing_growth": "MarketingGrowth",
+            "reliability_bonus": "ReliabilityBonus",
+            "strategic_partnerships": "StrategicPartnerships",
+            "token_sales": "TokenSalesWallet",
+            "validator_security_pool": "ValidatorSecurityPool",
+        }
         for name, wallet in wallets.items():
             filename = "fee-collector.pub.json" if name == "fee_collector" else f"{name}.pub.json"
-            write_json(
-                tmp_dir / filename,
-                {
-                    "address": wallet.get("address", ""),
-                    "address_type": wallet.get("address_type", ""),
-                    "algorithm": wallet.get("algorithm", ""),
-                    "public_key": wallet.get("public_key", ""),
-                    "external_addresses": wallet.get("external_addresses", []),
-                },
-            )
+            wallet_payload = {
+                "address": wallet.get("address", ""),
+                "address_type": wallet.get("address_type", ""),
+                "algorithm": wallet.get("algorithm", ""),
+                "public_key": wallet.get("public_key", ""),
+                "external_addresses": wallet.get("external_addresses", []),
+            }
+            write_json(tmp_dir / filename, wallet_payload)
+            if name in new_wallet_aliases:
+                write_json(new_address_dir / f"{new_wallet_aliases[name]}.pub.json", wallet_payload)
         for index, validator in enumerate(validators, start=1):
             write_json(
                 validator_dir / f"{index}.pub.json",

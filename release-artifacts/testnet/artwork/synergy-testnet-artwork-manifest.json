@@ -1,6 +1,6 @@
 {
-  "art_seed": "c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65",
-  "chain_id": 1263,
+  "art_seed": "e5b9fcdcfbaf9aaba759afee722b7bae9da187a61f7dcbb1ae122cccc0f2707c",
+  "chain_id": 1264,
   "creation_mode": "deterministic",
   "dag_edges": [
     {
@@ -49,15 +49,15 @@
       "role": "dag_chord",
       "to": "validator-3",
       "to_index": 2,
-      "weight": "237c4431"
+      "weight": "6e8ffa15"
     },
     {
       "from": "validator-2",
       "from_index": 1,
       "role": "dag_chord",
-      "to": "validator-4",
-      "to_index": 3,
-      "weight": "46b36813"
+      "to": "validator-5",
+      "to_index": 4,
+      "weight": "8c96768a"
     },
     {
       "from": "validator-1",
@@ -65,149 +65,149 @@
       "role": "dag_chord",
       "to": "validator-4",
       "to_index": 3,
-      "weight": "bc81d3dd"
+      "weight": "8f1fa45c"
     }
   ],
-  "dag_topology_seed": "6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755",
+  "dag_topology_seed": "22a0e56bc1c8dbbea6de4c22a6837566e292100f1c7558f8ec743e12d0248f89",
   "files": [
     {
-      "blake3": "87d41a2a7b938ee4a091b1093a51f9d347546a9a0ce49f94f65625a5f307fa82",
-      "bytes": 4333,
+      "blake3": "7ac422cffb9c3ae32b4b5b3189415bc7c583841f1bdad41d6c90528e9b1995ee",
+      "bytes": 4332,
       "path": "synergy-art-styleguide.json",
-      "sha256": "5c0278fffc78f2eb6dfd35dea2c93cd14001cdecf314c9ab97429e808f566fed"
+      "sha256": "27ef586757c80920d9e82d3461bc43cfe3aff7bc6674538020e72f63b5718017"
     },
     {
-      "blake3": "431ef35ed510c2104547c590e0ec8c7968c4e967e8dc54335de8649cf8705d72",
-      "bytes": 196618,
+      "blake3": "15be58d56f75988733dda1102eb3bbd45c2b32ab71dc5b511052aa50e8dee9d8",
+      "bytes": 191003,
       "path": "synergy-testnet-genesis-certificate.png",
-      "sha256": "c55289a1a80f226fd746b106d925030d9a1f6943b9089c1d3c7872ce3501d392"
+      "sha256": "f160a23e59aeceacdd09a0ac95894e778bdba1d2d7fe4ef2317932fc56a75d94"
     },
     {
-      "blake3": "fe48404271790b247b9d5a4a88f68017ac77d47a1c8f700dae8e41cb9cb4ceb3",
-      "bytes": 10765,
+      "blake3": "55daea64ee2484c41bce72d1af6314928d5a3191075df6007937ecc1d011749b",
+      "bytes": 10619,
       "path": "synergy-testnet-genesis-certificate.svg",
-      "sha256": "f4d7968b0f54451d7a2e4393a17c5d4d0f432ad0407a15038e0ba411b046f5e4"
+      "sha256": "c94cc2e59eb27ff12b6d979cbe5f3a041d8bfa657b44fd2056c36a75b763113d"
     },
     {
-      "blake3": "89646c8d4088d35e324b92d67baa0fbdc1dee72399bb2b29e51dd7ae2379c643",
-      "bytes": 597017,
+      "blake3": "faa781492ee208220e66647d2326eb12f219adde4ac180bf1c72d0977791934f",
+      "bytes": 565351,
       "path": "synergy-testnet-genesis-poster.png",
-      "sha256": "ad6dbf0f7cfed62d7acc7726c3c57dc9ba4d0a49f89b2333e1e4ad784e734223"
+      "sha256": "5df8789b3cf254004ecf66becebd0180acd069c12b8db2eb60fac7c2dfe474cd"
     },
     {
-      "blake3": "056ce08aa3940aa1e0d97c1759d9f717845e47de191dd3e68516e5530aab7704",
-      "bytes": 15037,
+      "blake3": "4765cf77f9e482473ec34ed888d79c81820ec52f33e20214ab3b8a365d90dd82",
+      "bytes": 14661,
       "path": "synergy-testnet-genesis-poster.svg",
-      "sha256": "541b0c2486692cb936fb73c45122408c134e5cadd5f7d95ca1ceaf4ea2cb59ea"
+      "sha256": "5f365bd2ef11ada1896b931db2888e1477c2ee55b0cbe84c07cbf349a38ce067"
     },
     {
-      "blake3": "beebd2105c48c4e08a323a2b211707e5594126ec8d8e335d9c605527edf6c784",
-      "bytes": 10585,
+      "blake3": "d067534154c567b1ba8e82c529ae95d297293fd4620ba4f0b97bccfe6c7d35b1",
+      "bytes": 10330,
       "path": "synergy-testnet-genesis-sigil-animated.svg",
-      "sha256": "6f0d4d7cafbc4564bb135041e683a706c5992579bdcd782f21abd4577e5c465b"
+      "sha256": "b1f751c6568fe17b521ad4710206db63ee643b5dbbdbc856e81576c7c988215c"
     },
     {
-      "blake3": "61a91cc92b3ddbcef4dc1530380822ae30158e04d22f1550e647e22481eb4ce1",
-      "bytes": 204296,
+      "blake3": "47de1beca624be9e1c51fe22477d963ec5221a3db5d5eea1ad1c74f7fa23eef2",
+      "bytes": 199757,
       "path": "synergy-testnet-genesis-sigil-engraving.png",
-      "sha256": "f0065aeb2ee43189af2b35b3bb1623ff488d7e085232b77a780691d10219893b"
+      "sha256": "dee6ecf1ee70bf20e891a350b069df5bafdc6bf2fab5b576a4289306188394be"
     },
     {
-      "blake3": "785ebae6ba462e3aae9d32a843f41f32add97431adadee3a3debbb6a1846c0f1",
-      "bytes": 3193,
+      "blake3": "7aa16cc8f64b753bdf93a3e5a540599a9b270c9394d22e15c3d135eaf2a7c01c",
+      "bytes": 3146,
       "path": "synergy-testnet-genesis-sigil-engraving.svg",
-      "sha256": "67c5223a7ac881249efecb10a3f6ebc1d8d38086dd2d8c24e7957d345d9fe779"
+      "sha256": "ce3a1a89b4b0748171f173246c1dada97a2d6450c74415e331c33069ae3843ba"
     },
     {
-      "blake3": "f067f25e87a221189a5c1ec5ce6091b4bc8a90e210a1ba560799e71c146b1380",
-      "bytes": 109728,
+      "blake3": "6f4c322c3caab476ccc919aaea7e5beefb99fc27ca832cbe0c0c263304288ac6",
+      "bytes": 101770,
       "path": "synergy-testnet-genesis-sigil-minimal.png",
-      "sha256": "796948f2c76656f76563b13805bdd6d0eed458ce015972724e6e4f536ab0c317"
+      "sha256": "3eee646c7eee06ac86797da81f7f3a6fdbcbb634e1140ae6d0e12bb409a1af35"
     },
     {
-      "blake3": "197ff959bb5147d72a3514a1d3ea71994afad13cf79b1b92759519d0dca56a50",
-      "bytes": 9593,
+      "blake3": "303021a90c42fcbe2e12c4a8ed0c3f9da2367b8b7a2029d0ae5d9f276de85755",
+      "bytes": 9348,
       "path": "synergy-testnet-genesis-sigil-minimal.svg",
-      "sha256": "7519053dc1126607f73677a05596063b62b98988aa031f6dd0f5d29470c6bdde"
+      "sha256": "8aff307b74ece5851d36b09d2d805bd67368b319874b82243832b0a871244566"
     },
     {
-      "blake3": "eb48eb77ead267db07c04e7240730e2aa633dd4425132d8c55c4654420792c71",
-      "bytes": 329049,
+      "blake3": "38ec97d658ec489c0dd65e917ff4147c9223a686d45e356ef62ae731cc68578f",
+      "bytes": 315808,
       "path": "synergy-testnet-genesis-sigil.png",
-      "sha256": "bc0923d7601c7aaa987b9c9f7d5722a4246f3c0c9b1194896841cdf33a1c579a"
+      "sha256": "5da81a061c4d2fe1a966a12eb413b08a3379219a4e078943531fc1b64c047da1"
     },
     {
-      "blake3": "c1d8544203e03fd7d556913bc3735e96ee41b1510ea25ecb575a5eca06fec4c3",
-      "bytes": 13059,
+      "blake3": "a3f037829383dc6f98d249d8ffafdc6b85ed0bf39a1b88331f2a5db65136fca8",
+      "bytes": 12633,
       "path": "synergy-testnet-genesis-sigil.svg",
-      "sha256": "80f5dc4dc98e5efc42ee0c0e0e69e0b39820585fc517db88a4dfe317c2218525"
+      "sha256": "44eaff270ce6ef6c0f096ddb04a95b78a6ff99ffaa082406050cd65fcb7010e8"
     },
     {
-      "blake3": "338a2960af64468ecac9f34b6858ec4ea1807b64d5d19e30752e5c1851871496",
-      "bytes": 238814,
+      "blake3": "bfd27c78d211cd7333e3f20081fe06fe588ffdab7e9123af91b1cb9e516300a6",
+      "bytes": 252163,
       "path": "synergy-testnet-validator-1-plaque.png",
-      "sha256": "200308c3f3d02da1455181ec3cb1101faefd0e2e44fe77963d7b738d5a931ad5"
+      "sha256": "b024ad47e5bb2c984d37e1431c4699824b27d8afe46dadc41bef348c1724f49d"
     },
     {
-      "blake3": "29aca7c790bd4aaf3474ce17b9e0eb19eca8454ea21c941f431f941cdf220755",
-      "bytes": 12135,
+      "blake3": "89ea7a668710a195e427fee231be05543beb93ff5ab831f616bde17c318c1f8e",
+      "bytes": 11966,
       "path": "synergy-testnet-validator-1-plaque.svg",
-      "sha256": "2794e3dd2a762a7f9f78a7d1c3ae09511e7b596a265265ccea21a014510c8540"
+      "sha256": "656feac7bbf71a047eed60fea1f4eeb0929d22b78d25aa403be634996197b98e"
     },
     {
-      "blake3": "fc702b69cd777383e80ef1cd343a96838a8654b5b51bd83471be1665f1e604fe",
-      "bytes": 247375,
+      "blake3": "aeb26d11b9ad9c605a0dc817cca4c705e9edb2bf154f3c9e7a71d34f95a948c2",
+      "bytes": 260730,
       "path": "synergy-testnet-validator-2-plaque.png",
-      "sha256": "cee06d2eda2984f2cfe7748ac762c57d47188a48c90974e5d05aee34b74c06fb"
+      "sha256": "9345897f38e5be58b751f3117c6af6a3a5f03f818c29b06ebf6b7b037a66f0ed"
     },
     {
-      "blake3": "306bdc95dec7bddd537295a8dc600260248d8eb083a182ab6def45e9ddd926a5",
-      "bytes": 12135,
+      "blake3": "94a4a944b0b42aa825c6f11c58943b16370eecb4b2b3cbec40e2868249735ed7",
+      "bytes": 11966,
       "path": "synergy-testnet-validator-2-plaque.svg",
-      "sha256": "fb396e46557517e7b1fc08fec92826dcadb47279e75fb300b59195523027a0c8"
+      "sha256": "09e6f8d4c310cd656e718c7dc5de73480625335ed1e5e63af8a4a28aa0a78431"
     },
     {
-      "blake3": "940edf061c9c8c54f3b103d22fa5cb57647e04aa820341e4ec33b2516fcf321b",
-      "bytes": 244218,
+      "blake3": "c84ac682955d54e7361e18f38b610129cb7e66c0ff348b2d5a3cc14e7c05ccfd",
+      "bytes": 257575,
       "path": "synergy-testnet-validator-3-plaque.png",
-      "sha256": "471dc41f701bc123a8a57023d9fe8a8b44eb65501f45e1baecc0e0c0241e5990"
+      "sha256": "1ae5aaf2baf145cd2fa47c6d186577e5e6808b419e611dd2443d68d5684be8d3"
     },
     {
-      "blake3": "cebaa04ee0aeb18a3fd5d65177ece376b6c59aef88a29f46293de23c123c0b28",
-      "bytes": 12135,
+      "blake3": "a0319fa41d26d097cb88eef2cc2a676c55e34950f40dc29936865ebb34122378",
+      "bytes": 11966,
       "path": "synergy-testnet-validator-3-plaque.svg",
-      "sha256": "f3c23d1d78dde0665809943e18f093e80af59b0c1344d6698a16d5a62be789ea"
+      "sha256": "d067f358b29a4d3785ea61621076cc598214d736e7372dbcf01754db5a36c5ef"
     },
     {
-      "blake3": "45730c2b25dd67da3463e60db83ea2971b6b96fc250dd76121a2b0807ca2900d",
-      "bytes": 243987,
+      "blake3": "630fb9695bc6e04ae114ccbc275643083ad1d1464dd8205de570febf91e1a322",
+      "bytes": 257349,
       "path": "synergy-testnet-validator-4-plaque.png",
-      "sha256": "1316473343a8c1208e0b95ae3c46d5c191f8050c98cfb4fa560cc3f9fdc6ce09"
+      "sha256": "06a468fe856f5ca035bef0cbaa9e6d59d394b8e58669e891725127fe366779bf"
     },
     {
-      "blake3": "bf6d9afefc756d872b3bbd95e73615758ff93d6e96c170d326b8b38e023a0051",
-      "bytes": 12135,
+      "blake3": "cb92aa72328b6a605454e19b7ee1dffff5f16e3b42d896091607be0aa5efee8c",
+      "bytes": 11966,
       "path": "synergy-testnet-validator-4-plaque.svg",
-      "sha256": "6520769644c34b3196006a24b61dab696f2e01994e895beb0aa31f4d4052e5ef"
+      "sha256": "cb014d58e134e521fd4c315f4c607b13eb9d4a5eec972bfdd06a11960aa9c5c4"
     },
     {
-      "blake3": "82bb5100efbec4c2f9b1073c8e40af106a865e13733670bc7430970665cc1d54",
-      "bytes": 242511,
+      "blake3": "85d53370da026241932e42496ecd3f6fe4aa0941326e6410576b105ae508dc30",
+      "bytes": 255912,
       "path": "synergy-testnet-validator-5-plaque.png",
-      "sha256": "879dc5adcdee9902142116f359079b90893c13f875d69d2fbca85eca42e3326b"
+      "sha256": "d031213163a32528803f78ea3a4e897cdacf04a245268ca7603724b3a9695c17"
     },
     {
-      "blake3": "ac746720889051736e2a552ed10bb2ac1065799b05a89bbf46372760eeef1ac9",
-      "bytes": 12135,
+      "blake3": "881918b41a0893ce2d446e2553f113d2c4ef19ea8f95906bb26f944fa8be6066",
+      "bytes": 11966,
       "path": "synergy-testnet-validator-5-plaque.svg",
-      "sha256": "84180ac7e5b96b0743f923684161f2b6bc8d98d0dd50678433f6df1ddf62b376"
+      "sha256": "54810c98849b896fef6b6964e884922a7e7cc61319dc207574f96b362934320d"
     }
   ],
   "generator_version": "synergy-genesis-art-v2.0.0",
-  "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
+  "genesis_hash": "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75",
   "genesis_timestamp": 1775044800,
   "manifest_self_hash_excluded": true,
-  "network_magic_bytes": "d5d5bb99",
+  "network_magic_bytes": "e312fa40",
   "palette": {
     "brand": {
       "background_base": "#030206",
@@ -227,10 +227,10 @@
       "text_secondary": "#c5d9e8"
     },
     "energy_order": [
-      "lime_posy",
       "cyan_sxcp",
       "blue_synq",
-      "purple_aegis"
+      "purple_aegis",
+      "lime_posy"
     ],
     "semantic": {
       "archival_accent": "#ffd700",
@@ -250,7 +250,7 @@
     "dag_topology_seed": "blake3(\"synergy-dag-topology-art-v2\" || genesis_hash || validator_set_hash || network_magic_bytes)",
     "validator_art_fingerprint": "first_8_hex(blake3(\"synergy-validator-art-v2\" || validator_address || consensus_public_key || validator_id_hash))"
   },
-  "state_root": "14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76",
+  "state_root": "989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3",
   "topology_metadata": {
     "algorithm": "ProofOfSynergy",
     "consensus_model": "cluster_dag_hybrid",
@@ -290,9 +290,9 @@
       "index": 1,
       "moniker": "Synergy Genesis Validator 1",
       "position": {
-        "angle": 124.0,
-        "x": 1365.785,
-        "y": 3059.426
+        "angle": 198.0,
+        "x": 905.781,
+        "y": 1676.871
       },
       "validator_address": "synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs",
       "validator_address_short": "synv11qen9...ssdwmvs",
@@ -304,9 +304,9 @@
       "index": 2,
       "moniker": "Synergy Genesis Validator 2",
       "position": {
-        "angle": 196.0,
-        "x": 875.261,
-        "y": 1711.722
+        "angle": 270.0,
+        "x": 2048.0,
+        "y": 847.0
       },
       "validator_address": "synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt",
       "validator_address_short": "synv11s4wc...f863srt",
@@ -318,9 +318,9 @@
       "index": 3,
       "moniker": "Synergy Genesis Validator 3",
       "position": {
-        "angle": 268.0,
-        "x": 2005.423,
-        "y": 828.743
+        "angle": 342.0,
+        "x": 3190.219,
+        "y": 1676.871
       },
       "validator_address": "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re",
       "validator_address_short": "synv11e3ep...gnum4re",
@@ -332,9 +332,9 @@
       "index": 4,
       "moniker": "Synergy Genesis Validator 4",
       "position": {
-        "angle": 340.0,
-        "x": 3194.425,
-        "y": 1630.735
+        "angle": 414.0,
+        "x": 2753.93,
+        "y": 3019.629
       },
       "validator_address": "synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5",
       "validator_address_short": "synv11mka6...k7kmdp5",
@@ -346,9 +346,9 @@
       "index": 5,
       "moniker": "Synergy Genesis Validator 5",
       "position": {
-        "angle": 412.0,
-        "x": 2799.107,
-        "y": 3009.373
+        "angle": 486.0,
+        "x": 1342.07,
+        "y": 3019.629
       },
       "validator_address": "synv11kguave5fpdpm9hru4acfvw0hcp4fcc7zv9f",
       "validator_address_short": "synv11kgua...cc7zv9f",

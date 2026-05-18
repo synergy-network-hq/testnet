@@ -4032,7 +4032,7 @@ fn current_chain_id() -> u64 {
     crate::config::load_node_config(None)
         .ok()
         .map(|cfg| cfg.blockchain.chain_id)
-        .unwrap_or(1263)
+        .unwrap_or(1264)
 }
 
 fn parse_u64ish(value: Option<&Value>) -> Result<Option<u64>, RpcError> {

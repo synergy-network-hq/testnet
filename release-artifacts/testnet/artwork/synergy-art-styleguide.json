@@ -23,16 +23,16 @@
     "synergy-testnet-validator-5-plaque.svg"
   ],
   "canonical_identity": {
-    "chain_id": 1263,
-    "genesis_hash": "dd9ad8cfc74be1ab17a0a0fce9db65281df1b325fe5a2530130dce8935e450b8",
-    "network_magic_bytes": "d5d5bb99",
-    "state_root": "14d22b78dcd64554bceab123bfef14b22fd642403ba07058bc13b7e1b46efa76",
+    "chain_id": 1264,
+    "genesis_hash": "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75",
+    "network_magic_bytes": "e312fa40",
+    "state_root": "989d45295a07a0fd848235342505be89c74980fbc630b9b6fa108926bedb92c3",
     "validator_set_hash": "8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc"
   },
   "creation_mode": "deterministic",
   "deterministic_seed_values": {
-    "art_seed": "c8acb42f8433fa71286564ceb3a204aabd5974b84727dc415c4f47df90760d65",
-    "dag_topology_seed": "6c267474d998b097189549df7c518532e343dbcb95ed7b927070804f3fc16755"
+    "art_seed": "e5b9fcdcfbaf9aaba759afee722b7bae9da187a61f7dcbb1ae122cccc0f2707c",
+    "dag_topology_seed": "22a0e56bc1c8dbbea6de4c22a6837566e292100f1c7558f8ec743e12d0248f89"
   },
   "generator_version": "synergy-genesis-art-v2.0.0",
   "glow_strengths": {
@@ -94,10 +94,10 @@
       "text_secondary": "#c5d9e8"
     },
     "energy_order": [
-      "lime_posy",
       "cyan_sxcp",
       "blue_synq",
-      "purple_aegis"
+      "purple_aegis",
+      "lime_posy"
     ],
     "semantic": {
       "archival_accent": "#ffd700",
@@ -147,7 +147,7 @@
     "external_fonts_required": false,
     "hierarchy": [
       "SYNERGY TESTNET",
-      "CHAIN 1263 / MAGIC d5d5bb99",
+      "CHAIN 1264 / MAGIC e312fa40",
       "GENESIS HASH fingerprint",
       "full provenance hash"
     ],
@@ -162,7 +162,7 @@
   },
   "validator_node_sizes": {
     "core_dot_ratio": 0.18,
-    "inner_radius": 102,
-    "outer_radius": 126
+    "inner_radius": 98,
+    "outer_radius": 122
   }
 }
