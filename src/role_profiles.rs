@@ -147,7 +147,13 @@ const INDEXER_EXPLORER_SERVICES: &[&str] = &[
     "search",
     "explorer-ui-backend",
 ];
-const OBSERVER_LIGHT_SERVICES: &[&str] = &["header-sync", "light-proof-check", "wallet-feed"];
+const OBSERVER_LIGHT_SERVICES: &[&str] = &[
+    "p2p",
+    "chain-sync",
+    "header-sync",
+    "light-proof-check",
+    "wallet-feed",
+];
 
 const VALIDATOR_PORTS: &[&str] = &[
     "5622 plus slot p2p",
@@ -190,6 +196,7 @@ const INDEXER_EXPLORER_PORTS: &[&str] = &[
     "5667 localhost ws",
 ];
 const OBSERVER_LIGHT_PORTS: &[&str] = &[
+    "5622 plus slot private p2p",
     "implementation-specific readonly light api",
     "6030 plus slot localhost metrics",
 ];
@@ -532,6 +539,17 @@ mod tests {
     #[test]
     fn indexer_explorer_profile_requires_p2p_surface() {
         let profile = NodeRole::IndexerExplorer.profile();
+        assert!(profile.service_surface.contains(&"p2p"));
+        assert!(profile.service_surface.contains(&"chain-sync"));
+        assert!(profile
+            .required_ports
+            .iter()
+            .any(|port| port.to_ascii_lowercase().contains("p2p")));
+    }
+
+    #[test]
+    fn observer_light_profile_requires_p2p_for_header_sync() {
+        let profile = NodeRole::ObserverLight.profile();
         assert!(profile.service_surface.contains(&"p2p"));
         assert!(profile.service_surface.contains(&"chain-sync"));
         assert!(profile

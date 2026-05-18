@@ -21,7 +21,7 @@
 ```bash
 # Check if node is running
 sudo systemctl status synergy-validator
-ps aux | grep synergy-testbeta
+ps aux | grep synergy-testnet
 
 # Check resource usage
 htop
@@ -154,10 +154,10 @@ curl -X POST -H "Content-Type: application/json" \
 2. **Check System Resources**
    ```bash
    # Monitor memory usage
-   watch -n 1 'ps aux | grep synergy-testbeta'
+   watch -n 1 'ps aux | grep synergy-testnet'
 
    # Check for memory leaks
-   valgrind --tool=memcheck ./target/release/synergy-testbeta start
+   valgrind --tool=memcheck ./target/release/synergy-testnet start
    ```
 
 3. **Database Corruption**
@@ -231,12 +231,12 @@ curl -X POST -H "Content-Type: application/json" \
 
 ### Control panel RPC timeout
 
-**Symptoms**: The validator control panel reports `Connection to https://testbeta-core-rpc.synergy-network.io/rpc timed out` when you try to register a validator. The bundled `.env` (see `archive/ENV_FILE_REVIEW.md` under the `SYNERGY_RPC_ENDPOINT` block) points at the upstream RPC proxy, so the control panel immediately tries to speak to that host.
+**Symptoms**: The validator control panel reports `Connection to https://testnet-core-rpc.synergy-network.io/rpc timed out` when you try to register a validator. The bundled `.env` (see `archive/ENV_FILE_REVIEW.md` under the `SYNERGY_RPC_ENDPOINT` block) points at the upstream RPC proxy, so the control panel immediately tries to speak to that host.
 
 **Diagnosis**: The upstream gateway is currently unresponsive. Run the same RPC request manually and watch it hang:
 
 ```bash
-curl -s -X POST https://testbeta-core-rpc.synergy-network.io/rpc \
+curl -s -X POST https://testnet-core-rpc.synergy-network.io/rpc \
   -H "Content-Type: application/json" \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}'
 ```
@@ -245,7 +245,7 @@ If this command hangs for more than a few seconds (our test timed out after 120s
 
 **Workaround**:
 
-1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:5640`. The repo already provides `scripts/reset-testbeta.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
+1. Start a local RPC/bootnode before launching the control panel so that `/rpc` is available on `localhost:5640`. The repo already provides `scripts/reset-testnet.sh` (runs `archive/start-bootnodes.sh` and prepares `data/chain`) or `./archive/start-bootnodes.sh start`.
 2. Point the control panel at your node instead of the remote proxy. Set the environment overrides before starting the UI (or paste them into your `.env`):
 
 ```bash
@@ -255,9 +255,9 @@ export SYNERGY_WS_ENDPOINT=ws://localhost:5660
 
 3. Restart the control panel after updating the variables so it reconnects to the local RPC.
 
-When the upstream proxy is healthy again, you can switch the variables back to `https://testbeta-core-rpc.synergy-network.io` and `wss://testbeta-core-ws.synergy-network.io`.
+When the upstream proxy is healthy again, you can switch the variables back to `https://testnet-core-rpc.synergy-network.io` and `wss://testnet-core-ws.synergy-network.io`.
 
-4. If the control panel runs on remote operator devices, make sure they resolve `testbeta-core-rpc.synergy-network.io` and `testbeta-core-ws.synergy-network.io` to this machine and can reach the proxied public surfaces. Do not change the control panel to `localhost` from those devices—the RPC endpoint must point to this host over the network (proxy or firewall rules permitting) so that registrations come through the real testnet-beta node you're running locally.
+4. If the control panel runs on remote operator devices, make sure they resolve `testnet-core-rpc.synergy-network.io` and `testnet-core-ws.synergy-network.io` to this machine and can reach the proxied public surfaces. Do not change the control panel to `localhost` from those devices—the RPC endpoint must point to this host over the network (proxy or firewall rules permitting) so that registrations come through the real testnet node you're running locally.
 
 ### Sync Issues
 
@@ -396,7 +396,7 @@ When the upstream proxy is healthy again, you can switch the variables back to `
    export SYNERGY_LOG_LEVEL=debug
 
    # Monitor specific threads
-   top -H -p $(pgrep synergy-testbeta)
+   top -H -p $(pgrep synergy-testnet)
    ```
 
 2. **Tune Cache Sizes**
@@ -423,7 +423,7 @@ When the upstream proxy is healthy again, you can switch the variables back to `
 1. **Memory Profiling**
    ```bash
    # Check memory usage
-   ps aux | grep synergy-testbeta
+   ps aux | grep synergy-testnet
 
    # Use heap profiling (if enabled)
    export HEAP_PROFILE=true
@@ -752,7 +752,7 @@ sudo systemctl start synergy-validator
    - #validator-support channel
    - #dev-discussion channel
 
-2. **GitHub Issues**: [Report bugs](https://github.com/synergy-network-hq/testnet-beta/issues)
+2. **GitHub Issues**: [Report bugs](https://github.com/synergy-network-hq/testnet/issues)
    - Use issue templates
    - Provide detailed information
    - Include logs and configuration
@@ -766,7 +766,7 @@ sudo systemctl start synergy-validator
 
 When asking for help, please include:
 
-1. **Node Version**: `synergy-testbeta --version`
+1. **Node Version**: `synergy-testnet --version`
 2. **Operating System**: `uname -a`
 3. **Configuration**: Relevant config files (without sensitive data)
 4. **Logs**: Last 50-100 lines of logs

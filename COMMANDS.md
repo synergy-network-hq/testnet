@@ -1,6 +1,6 @@
-# Synergy Testnet-Beta Commands Reference
+# Synergy Testnet Commands Reference
 
-Complete command reference for building, testing, deploying, and managing the Synergy Testnet-Beta network.
+Complete command reference for building, testing, deploying, and managing the Synergy Testnet network.
 
 ---
 
@@ -101,7 +101,7 @@ When you push a tag, GitHub Actions builds these binaries for **linux-amd64**, *
 
 | Binary | Description |
 |--------|-------------|
-| `synergy-testbeta` | Main node binary |
+| `synergy-testnet` | Main node binary |
 | `generate-node-keys` | Node key generation utility |
 | `synergy-address-engine` | Address generation tool |
 | `wallet-pqc-cli` | Wallet PQC command-line interface |
@@ -117,8 +117,8 @@ Release artifacts include:
 
 ### Build All Binaries (Release)
 ```bash
-cargo build --release --locked -p synergy-testbeta \
-  --bin synergy-testbeta \
+cargo build --release --locked -p synergy-testnet \
+  --bin synergy-testnet \
   --bin generate-node-keys \
   --bin synergy-address-engine \
   --bin wallet-pqc-cli
@@ -127,7 +127,7 @@ cargo build --release --locked -p synergy-testbeta \
 ### Build Specific Binary
 ```bash
 # Main node
-cargo build --release --bin synergy-testbeta
+cargo build --release --bin synergy-testnet
 
 # Node key generator
 cargo build --release --bin generate-node-keys
@@ -147,11 +147,11 @@ cargo build
 ### Run Directly
 ```bash
 # Run main node
-cargo run --release --bin synergy-testbeta -- start
+cargo run --release --bin synergy-testnet -- start
 
 # Run with custom config
-cargo run --release --bin synergy-testbeta -- \
-  --config ~/.synergy/testnet-beta/node-01/config/node.toml
+cargo run --release --bin synergy-testnet -- \
+  --config ~/.synergy/testnet/node-01/config/node.toml
 ```
 
 ### Clean Build
@@ -202,30 +202,30 @@ cargo test -- --nocapture
 
 ### Initialize Configuration
 ```bash
-cargo run --release --bin synergy-testbeta -- init
+cargo run --release --bin synergy-testnet -- init
 ```
 
 ### Start Node
 ```bash
 # From cargo
-cargo run --release --bin synergy-testbeta -- start
+cargo run --release --bin synergy-testnet -- start
 
 # From binary
-./target/release/synergy-testbeta start
+./target/release/synergy-testnet start
 
 # With custom config
-./target/release/synergy-testbeta start \
-  --config ~/.synergy/testnet-beta/node-01/config/node.toml
+./target/release/synergy-testnet start \
+  --config ~/.synergy/testnet/node-01/config/node.toml
 ```
 
 ### Background Process
 ```bash
-nohup synergy-testbeta start \
-  --config ~/.synergy/testnet-beta/node-01/config/node.toml \
-  > ~/.synergy/testnet-beta/node-01/logs/node.out 2>&1 &
+nohup synergy-testnet start \
+  --config ~/.synergy/testnet/node-01/config/node.toml \
+  > ~/.synergy/testnet/node-01/logs/node.out 2>&1 &
 
 # View logs
-tail -f ~/.synergy/testnet-beta/node-01/logs/node.out
+tail -f ~/.synergy/testnet/node-01/logs/node.out
 ```
 
 ### Systemd Service
@@ -235,19 +235,19 @@ systemctl status synergy-bootnode
 systemctl status synergy-seed
 
 # Start/Stop/Restart
-systemctl start synergy-testbeta
-systemctl stop synergy-testbeta
-systemctl restart synergy-testbeta
+systemctl start synergy-testnet
+systemctl stop synergy-testnet
+systemctl restart synergy-testnet
 
 # Enable on boot
-systemctl enable synergy-testbeta
+systemctl enable synergy-testnet
 ```
 
 ### Process Management
 ```bash
 # Check running processes
-pgrep -la synergy-testbeta
-ps aux | grep synergy-testbeta | grep -v grep
+pgrep -la synergy-testnet
+ps aux | grep synergy-testnet | grep -v grep
 
 # Check PID file
 cat ~/bootnode1/data/node.pid
@@ -257,7 +257,7 @@ cat ~/seed1/data/seed.pid
 kill -0 "$(cat ~/bootnode1/data/node.pid)" && echo "running" || echo "dead"
 
 # Stop node
-kill $(cat ~/synergy-testbeta/data/node.pid)
+kill $(cat ~/synergy-testnet/data/node.pid)
 ```
 
 ---
@@ -340,11 +340,11 @@ curl -s -X POST http://seed1.synergynode.xyz:5621/peers/register \
 
 ### Canonical Public Endpoints
 ```text
-https://testbeta-core-rpc.synergy-network.io
-wss://testbeta-core-ws.synergy-network.io
-https://testbeta-api.synergy-network.io
-https://testbeta-explorer.synergy-network.io
-https://testbeta-atlas-api.synergy-network.io
+https://testnet-core-rpc.synergy-network.io
+wss://testnet-core-ws.synergy-network.io
+https://testnet-api.synergy-network.io
+https://testnet-explorer.synergy-network.io
+https://testnet-atlas-api.synergy-network.io
 ```
 
 ### Bootnodes
@@ -412,7 +412,7 @@ LOCAL=$(curl -s -X POST http://127.0.0.1:5640 \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
   | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
 
-PUBLIC=$(curl -s -X POST https://testbeta-core-rpc.synergy-network.io \
+PUBLIC=$(curl -s -X POST https://testnet-core-rpc.synergy-network.io \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
   | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
@@ -442,11 +442,11 @@ watch -n 5 "curl -s http://127.0.0.1:6030/metrics | grep synergy_block_height"
 ### View Logs
 ```bash
 # Node logs
-tail -f ~/.synergy/testnet-beta/node-01/logs/node.out
-tail -f ~/.synergy/testnet-beta/node-01/data/logs/validator.log
+tail -f ~/.synergy/testnet/node-01/logs/node.out
+tail -f ~/.synergy/testnet/node-01/data/logs/validator.log
 
 # System logs
-journalctl -u synergy-testbeta -f
+journalctl -u synergy-testnet -f
 ```
 
 ---
@@ -455,13 +455,13 @@ journalctl -u synergy-testbeta -f
 
 ### Initialize Fresh Node
 ```bash
-cargo run --release --bin synergy-testbeta -- init
+cargo run --release --bin synergy-testnet -- init
 ```
 
 ### Configuration Files Location
 ```bash
 # Node configuration
-~/.synergy/testnet-beta/node-01/config/node.toml
+~/.synergy/testnet/node-01/config/node.toml
 
 # Network configuration
 config/network-config.toml
@@ -472,14 +472,14 @@ config/node_config.toml
 
 ### Scripts
 ```bash
-# Start testbeta
-./scripts/start-testbeta.sh
+# Start testnet
+./scripts/start-testnet.sh
 
-# Stop testbeta
-./scripts/stop-testbeta.sh
+# Stop testnet
+./scripts/stop-testnet.sh
 
-# Reset testbeta
-./scripts/reset-testbeta.sh
+# Reset testnet
+./scripts/reset-testnet.sh
 
 # Build all
 ./scripts/build-all.sh
@@ -494,7 +494,7 @@ config/node_config.toml
 
 ### Quick Smoke Check
 ```bash
-echo "=== Process ===" && pgrep -la synergy-testbeta || echo "NOT RUNNING"
+echo "=== Process ===" && pgrep -la synergy-testnet || echo "NOT RUNNING"
 echo "=== P2P ===" && lsof -iTCP:5622 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== RPC ===" && lsof -iTCP:5640 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== Metrics ===" && lsof -iTCP:6030 -sTCP:LISTEN || echo "NOT LISTENING"
@@ -518,7 +518,7 @@ curl -s -X DELETE http://127.0.0.1:5621/peers
 lsof -iTCP:5640 -sTCP:LISTEN
 
 # Check logs for errors
-tail -100 ~/.synergy/testnet-beta/node-01/logs/node.out
+tail -100 ~/.synergy/testnet/node-01/logs/node.out
 ```
 
 #### Not Connecting to Peers
@@ -550,10 +550,10 @@ sudo firewall-cmd --reload
 ### Daily Operations
 ```bash
 # Start node
-cargo run --release --bin synergy-testbeta -- start
+cargo run --release --bin synergy-testnet -- start
 
 # Check status
-pgrep -la synergy-testbeta
+pgrep -la synergy-testnet
 curl -s http://127.0.0.1:5640/health
 
 # Check block height
@@ -562,7 +562,7 @@ curl -s -X POST http://127.0.0.1:5640 \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}'
 
 # View logs
-tail -f ~/.synergy/testnet-beta/node-01/logs/node.out
+tail -f ~/.synergy/testnet/node-01/logs/node.out
 ```
 
 ### Release Workflow
@@ -577,7 +577,7 @@ git tag -a v1.0.0 -m "Release v1.0.0"
 git push origin v1.0.0
 
 # 4. Monitor GitHub Actions
-# Visit: https://github.com/synergy-network-hq/testnet-beta/actions
+# Visit: https://github.com/synergy-network-hq/testnet/actions
 ```
 
 ---

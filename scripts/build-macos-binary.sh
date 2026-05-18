@@ -5,7 +5,7 @@
 
 set -e
 
-echo "🔨 Building Synergy Testnet-Beta binary for macOS ARM64..."
+echo "🔨 Building Synergy Testnet binary for macOS ARM64..."
 echo "===================================================="
 
 # Check if we're on macOS
@@ -59,11 +59,11 @@ echo "   Version: $VERSION"
 echo "   Commit: $COMMIT"
 echo "   Build Date: $BUILD_DATE"
 echo "   Architecture: $ARCH"
-echo "   Binary: target/release/synergy-testbeta"
+echo "   Binary: target/release/synergy-testnet"
 echo ""
 
 # Calculate checksum
-BINARY_PATH="target/release/synergy-testbeta"
+BINARY_PATH="target/release/synergy-testnet"
 if [ -f "$BINARY_PATH" ]; then
     SIZE=$(stat -f%z "$BINARY_PATH")
     SHA256=$(shasum -a 256 "$BINARY_PATH" | cut -d' ' -f1)
@@ -74,13 +74,13 @@ if [ -f "$BINARY_PATH" ]; then
     echo ""
     
     # Create checksum file
-    echo "$SHA256  synergy-testbeta" > "$BINARY_PATH.sha256"
+    echo "$SHA256  synergy-testnet" > "$BINARY_PATH.sha256"
     echo "✅ Checksum file created: $BINARY_PATH.sha256"
     echo ""
     
     echo "📤 To upload to distribution server:"
-    echo "   scp $BINARY_PATH user@server:/var/www/synergy-portal/binaries/macos/synergy-testbeta"
-    echo "   scp $BINARY_PATH.sha256 user@server:/var/www/synergy-portal/binaries/macos/synergy-testbeta.sha256"
+    echo "   scp $BINARY_PATH user@server:/var/www/synergy-portal/binaries/macos/synergy-testnet"
+    echo "   scp $BINARY_PATH.sha256 user@server:/var/www/synergy-portal/binaries/macos/synergy-testnet.sha256"
     echo ""
     echo "   Then update latest.json with:"
     echo "   - sha256: $SHA256"

@@ -38,6 +38,7 @@ const QUORUM_COMPARISON_EPSILON: f64 = 0.000_000_001;
 #[cfg(test)]
 lazy_static::lazy_static! {
     static ref TEST_LOCAL_VOTE_LOCK_PATH: Mutex<Option<PathBuf>> = Mutex::new(None);
+    static ref TEST_VOTE_TRACKING_MUTEX: Mutex<()> = Mutex::new(());
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -999,9 +1000,17 @@ impl DualQuorumConsensus {
                     return path;
                 }
             }
+
+            return std::env::temp_dir().join(format!(
+                "synergy-test-local-vote-locks-{}.json",
+                std::process::id()
+            ));
         }
 
-        crate::utils::resolve_data_path("data/consensus_vote_locks.json")
+        #[cfg(not(test))]
+        {
+            crate::utils::resolve_data_path("data/consensus_vote_locks.json")
+        }
     }
 
     fn load_local_vote_locks_unlocked() -> Result<HashMap<String, LocalVoteLock>, String> {
@@ -1067,28 +1076,6 @@ impl DualQuorumConsensus {
         if let Some(existing) = locks.get_mut(&key) {
             if existing.block_hash == proposed_block.hash {
                 existing.latest_round_number = existing.latest_round_number.max(round_number);
-                existing.updated_at = now;
-                Self::persist_local_vote_locks_unlocked(&locks)?;
-                return Ok(());
-            }
-
-            if round_number > existing.latest_round_number {
-                warn!(
-                    "consensus",
-                    "Advancing local vote lock to higher-round proposal",
-                    "validator" => validator_address.to_string(),
-                    "height" => proposed_block.block_index,
-                    "epoch" => epoch_number,
-                    "previous_hash" => existing.block_hash.clone(),
-                    "previous_proposer" => existing.proposer.clone(),
-                    "previous_latest_round" => existing.latest_round_number,
-                    "next_hash" => proposed_block.hash.clone(),
-                    "next_proposer" => proposed_block.validator_id.clone(),
-                    "next_round" => round_number
-                );
-                existing.block_hash = proposed_block.hash.clone();
-                existing.proposer = proposed_block.validator_id.clone();
-                existing.latest_round_number = round_number;
                 existing.updated_at = now;
                 Self::persist_local_vote_locks_unlocked(&locks)?;
                 return Ok(());
@@ -1366,7 +1353,14 @@ impl DualQuorumConsensus {
     }
 
     #[cfg(test)]
-    fn reset_test_vote_tracking() {
+    pub(crate) fn test_vote_tracking_guard() -> std::sync::MutexGuard<'static, ()> {
+        TEST_VOTE_TRACKING_MUTEX
+            .lock()
+            .expect("test vote tracking mutex is poisoned")
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reset_test_vote_tracking() {
         if let Ok(mut mailbox) = NETWORK_VOTE_MAILBOX.lock() {
             mailbox.clear();
         }
@@ -1379,10 +1373,15 @@ impl DualQuorumConsensus {
         if let Ok(mut processed) = PROCESSED_EQUIVOCATION_EVIDENCE.lock() {
             processed.clear();
         }
+        if let Ok(_guard) = LOCAL_VOTE_LOCK_FILE_MUTEX.lock() {
+            let path = Self::local_vote_lock_path();
+            let _ = fs::remove_file(path.with_extension("json.tmp"));
+            let _ = fs::remove_file(path);
+        }
     }
 
     #[cfg(test)]
-    fn set_test_local_vote_lock_path(path: Option<PathBuf>) {
+    pub(crate) fn set_test_local_vote_lock_path(path: Option<PathBuf>) {
         if let Ok(mut test_path) = TEST_LOCAL_VOTE_LOCK_PATH.lock() {
             *test_path = path;
         }
@@ -1452,6 +1451,7 @@ mod tests {
 
     #[test]
     fn equivocation_evidence_slashes_conflicting_validator() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1495,6 +1495,7 @@ mod tests {
 
     #[test]
     fn validator_can_repeat_same_block_vote_in_new_round() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1519,6 +1520,7 @@ mod tests {
 
     #[test]
     fn validator_conflicting_vote_in_later_round_is_allowed_for_liveness() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1559,7 +1561,8 @@ mod tests {
     }
 
     #[test]
-    fn local_vote_intent_persists_same_height_lock_before_signing() {
+    fn local_vote_intent_rejects_same_height_conflict_across_rounds() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let path = temp_vote_lock_path("local-vote-intent");
@@ -1592,14 +1595,23 @@ mod tests {
             "unexpected local vote lock error: {stale_error}"
         );
 
-        DualQuorumConsensus::register_local_vote_intent("validator2", &conflicting_block, 40, 3)
-            .expect("higher-round conflicting proposal should advance the local vote lock");
+        let higher_round_error = DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            3,
+        )
+        .expect_err("higher-round conflicting proposal must stay locked out");
+        assert!(
+            higher_round_error.contains("already locally voted for different block"),
+            "unexpected local vote lock error: {higher_round_error}"
+        );
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
-            .expect("updated vote locks should load");
-        assert_eq!(locks[&key].block_hash, conflicting_block.hash);
+            .expect("unchanged vote locks should load");
+        assert_eq!(locks[&key].block_hash, block.hash);
         assert_eq!(locks[&key].first_round_number, 1);
-        assert_eq!(locks[&key].latest_round_number, 3);
+        assert_eq!(locks[&key].latest_round_number, 2);
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
@@ -1609,6 +1621,7 @@ mod tests {
 
     #[test]
     fn verified_vote_signature_cache_key_binds_signature_material() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1647,6 +1660,7 @@ mod tests {
 
     #[test]
     fn merge_remote_votes_accepts_verified_votes_and_caches_signatures() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager =
@@ -1695,6 +1709,7 @@ mod tests {
 
     #[test]
     fn round_allocation_respects_view_floor() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1"]);
@@ -1717,6 +1732,7 @@ mod tests {
 
     #[test]
     fn round_allocation_skips_rounds_already_used_by_local_validator() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1750,6 +1766,7 @@ mod tests {
 
     #[test]
     fn missed_vote_timeouts_are_ignored_when_penalization_is_disabled() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1835,6 +1852,7 @@ mod tests {
 
     #[test]
     fn local_conflicting_vote_attempt_is_rejected_without_self_slashing() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
@@ -1887,6 +1905,7 @@ mod tests {
 
     #[test]
     fn identical_vote_replay_is_idempotent() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
         let validator_manager = approved_validator_manager(&["validator1", "validator2"]);

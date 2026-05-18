@@ -58,7 +58,7 @@ SynQ/
 │   ├── vote.qs
 │   └── wallet.qs
 │
-└── testnet-beta/                           # Testnet-Beta configs, accounts, test tools
+└── testnet/                           # Testnet configs, accounts, test tools
     ├── genesis.json
     ├── pq_accounts.json
     ├── deploy_script.ts

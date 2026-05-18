@@ -7,7 +7,7 @@ Authoritative source documents:
 
 Repo-local extracted working text:
 
-- `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/tmp/docs/security-implementation-spec.txt`
+- `/Users/devpup/Desktop/Testnet/synergy-testnet/tmp/docs/security-implementation-spec.txt`
 
 Current source note:
 
@@ -21,7 +21,7 @@ This document records how the repo should interpret the two source documents dur
 
 - The PDF is the acceptance baseline for Synergy's theft-mitigation architecture.
 - The DOCX is the execution specification. It expands the PDF into concrete engineering tasks, verification tests, and fail-closed design rules.
-- The matrix in [docs/crypto-theft-solutions-implementation-matrix.md](/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/docs/crypto-theft-solutions-implementation-matrix.md) is the completion tracker for both documents.
+- The matrix in [docs/crypto-theft-solutions-implementation-matrix.md](/Users/devpup/Desktop/Testnet/synergy-testnet/docs/crypto-theft-solutions-implementation-matrix.md) is the completion tracker for both documents.
 
 ## Defence Layers
 
@@ -71,4 +71,4 @@ This means EIP-7702 is no longer tracked only as part of replay or emerging-thre
 - Every security change must identify its primary layer owner and any required cross-layer backstops.
 - A feature is not complete until its verification test or test suite from the DOCX exists in code, CI, or documented operator validation.
 - CI gates should be added where the DOCX marks a requirement as critical or fail-closed.
-- The current repository should still be described as a `testbeta bootstrap plus tracked security implementation program` until the matrix reaches full completion.
+- The current repository should still be described as a `testnet bootstrap plus tracked security implementation program` until the matrix reaches full completion.

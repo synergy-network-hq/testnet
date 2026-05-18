@@ -1,5 +1,5 @@
 [Unit]
-Description=Synergy Testnet Beta Bootnode
+Description=Synergy Testnet Bootnode
 After=network.target
 Wants=network.target
 
@@ -7,12 +7,12 @@ Wants=network.target
 Type=simple
 User=devpup
 Group=synergydev
-WorkingDirectory=/opt/synergy/synergy-testbeta
-ExecStart=/opt/synergy/synergy-testbeta/target/release/synergy-testbeta start --config /opt/synergy/synergy-testbeta/config/bootnode1.toml
+WorkingDirectory=/opt/synergy/synergy-testnet
+ExecStart=/opt/synergy/synergy-testnet/target/release/synergy-testnet start --config /opt/synergy/synergy-testnet/config/bootnode1.toml
 Restart=always
 RestartSec=10
-StandardOutput=append:/opt/synergy/synergy-testbeta/data/logs/bootnode1.out
-StandardError=append:/opt/synergy/synergy-testbeta/data/logs/bootnode1.out
+StandardOutput=append:/opt/synergy/synergy-testnet/data/logs/bootnode1.out
+StandardError=append:/opt/synergy/synergy-testnet/data/logs/bootnode1.out
 
 # Resource limits to prevent memory issues
 MemoryLimit=2G

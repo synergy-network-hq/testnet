@@ -6,7 +6,7 @@
 set -e
 
 BINARY_DIR="/var/www/synergy-portal/binaries"
-PROJECT_DIR="/opt/synergy/synergy-testbeta"
+PROJECT_DIR="/opt/synergy/synergy-testnet"
 
 echo "🔄 Updating binary distribution..."
 echo "===================================="
@@ -36,7 +36,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-BINARY_PATH="target/release/synergy-testbeta"
+BINARY_PATH="target/release/synergy-testnet"
 
 if [ ! -f "$BINARY_PATH" ]; then
     echo "❌ Binary not found at $BINARY_PATH"
@@ -66,14 +66,14 @@ echo ""
 
 # Copy binary to distribution directory
 mkdir -p "$BINARY_DIR/$PLATFORM"
-cp "$BINARY_PATH" "$BINARY_DIR/$PLATFORM/synergy-testbeta"
-chmod +x "$BINARY_DIR/$PLATFORM/synergy-testbeta"
+cp "$BINARY_PATH" "$BINARY_DIR/$PLATFORM/synergy-testnet"
+chmod +x "$BINARY_DIR/$PLATFORM/synergy-testnet"
 
 # Create checksum file
 if [[ "$PLATFORM" == "linux" ]]; then
-    echo "$SHA256  synergy-testbeta" > "$BINARY_DIR/$PLATFORM/synergy-testbeta.sha256"
+    echo "$SHA256  synergy-testnet" > "$BINARY_DIR/$PLATFORM/synergy-testnet.sha256"
 else
-    echo "$SHA256  synergy-testbeta" > "$BINARY_DIR/$PLATFORM/synergy-testbeta.sha256"
+    echo "$SHA256  synergy-testnet" > "$BINARY_DIR/$PLATFORM/synergy-testnet.sha256"
 fi
 
 echo "✅ Binary copied to $BINARY_DIR/$PLATFORM/"
@@ -112,8 +112,8 @@ echo ""
 echo "✅ Distribution updated successfully!"
 echo ""
 echo "📊 Distribution URLs:"
-echo "   Binary: https://testbeta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta"
-echo "   Checksum: https://testbeta.synergy-network.io/binaries/$PLATFORM/synergy-testbeta.sha256"
-echo "   Info: https://testbeta.synergy-network.io/binaries/latest.json"
+echo "   Binary: https://testnet.synergy-network.io/binaries/$PLATFORM/synergy-testnet"
+echo "   Checksum: https://testnet.synergy-network.io/binaries/$PLATFORM/synergy-testnet.sha256"
+echo "   Info: https://testnet.synergy-network.io/binaries/latest.json"
 echo ""
 

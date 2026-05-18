@@ -1,6 +1,6 @@
-# Synergy Network Testnet Beta Setup Guide
+# Synergy Network Testnet Setup Guide
 
-This guide walks you through setting up and running a node for the Synergy Network Testnet Beta.
+This guide walks you through setting up and running a node for the Synergy Network Testnet.
 
 ---
 
@@ -23,8 +23,8 @@ Make sure your system has the following installed:
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/synergy-network-hq/testnet-beta.git synergy-testbeta
-cd synergy-testbeta
+git clone https://github.com/synergy-network-hq/testnet.git synergy-testnet
+cd synergy-testnet
 ```
 
 ### 2. Install Rust (if not already installed)
@@ -37,25 +37,25 @@ source $HOME/.cargo/env
 ### 3. Build the Project
 
 ```bash
-cargo build --release --bin synergy-testbeta
+cargo build --release --bin synergy-testnet
 ```
 
-### 4. Start the Testnet Beta Node
+### 4. Start the Testnet Node
 
 ```bash
-bash scripts/start-testbeta.sh
+bash scripts/start-testnet.sh
 ```
 
 This will:
 - Load `config/genesis.json`
 - Load `config/network-config.toml`
 - Start the node in background
-- Save logs to `data/logs/testbeta.out`
+- Save logs to `data/logs/testnet.out`
 
-### 5. Stop the Testnet Beta Node
+### 5. Stop the Testnet Node
 
 ```bash
-bash scripts/stop-testbeta.sh
+bash scripts/stop-testnet.sh
 ```
 
 ---
@@ -74,7 +74,7 @@ cargo test
 
 - `src/` — Blockchain, consensus, RPC
 - `config/` — Genesis, network, token metadata
-- `scripts/` — Start/stop/testbeta helper scripts
+- `scripts/` — Start/stop/testnet helper scripts
 - `docs/` — Developer documentation
 - `tests/` — Core integration/unit tests
 - `dependencies/` — Optional dependency manifests

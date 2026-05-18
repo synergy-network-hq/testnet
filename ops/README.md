@@ -1,14 +1,20 @@
-## Testnet-Beta Ops Canonicals
+## Testnet Ops Canonicals
 
 This directory holds the source-of-truth operational configs that have to stay
-aligned with the live Testnet-Beta infrastructure.
+aligned with the live Testnet infrastructure.
 
 - `observability/prometheus.observer.yml`
   Canonical Prometheus config for the observer host.
-- `nginx/testbeta-core-rpc.synergy-network.io.conf`
+- `observability/grafana/*.json`
+  Importable Grafana dashboards for network overview, consensus/chain health,
+  host infrastructure, and public edge/bootstrap reachability.
+- `observability/import-grafana-dashboards.sh`
+  Imports every dashboard JSON into a Grafana instance using `GRAFANA_URL` plus
+  either `GRAFANA_API_TOKEN` or `GRAFANA_USER` / `GRAFANA_PASSWORD`.
+- `nginx/testnet-core-rpc.synergy-network.io.conf`
   Canonical public RPC / WS reverse proxy config, including allowlisted metrics
   paths for the observer.
-- `nginx/testbeta-explorer.conf`
+- `nginx/testnet-explorer.conf`
   Canonical public explorer / Atlas / indexer reverse proxy config, including
   the allowlisted explorer metrics path for the observer.
 

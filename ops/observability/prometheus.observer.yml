@@ -1,4 +1,4 @@
-# Prometheus configuration for the Synergy Testnet-Beta observer.
+# Prometheus configuration for the Synergy Testnet observer.
 # Location on observer: /opt/prometheus/config/prometheus.yml
 
 global:
@@ -6,8 +6,8 @@ global:
   scrape_timeout: 8s
   evaluation_interval: 15s
   external_labels:
-    network: testnet-beta
-    chain_id: "338639"
+    network: testnet
+    chain_id: "1262"
 
 alerting:
   alertmanagers:
@@ -41,7 +41,7 @@ scrape_configs:
   - job_name: "synergy-relayers"
     metrics_path: /metrics
     static_configs:
-      - targets: ["10.69.0.201:6030"]
+      - targets: ["10.69.0.20:6030"]
         labels: { role: relayer, host: relayer-1, instance_label: "Relayer-1" }
       - targets: ["10.69.0.202:6030"]
         labels: { role: relayer, host: relayer-2, instance_label: "Relayer-2" }
@@ -50,14 +50,14 @@ scrape_configs:
     scheme: https
     metrics_path: /metrics/node-rpc
     static_configs:
-      - targets: ["testbeta-core-rpc.synergy-network.io"]
+      - targets: ["testnet-core-rpc.synergy-network.io"]
         labels: { role: rpc_gateway, host: rpc-gateway, instance_label: "RPC-Gateway" }
 
   - job_name: "synergy-explorer"
     scheme: https
     metrics_path: /metrics/node-exp
     static_configs:
-      - targets: ["testbeta-explorer.synergy-network.io"]
+      - targets: ["testnet-explorer.synergy-network.io"]
         labels: { role: explorer, host: explorer, instance_label: "Explorer" }
 
   - job_name: "node_exporter_private"
@@ -72,7 +72,7 @@ scrape_configs:
         labels: { role: validator, host: val4, instance_label: "Val4" }
       - targets: ["10.69.0.5:9100"]
         labels: { role: validator, host: val5, instance_label: "Val5" }
-      - targets: ["10.69.0.201:9100"]
+      - targets: ["10.69.0.20:9100"]
         labels: { role: relayer, host: relayer-1, instance_label: "Relayer-1" }
       - targets: ["10.69.0.202:9100"]
         labels: { role: relayer, host: relayer-2, instance_label: "Relayer-2" }
@@ -83,7 +83,7 @@ scrape_configs:
     scheme: https
     metrics_path: /metrics/node-exporter
     static_configs:
-      - targets: ["testbeta-core-rpc.synergy-network.io"]
+      - targets: ["testnet-core-rpc.synergy-network.io"]
         labels: { role: infra, host: infra-74-208, instance_label: "Explorer+RPC" }
 
   - job_name: "public-tcp-probes"
@@ -116,11 +116,11 @@ scrape_configs:
     params:
       module: ["http_2xx"]
     static_configs:
-      - targets: ["https://testbeta-core-rpc.synergy-network.io/healthz"]
+      - targets: ["https://testnet-core-rpc.synergy-network.io/healthz"]
         labels: { role: rpc_gateway, host: rpc-gateway, instance_label: "RPC-Gateway", probe_label: "https_health" }
-      - targets: ["https://testbeta-explorer.synergy-network.io/healthz"]
+      - targets: ["https://testnet-explorer.synergy-network.io/healthz"]
         labels: { role: explorer, host: explorer, instance_label: "Explorer", probe_label: "https_health" }
-      - targets: ["https://testbeta-atlas-api.synergy-network.io/healthz"]
+      - targets: ["https://testnet-atlas-api.synergy-network.io/healthz"]
         labels: { role: atlas_api, host: atlas-api, instance_label: "Atlas-API", probe_label: "https_health" }
     relabel_configs:
       - source_labels: [__address__]

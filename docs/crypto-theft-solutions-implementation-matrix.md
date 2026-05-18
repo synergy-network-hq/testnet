@@ -7,7 +7,7 @@ Source documents:
 
 Working extraction for repo-local review:
 
-- `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/tmp/docs/security-implementation-spec.txt`
+- `/Users/devpup/Desktop/Testnet/synergy-testnet/tmp/docs/security-implementation-spec.txt`
 
 This file is the acceptance checklist for the security architecture described in the PDF. It is intentionally strict: do not mark an item complete until the protocol, wallet, runtime, tests, and operator docs all reflect the change.
 
@@ -86,4 +86,4 @@ Source update note:
 
 ## Exit Criteria
 
-All rows must be `Complete` before claiming full compliance with the PDF. Until then, this repository should be described as a bootstrap for testnet beta plus a tracked security implementation program, not as a finished implementation of the entire document.
+All rows must be `Complete` before claiming full compliance with the PDF. Until then, this repository should be described as a bootstrap for testnet plus a tracked security implementation program, not as a finished implementation of the entire document.

@@ -55,7 +55,7 @@
       {
         "label": "sentry1",
         "public_host": "relay1.synergynode.xyz",
-        "private_host": "10.69.0.201",
+        "private_host": "10.69.0.20",
         "public_ip": "195.26.241.95",
         "port": 5622,
         "metrics_port": 6030

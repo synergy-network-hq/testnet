@@ -1,4 +1,4 @@
-use synergy_testbeta::consensus;
+use synergy_testnet::consensus;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;

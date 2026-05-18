@@ -1,5 +1,5 @@
 #!/bin/bash
-# Real-time block monitor for Synergy Testnet-Beta
+# Real-time block monitor for Synergy Testnet
 # Usage: ./monitor-blocks.sh
 
 RPC_URL="${RPC_URL:-http://127.0.0.1:5640/rpc}"
@@ -12,7 +12,7 @@ elif [[ "$1" =~ ^https?:// ]]; then
 fi
 INTERVAL=2  # Check every 2 seconds
 
-echo "🔍 Synergy Testnet-Beta Block Monitor"
+echo "🔍 Synergy Testnet Block Monitor"
 echo "================================"
 echo "RPC: $RPC_URL"
 echo "Override: RPC_URL env or './monitor-blocks.sh --rpc http://host:port/rpc'"

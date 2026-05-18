@@ -1,6 +1,6 @@
-# Synergy Testnet Beta
+# Synergy Testnet
 
-`synergy-testbeta` is the testnet beta repository derived from the earlier beta codebase. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
+This repository contains the Synergy public testnet implementation and canonical chain `1262` genesis artifacts. Operational keys, generated installers, and other machine-local artifacts are intentionally excluded from this repository. Generate fresh identities and bootstrap material before deployment.
 
 ## 🚀 Overview
 
@@ -22,7 +22,7 @@ The **Synergy Network** is a next-generation blockchain platform featuring revol
 
 ### 💰 Advanced Token System
 - **Multi-Token Support**: Create and manage multiple token types
-- **Native Token (SNRG)**: 1,150,000 initial supply with 9 decimals
+- **Native Token (SNRG)**: 12,000,000,000 fixed testnet supply with 9 decimals
 - **Staking Integration**: Lock tokens to earn rewards
 - **Token Operations**: Mint, burn, transfer, and query balances
 
@@ -75,17 +75,17 @@ source $HOME/.cargo/env
 ### Installation & Setup
 ```bash
 # Clone repository into a hyphen-safe local directory
-git clone https://github.com/synergy-network-hq/testnet-beta.git synergy-testbeta
-cd synergy-testbeta
+git clone https://github.com/synergy-network-hq/testnet.git synergy-testnet
+cd synergy-testnet
 
 # Initialize configuration
 cargo run --release -- init
 
 # Build the node
-cargo build --release --bin synergy-testbeta
+cargo build --release --bin synergy-testnet
 
 # Start the node
-cargo run --release --bin synergy-testbeta -- start
+cargo run --release --bin synergy-testnet -- start
 ```
 
 ### API Usage Examples
@@ -120,6 +120,7 @@ curl -X POST http://localhost:8545 \
 
 ### Technical Documentation
 - **[Validator Guide](./docs/validator-guide.md)**: Running validator nodes
+- **[Synergy Testnet Validator Onboarding](./docs/synergy-testnet-validator-onboarding.md)**: Chain `1262` genesis verification, preflight, admission, and failure modes
 - **[Configuration Guide](./docs/config-guide.md)**: Configuration options
 - **[Troubleshooting](./docs/troubleshooting.md)**: Common issues and solutions
 
@@ -129,8 +130,8 @@ curl -X POST http://localhost:8545 \
 ```toml
 # config/network-config.toml
 [network]
-name = "synergy-testnet-beta"
-chain_id = 338639
+name = "synergy-testnet"
+chain_id = 1262
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660
@@ -195,12 +196,13 @@ We welcome contributions from the community! Here's how to get involved:
 ## 📊 Network Statistics
 
 ### Current Metrics
-- **Network ID**: 338639
-- **Chain ID**: 338639
+- **Network ID**: 1262
+- **Chain ID**: 1262
 - **Block Time**: 5 seconds
 - **Consensus**: Proof of Synergy
 - **Native Token**: SNRG (9 decimals)
-- **Total Supply**: 1,150,000 SNRG
+- **Total Supply**: 12,000,000,000 SNRG
+- **Total Supply (nWei)**: 12000000000000000000
 
 ### Performance Metrics
 - **Average TPS**: Variable based on network load

@@ -1,5 +1,5 @@
 #!/bin/bash
-# Synergy Testnet-Beta - List All Validators
+# Synergy Testnet - List All Validators
 # Shows validator addresses, balances, and Synergy Scores
 
 set -e
@@ -11,10 +11,10 @@ BLUE='\033[0;34m'
 CYAN='\033[0;36m'
 NC='\033[0m' # No Color
 
-RPC_ENDPOINT="${RPC_ENDPOINT:-https://testbeta-core-rpc.synergynode.xyz/rpc}"
+RPC_ENDPOINT="${RPC_ENDPOINT:-https://testnet-core-rpc.synergy-network.io}"
 
 echo -e "${BLUE}===================================${NC}"
-echo -e "${BLUE}Synergy Testnet-Beta - Active Validators${NC}"
+echo -e "${BLUE}Synergy Testnet - Active Validators${NC}"
 echo -e "${BLUE}===================================${NC}"
 echo ""
 

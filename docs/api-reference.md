@@ -570,11 +570,11 @@ Returns node information.
 **Returns:**
 ```json
 {
-  "name": "Synergy Testnet-Beta Node",
+  "name": "Synergy Testnet Node",
   "version": "1.0.0",
   "protocolVersion": 1,
-  "networkId": 338639,
-  "chainId": 338639,
+  "networkId": 1262,
+  "chainId": 1262,
   "consensus": "Proof of Synergy",
   "syncing": false,
   "currentBlock": 123,

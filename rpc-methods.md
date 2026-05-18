@@ -1,6 +1,6 @@
-# Synergy Testnet-Beta RPC Methods
+# Synergy Testnet RPC Methods
 
-This document lists all available JSON-RPC methods for the Synergy Testnet-Beta.
+This document lists all available JSON-RPC methods for the Synergy Testnet.
 
 ## Endpoint
 
@@ -232,8 +232,8 @@ Get node information.
 - `name`: Node name
 - `version`: Node version
 - `protocolVersion`: Protocol version (null if not set)
-- `networkId`: Network ID (338639 for testnet-beta)
-- `chainId`: Chain ID (338639 for testnet-beta)
+- `networkId`: Network ID (1262 for testnet)
+- `chainId`: Chain ID (1262 for testnet)
 - `consensus`: Consensus algorithm
 - `syncing`: Sync status (boolean)
 - `currentBlock`: Current block number
@@ -1088,7 +1088,7 @@ Set the SXCP heartbeat timeout.
 Reset SXCP state (requires confirmation token).
 
 **Parameters**:
-- `confirmation_token` (string) - Must be "TESTBETA_RESET_SXCP_STATE"
+- `confirmation_token` (string) - Must be "TESTNET_RESET_SXCP_STATE"
 
 **Returns**: 
 ```json
@@ -1177,7 +1177,7 @@ Execute a contract call locally (read-only, no state change).
 - `result`: Return value (hex, `"0x"` when AIVM is disabled)
 - `note`: Status message
 
-**Note**: AIVM contract execution is currently disabled in testnet-beta. Contract calls return empty results until AIVM is re-enabled.
+**Note**: AIVM contract execution is currently disabled in testnet. Contract calls return empty results until AIVM is re-enabled.
 
 ---
 
@@ -1346,7 +1346,7 @@ Get the chain ID.
 
 **Parameters**: None
 
-**Returns**: `number` - Chain ID (338639 for testnet-beta)
+**Returns**: `number` - Chain ID (1262 for testnet)
 
 ---
 
@@ -1710,11 +1710,11 @@ Common error codes:
 
 3. **Timestamps**: All timestamps are Unix timestamps in seconds.
 
-4. **AIVM Methods**: AIVM (Artificial Intelligence Virtual Machine) methods are currently disabled in the testnet-beta.
+4. **AIVM Methods**: AIVM (Artificial Intelligence Virtual Machine) methods are currently disabled in the testnet.
 
 5. **Network IDs**: 
-   - Testnet-Beta Network ID: 338639
-   - Testnet-Beta Chain ID: 338639
+   - Testnet Network ID: 1262
+   - Testnet Chain ID: 1262
 
 6. **Address Formats**:
    - Wallet addresses: `synw...` (bech32m encoded)

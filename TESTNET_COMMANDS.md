@@ -1,4 +1,4 @@
-# Synergy Testnet-Beta Command Reference
+# Synergy Testnet Command Reference
 
 ## Frozen Port Model
 
@@ -15,11 +15,11 @@
 ## Canonical Public Endpoints
 
 ```text
-https://testbeta-core-rpc.synergy-network.io
-wss://testbeta-core-ws.synergy-network.io
-https://testbeta-api.synergy-network.io
-https://testbeta-explorer.synergy-network.io
-https://testbeta-atlas-api.synergy-network.io
+https://testnet-core-rpc.synergy-network.io
+wss://testnet-core-ws.synergy-network.io
+https://testnet-api.synergy-network.io
+https://testnet-explorer.synergy-network.io
+https://testnet-atlas-api.synergy-network.io
 ```
 
 ## Bootnodes
@@ -41,8 +41,8 @@ http://seed3.synergynode.xyz:5621
 ## Process Status
 
 ```bash
-pgrep -la synergy-testbeta
-ps aux | grep synergy-testbeta | grep -v grep
+pgrep -la synergy-testnet
+ps aux | grep synergy-testnet | grep -v grep
 systemctl status synergy-bootnode
 systemctl status synergy-seed
 ```
@@ -97,7 +97,7 @@ LOCAL=$(curl -s -X POST http://127.0.0.1:5640 \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
   | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
 
-PUBLIC=$(curl -s -X POST https://testbeta-core-rpc.synergy-network.io \
+PUBLIC=$(curl -s -X POST https://testnet-core-rpc.synergy-network.io \
   -H 'Content-Type: application/json' \
   -d '{"jsonrpc":"2.0","method":"synergy_blockNumber","params":[],"id":1}' \
   | python3 -c "import sys,json; print(int(json.load(sys.stdin)['result'],16))")
@@ -162,12 +162,12 @@ watch -n 5 "curl -s http://127.0.0.1:6030/metrics | grep synergy_block_height"
 ## Launch Package Commands
 
 ```bash
-nohup synergy-testbeta start \
-  --config ~/.synergy/testnet-beta/node-01/config/node.toml \
-  > ~/.synergy/testnet-beta/node-01/logs/node.out 2>&1 &
+nohup synergy-testnet start \
+  --config ~/.synergy/testnet/node-01/config/node.toml \
+  > ~/.synergy/testnet/node-01/logs/node.out 2>&1 &
 
-tail -f ~/.synergy/testnet-beta/node-01/logs/node.out
-tail -f ~/.synergy/testnet-beta/node-01/data/logs/validator.log
+tail -f ~/.synergy/testnet/node-01/logs/node.out
+tail -f ~/.synergy/testnet/node-01/data/logs/validator.log
 ```
 
 ## Bootnode / Seed Bundle Health
@@ -183,7 +183,7 @@ curl -s http://seed1.synergynode.xyz:5621/peer-list.json | python3 -m json.tool
 ## Quick Smoke Check
 
 ```bash
-echo "=== Process ===" && pgrep -la synergy-testbeta || echo "NOT RUNNING"
+echo "=== Process ===" && pgrep -la synergy-testnet || echo "NOT RUNNING"
 echo "=== P2P ===" && lsof -iTCP:5622 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== RPC ===" && lsof -iTCP:5640 -sTCP:LISTEN || echo "NOT LISTENING"
 echo "=== Metrics ===" && lsof -iTCP:6030 -sTCP:LISTEN || echo "NOT LISTENING"

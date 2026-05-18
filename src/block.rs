@@ -145,6 +145,32 @@ impl BlockChain {
         self.chain.push(block);
     }
 
+    pub fn add_block_extending_tip(&mut self, block: Block) -> Result<bool, String> {
+        if let Some(tip) = self.chain.last() {
+            if tip.block_index == block.block_index && tip.hash == block.hash {
+                return Ok(false);
+            }
+
+            let expected_height = tip.block_index.saturating_add(1);
+            if block.block_index != expected_height {
+                return Err(format!(
+                    "block height {} does not extend local tip {}",
+                    block.block_index, tip.block_index
+                ));
+            }
+
+            if block.previous_hash != tip.hash {
+                return Err(format!(
+                    "block parent {} does not match local tip hash {} at height {}",
+                    block.previous_hash, tip.hash, tip.block_index
+                ));
+            }
+        }
+
+        self.chain.push(block);
+        Ok(true)
+    }
+
     pub fn last(&self) -> Option<&Block> {
         self.chain.last()
     }
@@ -269,5 +295,78 @@ impl BlockChain {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Block, BlockChain};
+
+    fn block(height: u64, previous_hash: String, validator: &str) -> Block {
+        Block::new_with_timestamp(
+            height,
+            Vec::new(),
+            previous_hash,
+            validator.to_string(),
+            height,
+            100 + height,
+        )
+    }
+
+    #[test]
+    fn add_block_extending_tip_accepts_next_child() {
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let child = block(1, genesis.hash.clone(), "validator-2");
+        let mut chain = BlockChain {
+            chain: vec![genesis],
+        };
+
+        assert_eq!(chain.add_block_extending_tip(child.clone()), Ok(true));
+        assert_eq!(
+            chain.last().map(|block| block.hash.as_str()),
+            Some(child.hash.as_str())
+        );
+    }
+
+    #[test]
+    fn add_block_extending_tip_skips_exact_duplicate_tip() {
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let mut chain = BlockChain {
+            chain: vec![genesis.clone()],
+        };
+
+        assert_eq!(chain.add_block_extending_tip(genesis), Ok(false));
+        assert_eq!(chain.chain.len(), 1);
+    }
+
+    #[test]
+    fn add_block_extending_tip_rejects_same_height_fork() {
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let canonical = block(1, genesis.hash.clone(), "validator-2");
+        let fork = block(1, genesis.hash.clone(), "validator-3");
+        let mut chain = BlockChain {
+            chain: vec![genesis, canonical],
+        };
+
+        let error = chain
+            .add_block_extending_tip(fork)
+            .expect_err("same-height fork rejected");
+        assert!(error.contains("does not extend local tip"));
+        assert_eq!(chain.chain.len(), 2);
+    }
+
+    #[test]
+    fn add_block_extending_tip_rejects_wrong_parent() {
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let mut chain = BlockChain {
+            chain: vec![genesis],
+        };
+        let wrong_parent = block(1, "other-parent".to_string(), "validator-2");
+
+        let error = chain
+            .add_block_extending_tip(wrong_parent)
+            .expect_err("wrong-parent child rejected");
+        assert!(error.contains("does not match local tip hash"));
+        assert_eq!(chain.chain.len(), 1);
     }
 }

@@ -1,5 +1,5 @@
 {
-  "address": "replace-with-testbeta-rewards-pool-address",
+  "address": "replace-with-testnet-rewards-pool-address",
   "public_key": "replace-with-public-key",
   "private_key": "generate-locally-and-do-not-commit",
   "address_type": "WalletPrimary",

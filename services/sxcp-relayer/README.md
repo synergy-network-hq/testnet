@@ -1,6 +1,6 @@
 # SXCP Relayer Daemon
 
-Production-grade post-quantum cryptography (PQC) enabled relayer daemon for cross-chain intent execution on Synergy Testnet-Beta.
+Production-grade post-quantum cryptography (PQC) enabled relayer daemon for cross-chain intent execution on Synergy Testnet.
 
 ## Overview
 
@@ -10,7 +10,7 @@ The SXCP Relayer implements the watch→finalize→sign→submit→report loop f
 2. **Finalize**: Collect PQC signatures from peer relayers via quorum coordination
 3. **Sign**: Generate ML-DSA/FN-DSA signatures via Aegis-PQVM
 4. **Submit**: Submit attestation bundles to destination chain once 2/3 BFT threshold reached
-5. **Report**: Report results back to Synergy Testnet-Beta
+5. **Report**: Report results back to Synergy Testnet
 
 ## Architecture
 
@@ -20,7 +20,7 @@ The SXCP Relayer implements the watch→finalize→sign→submit→report loop f
 - **watcher.js**: Source chain event monitoring (WebSocket + polling fallback)
 - **coordinator.js**: Quorum management and PQC signature coordination
 - **submitter.js**: Destination chain transaction submission with gas management
-- **reporter.js**: Synergy Testnet-Beta reporting and heartbeat
+- **reporter.js**: Synergy Testnet reporting and heartbeat
 - **store.js**: SQLite persistence layer for state management
 
 ### Key Features
@@ -57,7 +57,7 @@ SEPOLIA_WS_URL=wss://eth-sepolia.g.alchemy.com/v2/YOUR_KEY
 AMOY_RPC_URL=https://polygon-amoy.g.alchemy.com/v2/YOUR_KEY
 AMOY_WS_URL=wss://polygon-amoy.g.alchemy.com/v2/YOUR_KEY
 
-# Synergy Testnet-Beta
+# Synergy Testnet
 SYNERGY_RPC_URL=http://127.0.0.1:5640
 
 # Relayer Identity
@@ -69,19 +69,19 @@ PQC_PUBLIC_KEY_B64=...                 # Base64 encoded public key
 PQC_PRIVATE_KEY_PATH=./keys/relayer.pqc.enc
 
 # Paths
-SXCP_RELAYER_CONFIG_PATH=../../sxcp/sxcp_external_chains/evm/runtime/testbeta-sxcp-relayer-config.json
+SXCP_RELAYER_CONFIG_PATH=../../sxcp/sxcp_external_chains/evm/runtime/testnet-sxcp-relayer-config.json
 SQLITE_DB_PATH=./data/relayer.db
 ```
 
 ### Runtime Configuration
 
-Optional `testbeta-sxcp-relayer-config.json`:
+Optional `testnet-sxcp-relayer-config.json`:
 
 ```json
 {
   "sepoliaChainId": 11155111,
   "amoyChainId": 80002,
-  "destinationChainId": 338639,
+  "destinationChainId": 1262,
   "sxcpIntentHubAddress": "0x...",
   "sxcpVaultAddress": "0x...",
   "threshold": 2,
@@ -303,13 +303,13 @@ All events are logged to stdout/stderr with ISO timestamps:
 [Watcher:80002] IntentCommitted: 0x... from 0x... (nonce: 42)
 [Coordinator] Registered bundle 0x... with threshold 2
 [Coordinator] Bundle 0x... reached quorum!
-[Submitter] Bundle 0x... submitted to chain 338639: 0x...
+[Submitter] Bundle 0x... submitted to chain 1262: 0x...
 [Reporter] Submitted attestation for bundle 0x...
 ```
 
 ### Metrics (via Reporter)
 
-Track in Synergy Testnet-Beta:
+Track in Synergy Testnet:
 - Bundle submission rate
 - Average quorum time
 - Signature verification failures

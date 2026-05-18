@@ -1,5 +1,5 @@
 {
-  "address": "replace-with-testbeta-cluster-address",
+  "address": "replace-with-testnet-cluster-address",
   "public_key": "replace-with-public-key",
   "private_key": "generate-locally-and-do-not-commit",
   "address_type": "ClusterGroup1",

@@ -1,4 +1,4 @@
-use synergy_testbeta::node::Blockchain;
+use synergy_testnet::node::Blockchain;
 
 #[test]
 fn test_smart_contract_deployment() {

@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::time::Duration;
-use synergy_testbeta::rpc::rpc_server;
+use synergy_testnet::rpc::rpc_server;
 
 #[test]
 fn test_rpc_server() {

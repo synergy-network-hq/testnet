@@ -1,7 +1,7 @@
 #!/bin/bash
 # Install API router configuration file
 
-sudo cp /opt/synergy/synergy-testbeta/api.synergy-network.io /etc/nginx/sites-available/api.synergy-network.io
+sudo cp /opt/synergy/synergy-testnet/api.synergy-network.io /etc/nginx/sites-available/api.synergy-network.io
 sudo chown root:synergydev /etc/nginx/sites-available/api.synergy-network.io
 sudo chmod 664 /etc/nginx/sites-available/api.synergy-network.io
 

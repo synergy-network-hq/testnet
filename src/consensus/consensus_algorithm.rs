@@ -15,8 +15,8 @@ use crate::rpc::rpc_server::{
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
     apply_validator_activation_transaction, consensus_membership_validators,
-    is_validator_activation_transaction, Validator, ValidatorManager,
-    TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
+    is_validator_activation_transaction, replay_validator_activation_transactions, Validator,
+    ValidatorManager, TESTNET_BETA_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
 use crate::{debug, info, warn};
@@ -228,6 +228,34 @@ impl ProofOfSynergy {
             }
         }
 
+        let chain_snapshot = {
+            let chain_guard = chain.lock().unwrap();
+            chain_guard.clone()
+        };
+        let token_manager = TOKEN_MANAGER.clone();
+        let (activation_replayed, activation_failed) = replay_validator_activation_transactions(
+            &chain_snapshot,
+            &token_manager,
+            &validator_manager,
+        );
+        if activation_replayed > 0 || activation_failed > 0 {
+            info!(
+                "consensus",
+                "Replayed validator activation transactions into registry",
+                "replayed" => activation_replayed,
+                "failed" => activation_failed
+            );
+        }
+        if activation_replayed > 0 {
+            if let Err(error) = validator_manager.save_registry(VALIDATOR_REGISTRY_PATH) {
+                warn!(
+                    "consensus",
+                    "Failed to persist replayed validator activations",
+                    "error" => error.to_string()
+                );
+            }
+        }
+
         let synergy_scores = Self::load_synergy_scores().unwrap_or_else(|| {
             println!("🔧 No synergy scores found — initializing empty scores.");
             SynergyScores {
@@ -240,7 +268,7 @@ impl ProofOfSynergy {
             .ok()
             .map(|cfg| cfg.consensus);
 
-        // Load consensus timing from env/config for deterministic testnet-beta tuning.
+        // Load consensus timing from env/config for deterministic testnet tuning.
         let block_time = std::env::var("SYNERGY_CONSENSUS_BLOCK_TIME_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -836,6 +864,22 @@ impl ProofOfSynergy {
                         use std::io::{self, Write};
                         io::stdout().flush().unwrap();
 
+                        let dag_vertex_hash = crate::dag::create_proposal_vertex_for_transactions(
+                            &processed_transactions,
+                            &selected_validator.address,
+                            next_block_index,
+                        );
+                        if let Some(hash) = &dag_vertex_hash {
+                            info!(
+                                "consensus",
+                                "Created DAG proposal vertex",
+                                "height" => next_block_index,
+                                "vertex_hash" => hash.clone(),
+                                "transactions" => processed_transactions.len() as u64,
+                                "validator" => selected_validator.address.clone()
+                            );
+                        }
+
                         // Phase 2: Block proposal
                         consensus_log!("Calling create_block_proposal...");
                         io::stdout().flush().unwrap();
@@ -885,30 +929,62 @@ impl ProofOfSynergy {
                                 // block starts with the primary scheduled leader again.
                                 last_logged_view_timeout = None;
 
+                                let mut block_appended_to_local_tip = false;
                                 let persist_snapshot = {
                                     let mut chain_guard = chain.lock().unwrap();
-                                    chain_guard.add_block(new_block.clone());
-                                    let tip_height = chain_guard
-                                        .last()
-                                        .map(|block| block.block_index)
-                                        .unwrap_or(new_block.block_index);
-                                    if Self::should_persist_consensus_chain_tip(tip_height) {
-                                        let snapshot = chain_guard.clone();
-                                        Self::note_consensus_chain_persist(tip_height);
-                                        Some((snapshot, tip_height))
-                                    } else {
+                                    match chain_guard.add_block_extending_tip(new_block.clone()) {
+                                        Ok(true) => {
+                                            block_appended_to_local_tip = true;
+                                        }
+                                        Ok(false) => {
+                                            info!(
+                                                "consensus",
+                                                "Committed block was already applied to local tip",
+                                                "height" => new_block.block_index,
+                                                "hash" => new_block.hash.clone()
+                                            );
+                                        }
+                                        Err(error) => {
+                                            warn!(
+                                                "consensus",
+                                                "Skipping stale committed block that no longer extends local tip",
+                                                "height" => new_block.block_index,
+                                                "hash" => new_block.hash.clone(),
+                                                "error" => error
+                                            );
+                                        }
+                                    }
+
+                                    if !block_appended_to_local_tip {
                                         None
+                                    } else {
+                                        let tip_height = chain_guard
+                                            .last()
+                                            .map(|block| block.block_index)
+                                            .unwrap_or(new_block.block_index);
+                                        if Self::should_persist_consensus_chain_tip(tip_height) {
+                                            let snapshot = chain_guard.clone();
+                                            Self::note_consensus_chain_persist(tip_height);
+                                            Some((snapshot, tip_height))
+                                        } else {
+                                            None
+                                        }
                                     }
                                 };
+                                if !block_appended_to_local_tip {
+                                    continue;
+                                }
                                 if let Some((snapshot, tip_height)) = persist_snapshot {
                                     Self::persist_consensus_chain_tip_async(snapshot, tip_height);
                                 }
+                                let committed_dag_vertices = crate::dag::commit_block(&new_block);
                                 Self::prune_cached_block_proposals(new_block.block_index);
 
                                 // Apply state transitions for included transactions (token transfers, staking, etc.)
                                 let token_manager = TOKEN_MANAGER.clone();
                                 let mut applied_txs = 0u64;
                                 let mut failed_txs = 0u64;
+                                let mut applied_validator_activations = 0u64;
                                 for tx in &new_block.transactions {
                                     match token_manager
                                         .process_transaction_in_block(tx, new_block.block_index)
@@ -930,12 +1006,15 @@ impl ProofOfSynergy {
                                             &token_manager,
                                             &validator_manager,
                                         ) {
-                                            Ok(message) => info!(
-                                                "consensus",
-                                                "Applied validator activation",
-                                                "tx_hash" => tx.hash(),
-                                                "message" => message
-                                            ),
+                                            Ok(message) => {
+                                                applied_validator_activations += 1;
+                                                info!(
+                                                    "consensus",
+                                                    "Applied validator activation",
+                                                    "tx_hash" => tx.hash(),
+                                                    "message" => message
+                                                );
+                                            }
                                             Err(error) => warn!(
                                                 "consensus",
                                                 "Failed to apply validator activation",
@@ -949,6 +1028,17 @@ impl ProofOfSynergy {
                                 // Persist token state for explorer continuity across restarts (best-effort).
                                 if let Err(e) = token_manager.save_state("data/token_state.json") {
                                     warn!("consensus", "Failed to persist token state", "error" => e.to_string());
+                                }
+                                if applied_validator_activations > 0 {
+                                    if let Err(e) =
+                                        validator_manager.save_registry(VALIDATOR_REGISTRY_PATH)
+                                    {
+                                        warn!(
+                                            "consensus",
+                                            "Failed to persist validator registry after activation",
+                                            "error" => e.to_string()
+                                        );
+                                    }
                                 }
 
                                 // Broadcast the committed block to peers (best-effort).
@@ -1027,6 +1117,7 @@ impl ProofOfSynergy {
                                     }).to_string(),
                                     "cluster_info" => cluster_info.as_ref().map(|c| c.to_string()).unwrap_or_default(),
                                     "txs" => new_block.transactions.len() as u64,
+                                    "dag_vertices_committed" => committed_dag_vertices.len() as u64,
                                     "txs_pruned_from_pool" => pruned_transactions as u64,
                                     "txs_applied" => applied_txs,
                                     "txs_failed" => failed_txs,
@@ -1363,16 +1454,14 @@ impl ProofOfSynergy {
     }
 
     fn deterministic_view_offset_for_time(
-        _last_block_timestamp: u64,
-        _leader_timeout_secs: u64,
-        _current_timestamp: u64,
+        last_block_timestamp: u64,
+        leader_timeout_secs: u64,
+        current_timestamp: u64,
     ) -> usize {
-        // Do not rotate leaders from each validator's local wall-clock view.
-        // Even with the previous block timestamp as a shared anchor, nodes can
-        // cross a timeout boundary seconds apart and propose competing blocks
-        // at the same height. Keep the primary deterministic leader fixed until
-        // view changes are backed by an explicit network certificate.
-        0
+        let timeout_secs = leader_timeout_secs.max(1);
+        let elapsed_secs = current_timestamp.saturating_sub(last_block_timestamp);
+
+        (elapsed_secs / timeout_secs) as usize
     }
 
     fn handle_epoch_transition(
@@ -1912,7 +2001,7 @@ impl ProofOfSynergy {
         }
 
         // 1. Verify transaction signature (best-effort)
-        // NOTE: Testnet Beta currently allows transactions even if the sender public key
+        // NOTE: Testnet currently allows transactions even if the sender public key
         // isn't known locally (remote wallets). If a public key is available, we verify.
         let public_key = Self::get_transaction_public_key(&tx.sender);
         if let Some(public_key) = public_key {
@@ -2323,7 +2412,7 @@ mod tests {
     }
 
     #[test]
-    fn deterministic_view_offset_stays_on_primary_without_certified_view_change() {
+    fn deterministic_view_offset_advances_after_leader_timeout() {
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 4_983),
             0
@@ -2334,11 +2423,11 @@ mod tests {
         );
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_003),
-            0
+            1
         );
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_044),
-            0
+            3
         );
     }
 
@@ -2434,6 +2523,9 @@ mod tests {
 
     #[test]
     fn leader_selection_ignores_local_performance_metrics() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("leader rotation test lock should succeed");
         let manager = Arc::new(ValidatorManager::new());
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
         let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
@@ -2539,6 +2631,9 @@ mod tests {
 
     #[test]
     fn leader_rotation_recalculates_when_candidate_set_changes_mid_epoch() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("leader rotation test lock should succeed");
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
         let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
             Arc::new(ValidatorManager::new()),

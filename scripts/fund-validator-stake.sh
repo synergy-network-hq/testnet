@@ -13,7 +13,7 @@ set -euo pipefail
 #   SYNERGY_FAUCET_ADDRESS      Faucet wallet address available on the public RPC
 #   SYNERGY_SKIP_STAKE=1        Only fund the validator wallet
 
-RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergy-network.io}"
+RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testnet-core-rpc.synergy-network.io}"
 STAKE_RPC_ENDPOINT="${SYNERGY_STAKE_RPC_ENDPOINT:-http://127.0.0.1:5640}"
 FAUCET_ADDRESS="${SYNERGY_FAUCET_ADDRESS:-synw1zp7cxme7xm838663yrd43lxtxlw0ck90z4am}"
 TOKEN_SYMBOL="${SYNERGY_TOKEN_SYMBOL:-SNRG}"
@@ -117,7 +117,7 @@ fi
 
 REQUESTED_NWEI=$((AMOUNT_SNRG * NWEI_PER_SNRG))
 
-echo "Synergy Testnet-Beta Validator Stake Funding"
+echo "Synergy Testnet Validator Stake Funding"
 echo "Funding RPC: $RPC_ENDPOINT"
 echo "Stake RPC:   $STAKE_RPC_ENDPOINT"
 echo "Faucet:      $FAUCET_ADDRESS"

@@ -4,8 +4,10 @@ use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::config::NodeConfig;
+use crate::gas::constants::BLOCK_GAS_LIMIT;
 use crate::info;
-use crate::rpc::rpc_server::SHARED_CHAIN;
+use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER, TX_POOL};
+use crate::sync::SyncState;
 use crate::validator::{ValidatorStatus, VALIDATOR_MANAGER};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
@@ -126,16 +128,224 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
         .as_secs();
     let uptime_seconds = now_seconds.saturating_sub(start_time_seconds);
 
-    let (chain_height, chain_blocks_total, last_block_timestamp_seconds) =
-        match SHARED_CHAIN.try_lock() {
-            Ok(chain) => {
-                let height = chain.last().map(|block| block.block_index).unwrap_or(0);
-                let block_count = chain.chain.len() as u64;
-                let last_timestamp = chain.last().map(|block| block.timestamp).unwrap_or(0);
-                (height, block_count, last_timestamp)
+    let (
+        chain_height,
+        chain_blocks_total,
+        last_block_timestamp_seconds,
+        latest_block_transactions,
+        latest_block_gas_nwei,
+        latest_block_interval_seconds,
+        chain_transactions_total,
+        recent_transactions_total,
+        recent_avg_block_time_seconds,
+        recent_avg_txs_per_block,
+        recent_avg_gas_nwei,
+    ) = match SHARED_CHAIN.try_lock() {
+        Ok(chain) => {
+            let height = chain.last().map(|block| block.block_index).unwrap_or(0);
+            let block_count = chain.chain.len() as u64;
+            let last_timestamp = chain.last().map(|block| block.timestamp).unwrap_or(0);
+            let latest_transactions = chain
+                .last()
+                .map(|block| block.transactions.len() as u64)
+                .unwrap_or(0);
+            let latest_gas = chain
+                .last()
+                .map(|block| {
+                    block
+                        .transactions
+                        .iter()
+                        .map(|transaction| transaction.get_fee())
+                        .sum::<u64>()
+                })
+                .unwrap_or(0);
+            let latest_interval = chain
+                .chain
+                .iter()
+                .rev()
+                .take(2)
+                .map(|block| block.timestamp)
+                .collect::<Vec<_>>();
+            let latest_interval = if latest_interval.len() == 2 {
+                latest_interval[0].saturating_sub(latest_interval[1])
+            } else {
+                0
+            };
+            let total_transactions = chain
+                .chain
+                .iter()
+                .map(|block| block.transactions.len() as u64)
+                .sum::<u64>();
+            let recent_blocks = chain.chain.iter().rev().take(100).collect::<Vec<_>>();
+            let recent_transactions = recent_blocks
+                .iter()
+                .map(|block| block.transactions.len() as u64)
+                .sum::<u64>();
+            let recent_gas = recent_blocks
+                .iter()
+                .map(|block| {
+                    block
+                        .transactions
+                        .iter()
+                        .map(|transaction| transaction.get_fee())
+                        .sum::<u64>()
+                })
+                .sum::<u64>();
+            let recent_avg_txs = if recent_blocks.is_empty() {
+                0.0
+            } else {
+                recent_transactions as f64 / recent_blocks.len() as f64
+            };
+            let mut intervals = Vec::new();
+            for pair in recent_blocks.windows(2) {
+                intervals.push(pair[0].timestamp.saturating_sub(pair[1].timestamp));
             }
-            Err(_) => (0, 0, 0),
-        };
+            let recent_avg_block_time = if intervals.is_empty() {
+                0.0
+            } else {
+                intervals.iter().sum::<u64>() as f64 / intervals.len() as f64
+            };
+            let recent_avg_gas = if recent_blocks.is_empty() {
+                0.0
+            } else {
+                recent_gas as f64 / recent_blocks.len() as f64
+            };
+            (
+                height,
+                block_count,
+                last_timestamp,
+                latest_transactions,
+                latest_gas,
+                latest_interval,
+                total_transactions,
+                recent_transactions,
+                recent_avg_block_time,
+                recent_avg_txs,
+                recent_avg_gas,
+            )
+        }
+        Err(_) => (0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0),
+    };
+    let last_block_age_seconds = if last_block_timestamp_seconds == 0 {
+        0
+    } else {
+        now_seconds.saturating_sub(last_block_timestamp_seconds)
+    };
+
+    let (
+        mempool_pending_total,
+        mempool_gas_limit_total,
+        mempool_fee_nwei_total,
+        mempool_min_gas_price_nwei,
+        mempool_avg_gas_price_nwei,
+        mempool_max_gas_price_nwei,
+    ) = match TX_POOL.try_lock() {
+        Ok(pool) => {
+            let pending = pool.len() as u64;
+            let gas_limit_total = pool.iter().map(|tx| tx.gas_limit).sum::<u64>();
+            let fee_total = pool.iter().map(|tx| tx.get_fee()).sum::<u64>();
+            let min_gas_price = pool.iter().map(|tx| tx.gas_price).min().unwrap_or(0);
+            let max_gas_price = pool.iter().map(|tx| tx.gas_price).max().unwrap_or(0);
+            let avg_gas_price = if pending == 0 {
+                0.0
+            } else {
+                pool.iter().map(|tx| tx.gas_price).sum::<u64>() as f64 / pending as f64
+            };
+            (
+                pending,
+                gas_limit_total,
+                fee_total,
+                min_gas_price,
+                avg_gas_price,
+                max_gas_price,
+            )
+        }
+        Err(_) => (0, 0, 0, 0, 0.0, 0),
+    };
+
+    let (
+        sync_state_label,
+        sync_in_progress,
+        sync_highest_block,
+        sync_starting_block,
+        sync_gap_blocks,
+        sync_progress_percent,
+    ) = match SYNC_MANAGER.try_lock() {
+        Ok(manager) => {
+            let state = manager.get_state();
+            let highest = manager.get_network_height();
+            let starting = manager.get_sync_start_height();
+            (
+                sync_state_name(state).to_string(),
+                !matches!(state, SyncState::Synced | SyncState::Idle),
+                highest,
+                starting,
+                highest.saturating_sub(chain_height),
+                manager.get_progress_percentage(),
+            )
+        }
+        Err(_) => ("unknown".to_string(), false, 0, 0, 0, 0.0),
+    };
+
+    let (
+        p2p_peer_total,
+        p2p_status_ready_validators,
+        p2p_best_validator_peer_height,
+        peer_metric_lines,
+    ) = match crate::p2p::get_p2p_network() {
+        Some(network) => {
+            let snapshots = network.collect_peer_snapshots();
+            let mut lines = String::new();
+            for peer in &snapshots {
+                let peer_label = escape_label_value(&peer.address);
+                let direction = escape_label_value(&peer.direction);
+                let node_id = escape_label_value(peer.node_id.as_deref().unwrap_or(""));
+                let validator_address =
+                    escape_label_value(peer.validator_address.as_deref().unwrap_or(""));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_info{{peer=\"{peer_label}\",direction=\"{direction}\",node_id=\"{node_id}\",validator_address=\"{validator_address}\"}} 1\n"
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_height{{peer=\"{peer_label}\"}} {}\n",
+                    peer.block_height
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_last_seen_age_seconds{{peer=\"{peer_label}\"}} {}\n",
+                    now_seconds.saturating_sub(peer.last_seen)
+                ));
+                let status_age = peer
+                    .status_received_at
+                    .map(|timestamp| now_seconds.saturating_sub(timestamp))
+                    .unwrap_or(0);
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_status_age_seconds{{peer=\"{peer_label}\"}} {status_age}\n"
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_blocks_sent_total{{peer=\"{peer_label}\"}} {}\n",
+                    peer.blocks_sent
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_blocks_received_total{{peer=\"{peer_label}\"}} {}\n",
+                    peer.blocks_received
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_txs_sent_total{{peer=\"{peer_label}\"}} {}\n",
+                    peer.txs_sent
+                ));
+                lines.push_str(&format!(
+                    "synergy_p2p_peer_txs_received_total{{peer=\"{peer_label}\"}} {}\n",
+                    peer.txs_received
+                ));
+            }
+            (
+                snapshots.len() as u64,
+                network.get_status_ready_validator_count() as u64,
+                network.get_best_validator_peer_height(),
+                lines,
+            )
+        }
+        None => (0, 0, 0, String::new()),
+    };
 
     let (
         validators_total,
@@ -225,6 +435,117 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
 
     push_metric_header(
         &mut body,
+        "synergy_chain_last_block_age_seconds",
+        "Age of the latest local block, in seconds.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_last_block_age_seconds {last_block_age_seconds}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_latest_block_transactions",
+        "Number of transactions included in the latest local block.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_latest_block_transactions {latest_block_transactions}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_latest_block_gas_nwei",
+        "Total transaction fee units in the latest local block, measured in nWei.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_latest_block_gas_nwei {latest_block_gas_nwei}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_latest_block_interval_seconds",
+        "Seconds between the latest block and its local parent.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_latest_block_interval_seconds {latest_block_interval_seconds}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_transactions_total",
+        "Total number of transactions currently held in local chain state.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_transactions_total {chain_transactions_total}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_recent_transactions_total",
+        "Transactions included in the latest 100 local blocks.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_recent_transactions_total {recent_transactions_total}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_recent_avg_block_time_seconds",
+        "Average block interval across the latest 100 local blocks.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_recent_avg_block_time_seconds {recent_avg_block_time_seconds:.3}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_recent_avg_transactions_per_block",
+        "Average transaction count per block across the latest 100 local blocks.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_recent_avg_transactions_per_block {recent_avg_txs_per_block:.3}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_recent_avg_gas_nwei_per_block",
+        "Average transaction fee units per block across the latest 100 local blocks, measured in nWei.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_recent_avg_gas_nwei_per_block {recent_avg_gas_nwei:.3}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_block_gas_limit",
+        "Configured maximum gas per block.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_block_gas_limit {BLOCK_GAS_LIMIT}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_chain_recent_gas_utilization_ratio",
+        "Average recent block gas divided by the configured block gas limit.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_chain_recent_gas_utilization_ratio {:.6}\n",
+        recent_avg_gas_nwei / BLOCK_GAS_LIMIT as f64
+    ));
+
+    push_metric_header(
+        &mut body,
         "synergy_validator_registry_total",
         "Number of validators tracked in the local registry.",
         "gauge",
@@ -284,6 +605,330 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
 
     push_metric_header(
         &mut body,
+        "synergy_mempool_pending_transactions",
+        "Transactions waiting in the local node transaction pool.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_mempool_pending_transactions {mempool_pending_total}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_mempool_gas_limit_total",
+        "Sum of gas limits for transactions waiting in the local transaction pool.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_mempool_gas_limit_total {mempool_gas_limit_total}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_mempool_fee_nwei_total",
+        "Total fee units for transactions waiting in the local transaction pool, measured in nWei.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_mempool_fee_nwei_total {mempool_fee_nwei_total}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_mempool_gas_price_nwei",
+        "Gas price distribution for transactions waiting in the local transaction pool.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_mempool_gas_price_nwei{{stat=\"min\"}} {mempool_min_gas_price_nwei}\n"
+    ));
+    body.push_str(&format!(
+        "synergy_mempool_gas_price_nwei{{stat=\"avg\"}} {mempool_avg_gas_price_nwei:.3}\n"
+    ));
+    body.push_str(&format!(
+        "synergy_mempool_gas_price_nwei{{stat=\"max\"}} {mempool_max_gas_price_nwei}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_info",
+        "Current sync state label for this node.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_sync_info{{state=\"{}\"}} 1\n",
+        escape_label_value(&sync_state_label)
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_in_progress",
+        "Whether this node is currently syncing, represented as 0 or 1.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_sync_in_progress {}\n",
+        if sync_in_progress { 1 } else { 0 }
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_highest_block",
+        "Highest block height observed by the sync manager.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_sync_highest_block {sync_highest_block}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_starting_block",
+        "Block height where the current sync run started.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_sync_starting_block {sync_starting_block}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_gap_blocks",
+        "Difference between the highest observed sync height and this node's local height.",
+        "gauge",
+    );
+    body.push_str(&format!("synergy_sync_gap_blocks {sync_gap_blocks}\n"));
+
+    push_metric_header(
+        &mut body,
+        "synergy_sync_progress_percent",
+        "Current sync progress percentage reported by the sync manager.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_sync_progress_percent {sync_progress_percent:.3}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peers_connected",
+        "Connected P2P peers visible to this node.",
+        "gauge",
+    );
+    body.push_str(&format!("synergy_p2p_peers_connected {p2p_peer_total}\n"));
+
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_status_ready_validators",
+        "Connected validators with status data ready for consensus membership checks.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_p2p_status_ready_validators {p2p_status_ready_validators}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_best_validator_peer_height",
+        "Best block height reported by connected validator peers.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_p2p_best_validator_peer_height {p2p_best_validator_peer_height}\n"
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_info",
+        "Static peer labels for currently connected peers.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_height",
+        "Last block height reported by each connected peer.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_last_seen_age_seconds",
+        "Seconds since each connected peer was last seen.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_status_age_seconds",
+        "Seconds since each connected peer last sent status data.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_blocks_sent_total",
+        "Blocks sent to each connected peer by this process.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_blocks_received_total",
+        "Blocks received from each connected peer by this process.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_txs_sent_total",
+        "Transactions sent to each connected peer by this process.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_p2p_peer_txs_received_total",
+        "Transactions received from each connected peer by this process.",
+        "counter",
+    );
+    body.push_str(&peer_metric_lines);
+
+    push_metric_header(
+        &mut body,
+        "synergy_consensus_config",
+        "Consensus timing and quorum configuration values.",
+        "gauge",
+    );
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"block_time_secs\"}} {}\n",
+        config.consensus.block_time_secs
+    ));
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"vote_timeout_secs\"}} {}\n",
+        config.consensus.vote_timeout_secs
+    ));
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"block_timeout_secs\"}} {}\n",
+        config.consensus.block_timeout_secs
+    ));
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"leader_timeout_secs\"}} {}\n",
+        config.consensus.leader_timeout_secs
+    ));
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"validator_vote_threshold\"}} {}\n",
+        config.consensus.validator_vote_threshold
+    ));
+    body.push_str(&format!(
+        "synergy_consensus_config{{setting=\"min_validators\"}} {}\n",
+        config.consensus.min_validators
+    ));
+
+    push_metric_header(
+        &mut body,
+        "synergy_validator_blocks_produced_total",
+        "Blocks produced by each validator according to the local registry.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_transactions_validated_total",
+        "Transactions validated by each validator according to the local registry.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_missed_blocks_total",
+        "Missed blocks recorded for each validator according to the local registry.",
+        "counter",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_average_block_time_seconds",
+        "Average block time recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_uptime_percent",
+        "Uptime percentage recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_synergy_score",
+        "Synergy score recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_stake_nwei",
+        "Stake amount recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_consecutive_missed_votes",
+        "Consecutive missed votes recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_missed_vote_window",
+        "Rolling missed-vote window recorded for each validator according to the local registry.",
+        "gauge",
+    );
+    push_metric_header(
+        &mut body,
+        "synergy_validator_equivocation_evidence_total",
+        "Equivocation evidence count recorded for each validator according to the local registry.",
+        "counter",
+    );
+    if let Ok(registry) = VALIDATOR_MANAGER.registry.try_lock() {
+        for validator in registry.validators.values() {
+            let address = escape_label_value(&validator.address);
+            let name = escape_label_value(&validator.name);
+            let status = escape_label_value(validator_status_name(&validator.status));
+            let labels = format!("validator=\"{address}\",name=\"{name}\",status=\"{status}\"");
+            body.push_str(&format!(
+                "synergy_validator_blocks_produced_total{{{labels}}} {}\n",
+                validator.total_blocks_produced
+            ));
+            body.push_str(&format!(
+                "synergy_validator_transactions_validated_total{{{labels}}} {}\n",
+                validator.total_transactions_validated
+            ));
+            body.push_str(&format!(
+                "synergy_validator_missed_blocks_total{{{labels}}} {}\n",
+                validator.missed_blocks
+            ));
+            body.push_str(&format!(
+                "synergy_validator_average_block_time_seconds{{{labels}}} {:.3}\n",
+                validator.average_block_time
+            ));
+            body.push_str(&format!(
+                "synergy_validator_uptime_percent{{{labels}}} {:.3}\n",
+                validator.uptime_percentage
+            ));
+            body.push_str(&format!(
+                "synergy_validator_synergy_score{{{labels}}} {:.6}\n",
+                validator.synergy_score
+            ));
+            body.push_str(&format!(
+                "synergy_validator_stake_nwei{{{labels}}} {}\n",
+                validator.stake_amount
+            ));
+            body.push_str(&format!(
+                "synergy_validator_consecutive_missed_votes{{{labels}}} {}\n",
+                validator.consecutive_missed_votes
+            ));
+            body.push_str(&format!(
+                "synergy_validator_missed_vote_window{{{labels}}} {}\n",
+                validator.missed_vote_window
+            ));
+            body.push_str(&format!(
+                "synergy_validator_equivocation_evidence_total{{{labels}}} {}\n",
+                validator.equivocation_evidence_count
+            ));
+        }
+    }
+
+    push_metric_header(
+        &mut body,
         "synergy_node_uptime_seconds",
         "Process uptime in seconds.",
         "counter",
@@ -315,29 +960,81 @@ fn escape_label_value(value: &str) -> String {
         .replace('\n', "\\n")
 }
 
+fn sync_state_name(state: SyncState) -> &'static str {
+    match state {
+        SyncState::Idle => "idle",
+        SyncState::Discovering => "discovering",
+        SyncState::Downloading => "downloading",
+        SyncState::Validating => "validating",
+        SyncState::Applying => "applying",
+        SyncState::Synced => "synced",
+    }
+}
+
+fn validator_status_name(status: &ValidatorStatus) -> &'static str {
+    match status {
+        ValidatorStatus::Active => "active",
+        ValidatorStatus::Inactive => "inactive",
+        ValidatorStatus::Jailed => "jailed",
+        ValidatorStatus::Slashed => "slashed",
+        ValidatorStatus::Pending => "pending",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::render_metrics;
     use crate::config::NodeConfig;
     use std::env;
+    use std::fs;
     use std::path::{Path, PathBuf};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
     use std::time::{Duration, SystemTime};
 
-    struct CurrentDirGuard {
+    struct TestRuntimeGuard {
+        _lock: MutexGuard<'static, ()>,
         previous: PathBuf,
+        previous_genesis_file: Option<String>,
+        runtime_dir: PathBuf,
     }
 
-    impl CurrentDirGuard {
-        fn set(path: &Path) -> Self {
+    impl TestRuntimeGuard {
+        fn set(repo_root: &Path) -> Self {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
             let previous = env::current_dir().expect("current dir should resolve");
-            env::set_current_dir(path).expect("current dir should update");
-            Self { previous }
+            let previous_genesis_file = env::var("SYNERGY_GENESIS_FILE").ok();
+            let runtime_dir = env::temp_dir().join(format!(
+                "synergy-telemetry-test-{}-{}",
+                std::process::id(),
+                SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .expect("system clock should be after epoch")
+                    .as_nanos()
+            ));
+            fs::create_dir_all(runtime_dir.join("data")).expect("runtime data dir should exist");
+            env::set_var(
+                "SYNERGY_GENESIS_FILE",
+                repo_root.join("config/genesis.json"),
+            );
+            env::set_current_dir(&runtime_dir).expect("current dir should update");
+            Self {
+                _lock: lock,
+                previous,
+                previous_genesis_file,
+                runtime_dir,
+            }
         }
     }
 
-    impl Drop for CurrentDirGuard {
+    impl Drop for TestRuntimeGuard {
         fn drop(&mut self) {
             env::set_current_dir(&self.previous).expect("current dir should restore");
+            match &self.previous_genesis_file {
+                Some(value) => env::set_var("SYNERGY_GENESIS_FILE", value),
+                None => env::remove_var("SYNERGY_GENESIS_FILE"),
+            }
+            let _ = fs::remove_dir_all(&self.runtime_dir);
         }
     }
 
@@ -346,10 +1043,10 @@ mod tests {
         let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
             .parent()
             .expect("crate manifest should live under repo root");
-        let _cwd = CurrentDirGuard::set(repo_root);
+        let _runtime = TestRuntimeGuard::set(repo_root);
 
         let mut config = NodeConfig::default();
-        config.network.name = "synergy-testnet-beta".to_string();
+        config.network.name = "synergy-testnet".to_string();
         config.identity.role = "validator".to_string();
         config.identity.node_id = "GenVal-01".to_string();
         config.p2p.node_name = "genesisval1".to_string();
@@ -361,5 +1058,23 @@ mod tests {
         assert!(body.contains("role=\"validator\""));
         assert!(body.contains("node_id=\"GenVal-01\""));
         assert!(body.contains("validator_address=\"synv1test\""));
+    }
+
+    #[test]
+    fn render_metrics_includes_chain_mempool_sync_p2p_and_validator_series() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crate manifest should live under repo root");
+        let _runtime = TestRuntimeGuard::set(repo_root);
+
+        let body = render_metrics(&NodeConfig::default(), SystemTime::now());
+
+        assert!(body.contains("synergy_chain_last_block_age_seconds"));
+        assert!(body.contains("synergy_chain_recent_avg_block_time_seconds"));
+        assert!(body.contains("synergy_mempool_pending_transactions"));
+        assert!(body.contains("synergy_sync_info"));
+        assert!(body.contains("synergy_p2p_peers_connected"));
+        assert!(body.contains("synergy_consensus_config"));
+        assert!(body.contains("synergy_validator_blocks_produced_total"));
     }
 }

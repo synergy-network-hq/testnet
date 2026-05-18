@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Interactive Synergy Testnet-Beta faucet transfer helper.
+# Interactive Synergy Testnet faucet transfer helper.
 #
 # Sends SNRG from the faucet wallet to a recipient via the PUBLIC RPC
 # gateway. The public gateway only exposes the signed-tx path
@@ -10,9 +10,12 @@ set -euo pipefail
 # script therefore signs locally with wallet-pqc-cli and submits.
 #
 # Defaults can be overridden without editing this file:
-#   SYNERGY_RPC_ENDPOINT     default: https://testbeta-core-rpc.synergy-network.io
-#   SYNERGY_FAUCET_KEYFILE   default: /Users/devpup/Desktop/testbeta-keyfiles/faucet.dec.json
+#   SYNERGY_RPC_ENDPOINT     default: https://testnet-core-rpc.synergy-network.io
+#   SYNERGY_FAUCET_KEYFILE   default: /Users/devpup/Desktop/synergy-testnet-data-files/testnet-keyfiles/faucet.dec.json
+#   SYNERGY_SOURCE_KEYFILE   optional alias used by wallet-specific wrappers
+#   SYNERGY_SOURCE_LABEL     default: Faucet
 #   SYNERGY_WALLET_CLI       default: <repo>/target/debug/wallet-pqc-cli
+#   SYNERGY_BUILD_WALLET_CLI default: 1 (build wallet-pqc-cli if missing)
 #   SYNERGY_SIGN_ALGO        default: fndsa
 #   SYNERGY_GAS_PRICE        default: 1000   (nWei per gas)
 #   SYNERGY_GAS_LIMIT        default: 21000
@@ -20,9 +23,16 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergy-network.io}"
-KEYFILE="${SYNERGY_FAUCET_KEYFILE:-/Users/devpup/Desktop/testbeta-keyfiles/faucet.dec.json}"
-WALLET_CLI="${SYNERGY_WALLET_CLI:-$REPO_ROOT/target/debug/wallet-pqc-cli}"
+RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testnet-core-rpc.synergy-network.io}"
+DEFAULT_KEYFILE="/Users/devpup/Desktop/synergy-testnet-data-files/testnet-keyfiles/faucet.dec.json"
+KEYFILE="${SYNERGY_SOURCE_KEYFILE:-${SYNERGY_FAUCET_KEYFILE:-$DEFAULT_KEYFILE}}"
+SOURCE_LABEL="${SYNERGY_SOURCE_LABEL:-Faucet}"
+DEFAULT_WALLET_CLI="$REPO_ROOT/target/debug/wallet-pqc-cli"
+if [[ ! -x "$DEFAULT_WALLET_CLI" ]] && command -v wallet-pqc-cli >/dev/null 2>&1; then
+  DEFAULT_WALLET_CLI="$(command -v wallet-pqc-cli)"
+fi
+WALLET_CLI="${SYNERGY_WALLET_CLI:-$DEFAULT_WALLET_CLI}"
+BUILD_WALLET_CLI="${SYNERGY_BUILD_WALLET_CLI:-1}"
 SIGN_ALGO="${SYNERGY_SIGN_ALGO:-fndsa}"
 TOKEN_SYMBOL="${SYNERGY_TOKEN_SYMBOL:-SNRG}"
 GAS_PRICE="${SYNERGY_GAS_PRICE:-1000}"
@@ -37,14 +47,20 @@ require_cmd jq
 require_cmd python3
 
 if [[ ! -f "$KEYFILE" ]]; then
-  echo "Faucet keyfile not found: $KEYFILE" >&2
+  echo "$SOURCE_LABEL keyfile not found: $KEYFILE" >&2
   exit 1
 fi
 if [[ ! -x "$WALLET_CLI" ]]; then
-  echo "wallet-pqc-cli not found or not executable at: $WALLET_CLI" >&2
-  echo "Build it with:" >&2
-  echo "  (cd \"$REPO_ROOT\" && cargo build --bin wallet-pqc-cli)" >&2
-  exit 1
+  if [[ "$BUILD_WALLET_CLI" == "1" ]] && command -v cargo >/dev/null 2>&1; then
+    echo "wallet-pqc-cli not found at $WALLET_CLI; building it now..."
+    (cd "$REPO_ROOT" && cargo build --quiet --bin wallet-pqc-cli)
+  fi
+  if [[ ! -x "$WALLET_CLI" ]]; then
+    echo "wallet-pqc-cli not found or not executable at: $WALLET_CLI" >&2
+    echo "Build it with:" >&2
+    echo "  (cd \"$REPO_ROOT\" && cargo build --bin wallet-pqc-cli)" >&2
+    exit 1
+  fi
 fi
 
 FAUCET_ADDRESS="$(jq -r '.address // empty' "$KEYFILE")"
@@ -94,9 +110,9 @@ print(text or "0")
 PY
 }
 
-echo "Synergy Testnet-Beta Faucet Transfer (signed via synergy_sendTransaction)"
+echo "Synergy Testnet $SOURCE_LABEL Transfer (signed via synergy_sendTransaction)"
 echo "RPC:     $RPC_ENDPOINT"
-echo "Faucet:  $FAUCET_ADDRESS"
+echo "Source:  $FAUCET_ADDRESS"
 echo "Algo:    $SIGN_ALGO"
 echo "Keyfile: $KEYFILE"
 echo
@@ -110,8 +126,8 @@ if [[ ! "$RECIPIENT" =~ ^syn[0-9a-z]{10,70}$ ]]; then
 fi
 
 echo
-echo "Checking chain and faucet balance..."
-BLOCK_RESPONSE="$(rpc synergy_getBlockNumber '[]')"
+echo "Checking chain and source balance..."
+BLOCK_RESPONSE="$(rpc synergy_blockNumber '[]')"
 CURRENT_BLOCK="$(jq -r '.result // empty' <<<"$BLOCK_RESPONSE")"
 
 FAUCET_BAL_PARAMS="$(jq -cn --arg a "$FAUCET_ADDRESS" --arg t "$TOKEN_SYMBOL" '[$a,$t]')"
@@ -120,22 +136,32 @@ FAUCET_BALANCE_NWEI="$(jq -r '.result // "0"' <<<"$BALANCE_RESPONSE")"
 FAUCET_BALANCE_SNRG="$(format_nwei_as_snrg "$FAUCET_BALANCE_NWEI")"
 
 echo "Current block:  $CURRENT_BLOCK"
-echo "Faucet balance: $FAUCET_BALANCE_SNRG $TOKEN_SYMBOL"
+echo "Source balance: $FAUCET_BALANCE_SNRG $TOKEN_SYMBOL"
 echo
 
-read -r -p "Amount to send, in whole SNRG: " AMOUNT_SNRG
+read -r -p "Amount to send, in SNRG (up to 9 decimals): " AMOUNT_SNRG
 AMOUNT_SNRG="${AMOUNT_SNRG//,/}"
 AMOUNT_SNRG="$(printf '%s' "$AMOUNT_SNRG" | tr -d '[:space:]')"
-if [[ ! "$AMOUNT_SNRG" =~ ^[0-9]+$ ]] || [[ "$AMOUNT_SNRG" == "0" ]]; then
-  echo "Amount must be a positive whole-SNRG integer." >&2
-  exit 1
-fi
 
 REQUESTED_NWEI="$(python3 - "$AMOUNT_SNRG" "$NWEI_PER_SNRG" <<'PY'
+from decimal import Decimal, InvalidOperation
 import sys
-print(int(sys.argv[1]) * int(sys.argv[2]))
+try:
+    amount = Decimal(sys.argv[1])
+except InvalidOperation:
+    raise SystemExit(1)
+unit = Decimal(sys.argv[2])
+if amount <= 0:
+    raise SystemExit(1)
+nwei = amount * unit
+if nwei != nwei.to_integral_value():
+    raise SystemExit(2)
+print(int(nwei))
 PY
-)"
+)" || {
+  echo "Amount must be positive SNRG with no more than 9 decimal places." >&2
+  exit 1
+}
 
 MAX_FEE_NWEI=$(( GAS_PRICE * GAS_LIMIT ))
 
@@ -144,7 +170,7 @@ import sys
 sys.exit(0 if int(sys.argv[1]) >= int(sys.argv[2]) + int(sys.argv[3]) else 1)
 PY
 then
-  echo "Insufficient faucet balance for amount + max gas fee." >&2
+  echo "Insufficient source balance for amount + max gas fee." >&2
   echo "Requested: $AMOUNT_SNRG $TOKEN_SYMBOL  +  max gas fee: $MAX_FEE_NWEI nWei" >&2
   echo "Available: $FAUCET_BALANCE_SNRG $TOKEN_SYMBOL" >&2
   exit 1
@@ -155,13 +181,13 @@ NONCE_PARAMS="$(jq -cn --arg a "$FAUCET_ADDRESS" '[$a]')"
 NONCE_RESPONSE="$(rpc synergy_getAccountNonce "$NONCE_PARAMS")"
 NONCE="$(jq -r '.result // 0' <<<"$NONCE_RESPONSE")"
 TIMESTAMP="$(date -u +%s)"
-MEMO="manual faucet transfer $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+MEMO="${SYNERGY_TRANSFER_MEMO:-manual $SOURCE_LABEL transfer $(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 
 echo
 echo "Transfer preview"
 echo "From:     $FAUCET_ADDRESS"
 echo "To:       $RECIPIENT"
-echo "Amount:   $AMOUNT_SNRG $TOKEN_SYMBOL  ($REQUESTED_NWEI nWei)"
+echo "Amount:   $(format_nwei_as_snrg "$REQUESTED_NWEI") $TOKEN_SYMBOL  ($REQUESTED_NWEI nWei)"
 echo "Nonce:    $NONCE"
 echo "Gas:      gas_price=$GAS_PRICE  gas_limit=$GAS_LIMIT  (max fee $MAX_FEE_NWEI nWei)"
 echo "Memo:     $MEMO"
@@ -200,7 +226,7 @@ UNSIGNED_TX="$(jq -cn \
     timestamp:$timestamp,
     gas_price:$gas_price,
     gas_limit:$gas_limit,
-    data:$data,
+    data:(if $data == "" then null else $data end),
     signature_algorithm:$algo
   }')"
 
@@ -278,5 +304,5 @@ RECIP_BAL_PARAMS="$(jq -cn --arg a "$RECIPIENT" --arg t "$TOKEN_SYMBOL" '[$a,$t]
 NEW_FAUCET_NWEI="$(jq -r '.result // "0"' <<<"$(rpc synergy_getTokenBalance "$FAUCET_BAL_PARAMS")")"
 RECIPIENT_NWEI="$(jq -r '.result // "0"' <<<"$(rpc synergy_getTokenBalance "$RECIP_BAL_PARAMS")")"
 
-echo "Faucet balance:    $(format_nwei_as_snrg "$NEW_FAUCET_NWEI") $TOKEN_SYMBOL"
+echo "Source balance:    $(format_nwei_as_snrg "$NEW_FAUCET_NWEI") $TOKEN_SYMBOL"
 echo "Recipient balance: $(format_nwei_as_snrg "$RECIPIENT_NWEI") $TOKEN_SYMBOL"

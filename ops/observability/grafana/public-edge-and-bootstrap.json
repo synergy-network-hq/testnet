@@ -299,7 +299,7 @@
   "refresh": "10s",
   "schemaVersion": 39,
   "style": "dark",
-  "tags": ["synergy", "testnet-beta", "observer", "public-edge"],
+  "tags": ["synergy", "testnet", "observer", "public-edge"],
   "templating": { "list": [] },
   "time": { "from": "now-6h", "to": "now" },
   "timepicker": {},

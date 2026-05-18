@@ -1,10 +1,10 @@
 #!/bin/bash
 
-# Synergy Testnet Beta Management Script
-# This script provides convenient commands to manage the Synergy blockchain testnet beta
+# Synergy Testnet Management Script
+# This script provides convenient commands to manage the Synergy blockchain testnet
 
-BINARY="./target/release/synergy-testbeta"
-PID_FILE="data/synergy-testbeta.pid"
+BINARY="./target/release/synergy-testnet"
+PID_FILE="data/synergy-testnet.pid"
 
 # Colors for output
 RED='\033[0;31m'
@@ -15,7 +15,7 @@ NC='\033[0m' # No Color
 
 print_header() {
     echo -e "${BLUE}========================================${NC}"
-    echo -e "${BLUE}  Synergy Testnet Beta Management Script${NC}"
+    echo -e "${BLUE}  Synergy Testnet Management Script${NC}"
     echo -e "${BLUE}========================================${NC}"
     echo ""
 }
@@ -35,14 +35,14 @@ start_node() {
 
     if [ -f "$PID_FILE" ]; then
         echo -e "${YELLOW}Warning: Node may already be running (PID file exists)${NC}"
-        echo -e "Run './testbeta.sh stop' first or use './testbeta.sh restart'"
+        echo -e "Run './testnet.sh stop' first or use './testnet.sh restart'"
         exit 1
     fi
 
     if [ -z "$node_type" ]; then
         echo -e "${RED}Error: Node type is required${NC}"
-        echo -e "${YELLOW}Usage: ./testbeta.sh start <node-type>${NC}"
-        echo -e "${YELLOW}Run './testbeta.sh list' to see available node types${NC}"
+        echo -e "${YELLOW}Usage: ./testnet.sh start <node-type>${NC}"
+        echo -e "${YELLOW}Run './testnet.sh list' to see available node types${NC}"
         exit 1
     fi
 
@@ -52,12 +52,12 @@ start_node() {
     mkdir -p data/logs data/chain config
 
     # Start the node in background
-    nohup $BINARY start --node-type "$node_type" > data/logs/testbeta.out 2>&1 &
+    nohup $BINARY start --node-type "$node_type" > data/logs/testnet.out 2>&1 &
     echo $! > "$PID_FILE"
 
     echo -e "${GREEN}Node started successfully!${NC}"
     echo -e "PID: $(cat $PID_FILE)"
-    echo -e "Logs: ${BLUE}./testbeta.sh logs${NC}"
+    echo -e "Logs: ${BLUE}./testnet.sh logs${NC}"
 }
 
 stop_node() {
@@ -96,7 +96,7 @@ restart_node() {
 
     if [ -z "$node_type" ]; then
         echo -e "${RED}Error: Node type is required${NC}"
-        echo -e "${YELLOW}Usage: ./testbeta.sh restart <node-type>${NC}"
+        echo -e "${YELLOW}Usage: ./testnet.sh restart <node-type>${NC}"
         exit 1
     fi
 
@@ -133,10 +133,10 @@ view_logs() {
 
     if [ "$follow" = "follow" ] || [ "$follow" = "-f" ]; then
         echo -e "${BLUE}Following logs (Ctrl+C to exit)...${NC}"
-        tail -f data/logs/synergy-node.log 2>/dev/null || tail -f data/logs/testbeta.out
+        tail -f data/logs/synergy-node.log 2>/dev/null || tail -f data/logs/testnet.out
     else
         echo -e "${BLUE}Recent logs:${NC}"
-        tail -n 50 data/logs/synergy-node.log 2>/dev/null || tail -n 50 data/logs/testbeta.out
+        tail -n 50 data/logs/synergy-node.log 2>/dev/null || tail -n 50 data/logs/testnet.out
     fi
 }
 
@@ -146,7 +146,7 @@ list_templates() {
 }
 
 build_binary() {
-    echo -e "${BLUE}Building Synergy testbeta binary...${NC}"
+    echo -e "${BLUE}Building Synergy testnet binary...${NC}"
     cargo build --release
 
     if [ $? -eq 0 ]; then
@@ -182,10 +182,10 @@ clean_data() {
 
 print_usage() {
     print_header
-    echo "Usage: ./testbeta.sh <command> [options]"
+    echo "Usage: ./testnet.sh <command> [options]"
     echo ""
     echo "Commands:"
-    echo -e "  ${GREEN}build${NC}                Build the testbeta binary"
+    echo -e "  ${GREEN}build${NC}                Build the testnet binary"
     echo -e "  ${GREEN}start${NC} <node-type>    Start a node with specified type"
     echo -e "  ${GREEN}stop${NC}                 Stop the running node"
     echo -e "  ${GREEN}restart${NC} <node-type>  Restart the node"
@@ -197,13 +197,13 @@ print_usage() {
     echo -e "  ${GREEN}help${NC}                 Show this help message"
     echo ""
     echo "Examples:"
-    echo -e "  ${YELLOW}./testbeta.sh build${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh start validator${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh start oracle${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh logs follow${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh status${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh cluster-info${NC}"
-    echo -e "  ${YELLOW}./testbeta.sh stop${NC}"
+    echo -e "  ${YELLOW}./testnet.sh build${NC}"
+    echo -e "  ${YELLOW}./testnet.sh start validator${NC}"
+    echo -e "  ${YELLOW}./testnet.sh start oracle${NC}"
+    echo -e "  ${YELLOW}./testnet.sh logs follow${NC}"
+    echo -e "  ${YELLOW}./testnet.sh status${NC}"
+    echo -e "  ${YELLOW}./testnet.sh cluster-info${NC}"
+    echo -e "  ${YELLOW}./testnet.sh stop${NC}"
     echo ""
 }
 

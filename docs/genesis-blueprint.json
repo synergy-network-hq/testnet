@@ -1,7 +1,7 @@
 {
   "_comment": "SYNERGY NETWORK — GENESIS.JSON STRUCTURE BLUEPRINT",
   "_schema_version": "v1",
-  "_env": "<testnet-beta|testnet|mainnet-beta|mainnet>",
+  "_env": "<testnet|testnet|mainnet-beta|mainnet>",
 
   // ──────────────────────────────────────────────────────────────────────
   // SECTION 2: GENESIS BLOCK HEADER
@@ -31,7 +31,7 @@
     "chain_id": "<UNIQUE_INTEGER>",
     "network_id": "<UNIQUE_INTEGER — may equal chain_id>",
     "protocol_name": "Synergy Network",
-    "network_type": "<testnet-beta|testnet|mainnet-beta|mainnet>",
+    "network_type": "<testnet|testnet|mainnet-beta|mainnet>",
     "genesis_schema_version": "v1",
     "protocol_version": "1.0.0",
     "consensus_version": "posy/1.0.0",

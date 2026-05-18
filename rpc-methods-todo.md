@@ -1,6 +1,6 @@
-# Synergy Testnet-Beta RPC Methods To Implement
+# Synergy Testnet RPC Methods To Implement
 
-This document lists all RPC methods that should be considered for implementation in the Synergy Testnet-Beta network. These methods are organized by priority and category.
+This document lists all RPC methods that should be considered for implementation in the Synergy Testnet network. These methods are organized by priority and category.
 
 > **Phase 1 (Priority 1: Core Blockchain Functionality) has been completed and moved to `rpc-methods.md`.**
 
@@ -19,7 +19,7 @@ Get the chain ID.
 
 **Parameters**: None
 
-**Returns**: `number` - Chain ID (338639 for testnet-beta)
+**Returns**: `number` - Chain ID (1262 for testnet)
 
 ---
 

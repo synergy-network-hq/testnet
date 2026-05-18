@@ -1,9 +1,9 @@
 use std::sync::{Arc, Mutex};
-use synergy_testbeta::validator::{Validator, ValidatorManager, ValidatorRegistration};
-use synergy_testbeta::consensus::synergy_score::{SynergyScoreCalculator, ValidatorMetrics, EpochSnapshot};
-use synergy_testbeta::consensus::dao_governance::{DAOGovernance, ProposalType, GovernanceProposal};
-use synergy_testbeta::consensus::cartel_detection::{CartelDetectionEngine, VoteRecord};
-use synergy_testbeta::crypto::pqc::{PQCManager, PQCAlgorithm};
+use synergy_testnet::validator::{Validator, ValidatorManager, ValidatorRegistration};
+use synergy_testnet::consensus::synergy_score::{SynergyScoreCalculator, ValidatorMetrics, EpochSnapshot};
+use synergy_testnet::consensus::dao_governance::{DAOGovernance, ProposalType, GovernanceProposal};
+use synergy_testnet::consensus::cartel_detection::{CartelDetectionEngine, VoteRecord};
+use synergy_testnet::crypto::pqc::{PQCManager, PQCAlgorithm};
 
 #[test]
 fn test_validator_slashing_penalty_correction() {
@@ -118,8 +118,8 @@ fn test_error_handling_for_map_err_on_option() {
 #[test]
 fn test_string_return_type_standardization() {
     // Test that string returns use String for owned data
-    use synergy_testbeta::consensus::dao_governance::{proposal_type_to_string, vote_type_to_string};
-    use synergy_testbeta::consensus::dao_governance::{ProposalType, VoteType};
+    use synergy_testnet::consensus::dao_governance::{proposal_type_to_string, vote_type_to_string};
+    use synergy_testnet::consensus::dao_governance::{ProposalType, VoteType};
 
     let proposal_type_str = proposal_type_to_string(&ProposalType::ParameterAdjustment);
     assert_eq!(proposal_type_str, "param");
@@ -276,7 +276,7 @@ fn test_epoch_snapshot_creation() {
         Arc::clone(&pqc_manager),
     ));
 
-    let mut oracle = synergy_testbeta::consensus::dao_governance::SynergyOracle::new(
+    let mut oracle = synergy_testnet::consensus::dao_governance::SynergyOracle::new(
         Arc::clone(&calculator),
         Arc::clone(&pqc_manager),
     );

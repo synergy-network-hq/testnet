@@ -1,5 +1,5 @@
 #!/bin/bash
-# Synergy Testnet Beta - Send SNRG Tokens to Validator
+# Synergy Testnet - Send SNRG Tokens to Validator
 # Usage: ./send-tokens.sh <recipient_address> <amount>
 
 set -e
@@ -12,9 +12,9 @@ NC='\033[0m' # No Color
 
 # Configuration
 FAUCET_ADDRESS="synw1lfgerdqglc6p74p9u6k8ghfssl59q8jzhuwm07"
-FAUCET_KEYS="/opt/synergy/synergy-testbeta/config/faucet/identity.json"
+FAUCET_KEYS="/opt/synergy/synergy-testnet/config/faucet/identity.json"
 RPC_ENDPOINT="http://localhost:48638/rpc"
-TESTBETA_BIN="/opt/synergy/synergy-testbeta/target/release/synergy-testbeta"
+TESTNET_BIN="/opt/synergy/synergy-testnet/target/release/synergy-testnet"
 
 # Check arguments
 if [ $# -lt 2 ]; then
@@ -44,7 +44,7 @@ if [ ! -f "$FAUCET_KEYS" ]; then
 fi
 
 echo -e "${GREEN}===================================${NC}"
-echo -e "${GREEN}Synergy Testnet Beta - Send Tokens${NC}"
+echo -e "${GREEN}Synergy Testnet - Send Tokens${NC}"
 echo -e "${GREEN}===================================${NC}"
 echo ""
 echo "From:      $FAUCET_ADDRESS"
@@ -90,8 +90,8 @@ NONCE=$(curl -s -X POST "$RPC_ENDPOINT" \
 
 echo "Nonce: $NONCE"
 
-# Send transaction using synergy-testbeta CLI
-RESULT=$("$TESTBETA_BIN" transaction send \
+# Send transaction using synergy-testnet CLI
+RESULT=$("$TESTNET_BIN" transaction send \
   --from "$FAUCET_ADDRESS" \
   --to "$RECIPIENT" \
   --amount "$AMOUNT" \

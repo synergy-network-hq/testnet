@@ -1,5 +1,5 @@
 #!/bin/bash
-# Synergy Testnet-Beta - Register New Validator
+# Synergy Testnet - Register New Validator
 # Usage: ./register-validator.sh <validator_address> <public_key_base64>
 
 set -e
@@ -11,7 +11,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testbeta-core-rpc.synergynode.xyz/rpc}"
+RPC_ENDPOINT="${SYNERGY_RPC_ENDPOINT:-https://testnet-core-rpc.synergy-network.io}"
 
 # Check arguments
 if [ $# -lt 2 ]; then
@@ -34,7 +34,7 @@ if [[ ! "$VALIDATOR_ADDRESS" =~ ^synv1[0-9a-z]{38,42}$ ]]; then
 fi
 
 echo -e "${BLUE}===================================${NC}"
-echo -e "${BLUE}Synergy Testnet-Beta - Validator Registration${NC}"
+echo -e "${BLUE}Synergy Testnet - Validator Registration${NC}"
 echo -e "${BLUE}===================================${NC}"
 echo ""
 echo "Validator Address: $VALIDATOR_ADDRESS"

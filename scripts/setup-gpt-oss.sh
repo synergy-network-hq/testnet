@@ -87,7 +87,7 @@ echo "To stop the server:"
 echo "kill $SERVER_PID"
 echo ""
 echo "The AIVM will now be able to use GPT-OSS for personable interactions!"
-echo "You can now use AIVM features in the Synergy Network Testnet-Beta."
+echo "You can now use AIVM features in the Synergy Network Testnet."
 
 # Keep the script running to show server status
 wait $SERVER_PID

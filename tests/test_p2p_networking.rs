@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use synergy_testbeta::p2p;
+use synergy_testnet::p2p;
 use tokio;
 
 #[tokio::test]

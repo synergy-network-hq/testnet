@@ -43,7 +43,19 @@ pub fn get_project_root() -> Option<PathBuf> {
 }
 
 fn has_runtime_config_dir(path: &Path) -> bool {
-    path.join("config").is_dir()
+    let config_dir = path.join("config");
+    if !config_dir.is_dir() {
+        return false;
+    }
+    if config_dir.join("mod.rs").is_file()
+        && !config_dir.join("genesis.json").is_file()
+        && !config_dir.join("genesis.testnet.json").is_file()
+        && !config_dir.join("node_config.toml").is_file()
+        && !config_dir.join("network-config.toml").is_file()
+    {
+        return false;
+    }
+    true
 }
 
 fn search_runtime_root_from(start: &Path) -> Option<PathBuf> {

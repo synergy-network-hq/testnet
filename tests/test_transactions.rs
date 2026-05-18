@@ -1,8 +1,8 @@
-use synergy_testbeta::node::Blockchain;
-use synergy_testbeta::wallet::{WalletManager, WALLET_MANAGER};
-use synergy_testbeta::token::TOKEN_MANAGER;
-use synergy_testbeta::transaction::Transaction;
-use synergy_testbeta::gas::constants;
+use synergy_testnet::node::Blockchain;
+use synergy_testnet::wallet::{WalletManager, WALLET_MANAGER};
+use synergy_testnet::token::TOKEN_MANAGER;
+use synergy_testnet::transaction::Transaction;
+use synergy_testnet::gas::constants;
 
 #[test]
 fn test_transaction_processing() {
@@ -33,8 +33,8 @@ fn test_faucet_transaction() {
     println!("  To: {}", recipient_address);
     println!("  Amount: {} SNRG ({} nWei)", amount_snrg, amount_nwei);
     
-    // Initialize testnet-beta wallets (loads faucet identity)
-    synergy_testbeta::wallet::init_testbeta_wallets();
+    // Initialize testnet wallets (loads faucet identity)
+    synergy_testnet::wallet::init_testnet_wallets();
     
     // Get wallet manager and token manager
     let mut wallet_manager = WALLET_MANAGER.lock().unwrap();

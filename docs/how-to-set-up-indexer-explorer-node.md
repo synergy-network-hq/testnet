@@ -1,6 +1,6 @@
 # How to set up an Indexer & Explorer node
 
-This guide sets up a real `Indexer & Explorer Node` that can index live chain data, expose the Atlas API, and optionally serve the web explorer UI. It is written for the current repo layout and runtime behavior in `synergy-testnet-beta`.
+This guide sets up a real `Indexer & Explorer Node` that can index live chain data, expose the Atlas API, and optionally serve the web explorer UI. It is written for the current repo layout and runtime behavior in `synergy-testnet`.
 
 This guide assumes a dedicated Linux host. The role runtime is cross-platform, but the checked-in deployment assets for the explorer UI are Linux/PM2/nginx oriented.
 
@@ -11,11 +11,11 @@ This guide assumes a dedicated Linux host. The role runtime is cross-platform, b
   - 4+ CPU cores
   - 8+ GB RAM
   - 100+ GB free disk if you want to retain substantial indexed history
-- A working Testnet-Beta network:
+- A working Testnet network:
   - At least 3 validator nodes online and producing blocks
   - Seed services redeployed on the build that supports `/peers/register`
 - A repo layout that matches what the runtime expects:
-  - `synergy-testnet-beta` checked out locally
+  - `synergy-testnet` checked out locally
   - `explorer-app` either inside that repo as `explorer-app/` or next to it as a sibling directory
 - Node.js available on `PATH`
 - PostgreSQL running locally or reachable over the network
@@ -29,22 +29,22 @@ Use one of these two layouts:
 
 ```text
 /opt/synergy/
-├── synergy-testnet-beta/
+├── synergy-testnet/
 └── explorer-app/
 ```
 
 or:
 
 ```text
-/opt/synergy/synergy-testnet-beta/
+/opt/synergy/synergy-testnet/
 └── explorer-app/
 ```
 
 In your current workspace, the matching layout is:
 
 ```text
-/Users/devpup/Desktop/Testnet-Beta/
-├── synergy-testnet-beta/
+/Users/devpup/Desktop/Testnet/
+├── synergy-testnet/
 └── explorer-app/
 ```
 
@@ -95,7 +95,7 @@ sudo mkdir -p /opt/synergy
 sudo chown -R "$USER":"$USER" /opt/synergy
 
 cd /opt/synergy
-git clone <your-synergy-testnet-beta-repo-url> synergy-testnet-beta
+git clone <your-synergy-testnet-repo-url> synergy-testnet
 git clone <your-explorer-app-repo-url> explorer-app
 ```
 
@@ -104,14 +104,14 @@ If you already have the repos, just ensure the final layout matches one of the t
 ## 3. Build the Indexer & Explorer role binary
 
 ```bash
-cd /opt/synergy/synergy-testnet-beta
+cd /opt/synergy/synergy-testnet
 cargo build --release --bin synergy-indexer-and-explorer-node
 ```
 
 Verify the binary exists:
 
 ```bash
-ls -l /opt/synergy/synergy-testnet-beta/target/release/synergy-indexer-and-explorer-node
+ls -l /opt/synergy/synergy-testnet/target/release/synergy-indexer-and-explorer-node
 ```
 
 ## 4. Create the Postgres database
@@ -273,13 +273,13 @@ Start the role node from the provisioned workspace:
 
 ```bash
 cd /path/to/indexer-workspace
-/opt/synergy/synergy-testnet-beta/target/release/synergy-indexer-and-explorer-node \
+/opt/synergy/synergy-testnet/target/release/synergy-indexer-and-explorer-node \
   start \
   --config /path/to/indexer-workspace/config/node.toml
 ```
 
 What this does:
-- Starts the role-bound Testnet-Beta node itself
+- Starts the role-bound Testnet node itself
 - Exposes the local node RPC
 - Runs the Atlas backend migrations if needed
 - Runs the Atlas indexer migrations if needed
@@ -301,7 +301,7 @@ Expected runtime files:
 Check the role node is running:
 
 ```bash
-cat /path/to/indexer-workspace/data/synergy-testbeta.pid
+cat /path/to/indexer-workspace/data/synergy-testnet.pid
 ```
 
 Check the Atlas backend health endpoint:
@@ -347,7 +347,7 @@ Watch the logs:
 ```bash
 tail -f /path/to/indexer-workspace/data/logs/atlas-indexer.out
 tail -f /path/to/indexer-workspace/data/logs/atlas-backend.out
-tail -f /path/to/indexer-workspace/logs/synergy-testbeta.log
+tail -f /path/to/indexer-workspace/logs/synergy-testnet.log
 ```
 
 Signs that it is working:
@@ -374,7 +374,7 @@ npm run build
 2. Create an nginx site config for the explorer and update the paths/domain:
 
 ```bash
-sudo nano /etc/nginx/sites-available/testnet-beta-explorer
+sudo nano /etc/nginx/sites-available/testnet-explorer
 ```
 
 3. Edit the copied config:
@@ -385,7 +385,7 @@ sudo nano /etc/nginx/sites-available/testnet-beta-explorer
 4. Enable the site:
 
 ```bash
-sudo ln -sf /etc/nginx/sites-available/testnet-beta-explorer /etc/nginx/sites-enabled/testnet-beta-explorer
+sudo ln -sf /etc/nginx/sites-available/testnet-explorer /etc/nginx/sites-enabled/testnet-explorer
 sudo nginx -t
 sudo systemctl reload nginx
 ```

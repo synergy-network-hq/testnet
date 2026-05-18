@@ -1,8 +1,8 @@
-# Synergy Network Testnet Beta - Developer Guide
+# Synergy Network Testnet - Developer Guide
 
 ## 🚀 Overview
 
-The **Synergy Network Testnet Beta** is a cutting-edge blockchain implementation featuring the revolutionary **Proof of Synergy (PoSy)** consensus mechanism. This Testnet Beta serves as a proving ground for interoperability, validator behaviors, wallet generation, and comprehensive testing before mainnet launch.
+The **Synergy Network Testnet** is a chain `1262` blockchain implementation featuring the **Proof of Synergy (PoSy)** consensus mechanism. The public testnet serves as a proving ground for interoperability, validator behavior, wallet generation, and comprehensive testing before mainnet launch.
 
 **Proof of Synergy** introduces a paradigm shift in consensus mechanisms by focusing on collaborative validation, community participation, and sustainable network growth rather than pure computational power.
 
@@ -65,32 +65,32 @@ rustup target add wasm32-unknown-unknown
 
 ```bash
 # Clone repository into a hyphen-safe local directory
-git clone https://github.com/synergy-network-hq/testnet-beta.git synergy-testbeta
-cd synergy-testbeta
+git clone https://github.com/synergy-network-hq/testnet.git synergy-testnet
+cd synergy-testnet
 
 # Initialize configuration
 cargo run --release -- init
 
 # Build the node
-cargo build --release --bin synergy-testbeta
+cargo build --release --bin synergy-testnet
 
 # Verify installation
-./target/release/synergy-testbeta --version
+./target/release/synergy-testnet --version
 ```
 
 ### Start Your Node
 
 ```bash
-# Start the Testnet Beta node
+# Start the Synergy Testnet node
 cargo run --release -- start
 
 # Or use the convenience script
-bash scripts/start-testbeta.sh
+bash scripts/start-testnet.sh
 ```
 
 **Expected Output:**
 ```
-🔧 Synergy Testnet-Beta Node Starting...
+Synergy Testnet Node Starting...
 🔧 Configuration loaded successfully
 🔧 Chain loaded. Latest height: 0
 🔧 Validator set loaded. Total validators: 3
@@ -141,7 +141,7 @@ curl -X POST -H "Content-Type: application/json" \
 ## 📁 Repository Structure
 
 ```
-synergy-testbeta/
+synergy-testnet/
 ├── 📁 config/           # Configuration files
 │   ├── genesis.json     # Genesis block and network parameters
 │   ├── network-config.toml # Network and P2P settings
@@ -157,16 +157,17 @@ synergy-testbeta/
 │   ├── config/        # Configuration management
 │   └── logging.rs     # Structured logging system
 ├── 📁 scripts/         # Automation scripts
-│   ├── start-testbeta.sh # Node startup script
-│   └── stop-testbeta.sh  # Node shutdown script
+│   ├── start-testnet.sh # Node startup script
+│   └── stop-testnet.sh  # Node shutdown script
 ├── 📁 docs/           # This documentation
 │   ├── README.md      # This file
 │   ├── setup-guide.md # Detailed setup instructions
 │   ├── validator-guide.md # Validator setup guide
+│   ├── synergy-testnet-validator-onboarding.md # Chain 1262 genesis verification and admission guide
 │   ├── how-to-set-up-indexer-explorer-node.md # Step-by-step Atlas indexer/explorer node setup
-│   ├── testbeta-dns-records-to-create.md # DNS records still needed for the normalized testbeta hostnames
-│   ├── testbeta-dns-final.csv # Final desired Testnet-Beta DNS state across NameSilo and Cloudflare
-│   ├── testbeta-control-panel-go-live-checklist.md # Remaining work before operators can use the app and Atlas shows live chain data
+│   ├── testnet-dns-records-to-create.md # DNS records still needed for the normalized testnet hostnames
+│   ├── testnet-dns-final.csv # Final desired Testnet DNS state across NameSilo and Cloudflare
+│   ├── testnet-control-panel-go-live-checklist.md # Remaining work before operators can use the app and Atlas shows live chain data
 │   ├── node-role-functions.md # Technical role/function matrix for all specialized node binaries
 │   ├── node-role-functions-operator.md # Plain-English operator guide to the node roles
 │   ├── api-reference.md # RPC API documentation
@@ -184,8 +185,8 @@ synergy-testbeta/
 
 ## 🌐 Network Information
 
-- **Network ID**: 338639
-- **Chain ID**: 338639
+- **Network ID**: 1262
+- **Chain ID**: 1262
 - **Genesis Hash**: Available in `config/genesis.json`
 - **Block Time**: 5 seconds
 - **Consensus**: Proof of Synergy (PoSy)
@@ -243,8 +244,8 @@ This project is licensed under the MIT License - see the [LICENSE](../LICENSE) f
 ## 🆘 Support
 
 - 📖 **Documentation**: [docs/](./) folder
-- 🐛 **Issues**: [GitHub Issues](https://github.com/synergy-network-hq/testnet-beta/issues)
-- 💬 **Discussions**: [GitHub Discussions](https://github.com/synergy-network-hq/testnet-beta/discussions)
+- 🐛 **Issues**: [GitHub Issues](https://github.com/synergy-network-hq/testnet/issues)
+- 💬 **Discussions**: [GitHub Discussions](https://github.com/synergy-network-hq/testnet/discussions)
 - 📧 **Email**: dev@synergy.network
 
 ---

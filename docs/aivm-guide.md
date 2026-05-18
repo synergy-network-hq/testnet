@@ -131,8 +131,8 @@ Revolutionary post-quantum cryptography integration:
 ### Installation
 
 ```bash
-# The AIVM is integrated into the Synergy Network Testnet-Beta
-# Start the testnet-beta node with AIVM support
+# The AIVM is integrated into the Synergy Network Testnet
+# Start the testnet node with AIVM support
 cargo run --release -- start
 ```
 

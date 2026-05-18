@@ -14,7 +14,7 @@ V2 alignment:
 ## 1) Install
 
 ```bash
-cd /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/sxcp/sxcp_external_chains/evm
+cd /Users/devpup/Desktop/Testnet/synergy-testnet/sxcp/sxcp_external_chains/evm
 cp .env.example .env
 npm install
 ```
@@ -68,15 +68,15 @@ Runtime artifacts are saved under `runtime/`:
 - `latest-intent-sepolia-to-amoy.json`
 - `latest-attestation-sepolia-to-amoy.json`
 
-Generate a testnet-beta relayer config artifact from deployment outputs:
+Generate a testnet relayer config artifact from deployment outputs:
 
 ```bash
-npm run export:testbeta-config
+npm run export:testnet-config
 ```
 
 Output:
 
-- `runtime/testbeta-sxcp-relayer-config.json`
+- `runtime/testnet-sxcp-relayer-config.json`
 
 ## 5) Contracts Deployed in Suite
 

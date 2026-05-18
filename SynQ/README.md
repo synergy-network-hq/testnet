@@ -142,7 +142,7 @@ To contribute:
 ---
 
 ## 👨‍🚀 Maintainers
-SynQ is maintained by the Synergy Network Core R&D team. For protocol-level discussions, visit the [Synergy Testnet-Beta Forum](https://forum.synergynet.dev).
+SynQ is maintained by the Synergy Network Core R&D team. For protocol-level discussions, visit the [Synergy Testnet Forum](https://forum.synergynet.dev).
 
 ---
 

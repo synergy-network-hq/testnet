@@ -90,8 +90,8 @@ compiled_profile = "$compiled_profile"
 services = []
 
 [network]
-id = 338639
-name = "synergy-testnet-beta"
+id = 1262
+name = "synergy-testnet"
 p2p_port = $p2p_port
 rpc_port = $rpc_port
 ws_port = $ws_port
@@ -105,7 +105,7 @@ persistent_peers = $persistent_peers
 [blockchain]
 block_time = 2
 max_gas_limit = "0x2fefd8"
-chain_id = 338639
+chain_id = 1262
 
 [consensus]
 algorithm = "Proof of Synergy"

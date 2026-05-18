@@ -58,6 +58,9 @@ fn test_synergy_score_calculation() {
 
 #[test]
 fn test_dual_quorum_consensus() {
+    let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+    DualQuorumConsensus::reset_test_vote_tracking();
+
     // Initialize test environment
     let validator_manager = Arc::new(ValidatorManager::new());
     let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
@@ -140,7 +143,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
     let validator_manager = Arc::new(ValidatorManager::new());
     let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
 
-    for index in 1..=4 {
+    for index in 1..=1 {
         let address = format!("validator{}", index);
         let _ = validator_manager.register_validator(crate::validator::ValidatorRegistration {
             address: address.clone(),

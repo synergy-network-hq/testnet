@@ -149,7 +149,7 @@ pub struct ConsensusHeaderFields {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum NetworkType {
-    TestnetBeta,
+    Testnet,
     Testnet,
     Mainnet,
 }

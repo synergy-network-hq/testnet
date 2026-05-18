@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Synergy Testnet Beta 15-node monitor server.
+"""Synergy Testnet 15-node monitor server.
 
 Serves a browser dashboard and a local API that probes all nodes from node-inventory.
 """
@@ -282,19 +282,19 @@ def parse_args() -> argparse.Namespace:
     script_dir = Path(__file__).resolve().parent
     repo_root = script_dir.parent.parent
 
-    parser = argparse.ArgumentParser(description="Synergy Testnet Beta node monitor GUI server")
+    parser = argparse.ArgumentParser(description="Synergy Testnet node monitor GUI server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind host (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=7080, help="Bind port (default: 7080)")
     parser.add_argument(
         "--inventory",
         type=Path,
-        default=repo_root / "testbeta/runtime/node-inventory.csv",
+        default=repo_root / "testnet/runtime/node-inventory.csv",
         help="Path to node-inventory.csv",
     )
     parser.add_argument(
         "--hosts-env",
         type=Path,
-        default=repo_root / "testbeta/runtime/hosts.env",
+        default=repo_root / "testnet/runtime/hosts.env",
         help="Optional hosts.env for IP overrides",
     )
     parser.add_argument(
@@ -318,7 +318,7 @@ def main() -> None:
     MonitorHandler.state = state
     server = ThreadingHTTPServer((args.host, args.port), MonitorHandler)
 
-    print(f"Synergy Testnet Beta Monitor GUI listening on http://{args.host}:{args.port}")
+    print(f"Synergy Testnet Monitor GUI listening on http://{args.host}:{args.port}")
     print(f"Inventory: {args.inventory}")
     if args.hosts_env.exists():
         print(f"Hosts overrides: {args.hosts_env}")

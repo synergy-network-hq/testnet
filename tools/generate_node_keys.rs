@@ -1,5 +1,5 @@
 // ============================================================================
-// Synergy Testnet Beta Key Generation Tool (FN-DSA / Falcon-1024)
+// Synergy Testnet Key Generation Tool (FN-DSA / Falcon-1024)
 // ============================================================================
 
 use base64::{engine::general_purpose, Engine as _};
@@ -119,7 +119,7 @@ fn write_genesis_file() {
     // Validators
     for i in 1..=9 {
         let data =
-            fs::read_to_string(format!("testbeta/validator-{:02}/node_identity.json", i)).unwrap();
+            fs::read_to_string(format!("testnet/validator-{:02}/node_identity.json", i)).unwrap();
         let ident: JsonIdentity = serde_json::from_str(&data).unwrap();
         validators.push(json!({
             "address": ident.address,
@@ -131,25 +131,25 @@ fn write_genesis_file() {
     // Relayers
     for i in 1..=5 {
         let data =
-            fs::read_to_string(format!("testbeta/relayer-{:02}/node_identity.json", i)).unwrap();
+            fs::read_to_string(format!("testnet/relayer-{:02}/node_identity.json", i)).unwrap();
         let ident: JsonIdentity = serde_json::from_str(&data).unwrap();
         relayers.push(json!({ "address": ident.address }));
     }
 
     // RPC Gateway
-    let data = fs::read_to_string("testbeta/rpc-gateway/node_identity.json").unwrap();
+    let data = fs::read_to_string("testnet/rpc-gateway/node_identity.json").unwrap();
     let ident: JsonIdentity = serde_json::from_str(&data).unwrap();
     rpc_gateway = ident.address;
 
     let genesis = json!({
         "meta": {
-            "network": "Synergy Testnet Beta",
+            "network": "Synergy Testnet",
             "version": "1.0.0",
-            "description": "Auto-generated Synergy Testnet Beta Genesis",
+            "description": "Auto-generated Synergy Testnet Genesis",
             "dateGenerated": Utc::now().to_rfc3339()
         },
         "config": {
-            "chainId": 338639,
+            "chainId": 1262,
             "synergyConsensus": {
                 "algorithm": "Proof of Synergy",
                 "parameters": {
@@ -172,7 +172,7 @@ fn write_genesis_file() {
     });
 
     fs::write(
-        "testbeta/genesis.json",
+        "testnet/genesis.json",
         serde_json::to_string_pretty(&genesis).unwrap(),
     )
     .unwrap();
@@ -197,13 +197,13 @@ fn write_node_configs() {
     for i in 1..=9 {
         let (rpc, p2p, metrics) = validator_ports[i - 1];
         let cfg = format!(
-            "[node]\nrole='validator'\nchain_id=338639\naddress_file='node_identity.toml'\n\n\
+            "[node]\nrole='validator'\nchain_id=1262\naddress_file='node_identity.toml'\n\n\
              [network]\nrpc_port={}\np2p_port={}\nmetrics_port={}\nbootstrap=[]\n\n\
              [consensus]\nalgorithm='Proof of Synergy'\nblock_time=5\ncluster_size=3\n",
             rpc, p2p, metrics
         );
 
-        fs::write(format!("testbeta/validator-{:02}/node_config.toml", i), cfg).unwrap();
+        fs::write(format!("testnet/validator-{:02}/node_config.toml", i), cfg).unwrap();
     }
 
     // Relayers
@@ -218,41 +218,37 @@ fn write_node_configs() {
     for i in 1..=5 {
         let (rpc, p2p, metrics) = relayer_ports[i - 1];
         let cfg = format!(
-            "[node]\nrole='relayer'\nchain_id=338639\naddress_file='node_identity.toml'\n\n\
+            "[node]\nrole='relayer'\nchain_id=1262\naddress_file='node_identity.toml'\n\n\
              [network]\nrpc_port={}\np2p_port={}\nmetrics_port={}\nbootstrap=[]\n\n\
              [sxcp]\nthreshold='3-of-5'\n",
             rpc, p2p, metrics
         );
 
-        fs::write(format!("testbeta/relayer-{:02}/node_config.toml", i), cfg).unwrap();
+        fs::write(format!("testnet/relayer-{:02}/node_config.toml", i), cfg).unwrap();
     }
 
     // RPC Gateway
-    let cfg = "[node]\nrole='rpc-gateway'\nchain_id=338639\naddress_file='node_identity.toml'\n\n\
+    let cfg = "[node]\nrole='rpc-gateway'\nchain_id=1262\naddress_file='node_identity.toml'\n\n\
                [network]\nrpc_port=8600\np2p_port=31400\nmetrics_port=9300\nbootstrap=[]\n";
 
-    fs::write("testbeta/rpc-gateway/node_config.toml", cfg).unwrap();
+    fs::write("testnet/rpc-gateway/node_config.toml", cfg).unwrap();
 }
 
 // ------------------- MAIN -------------------
 
 fn main() {
-    println!("Generating Synergy Testnet Beta FN-DSA identities...");
+    println!("Generating Synergy Testnet FN-DSA identities...");
 
     for i in 1..=9 {
-        create_identity_files(
-            &format!("testbeta/validator-{:02}", i),
-            "validator",
-            "synv1",
-        );
+        create_identity_files(&format!("testnet/validator-{:02}", i), "validator", "synv1");
     }
     for i in 1..=5 {
-        create_identity_files(&format!("testbeta/relayer-{:02}", i), "relayer", "synv4");
+        create_identity_files(&format!("testnet/relayer-{:02}", i), "relayer", "synv4");
     }
-    create_identity_files("testbeta/rpc-gateway", "rpc-gateway", "synv5");
+    create_identity_files("testnet/rpc-gateway", "rpc-gateway", "synv5");
 
     write_genesis_file();
     write_node_configs();
 
-    println!("Synergy Testnet Beta generation complete.");
+    println!("Synergy Testnet generation complete.");
 }

@@ -43,9 +43,9 @@ config/
 ```toml
 [network]
 # Network identification
-id = 338639
-name = "Synergy Testnet-Beta"
-description = "Synergy Network Testnet Beta"
+id = 1262
+name = "Synergy Testnet"
+description = "Synergy Network Testnet"
 
 # Port configuration
 p2p_port = 30303
@@ -55,7 +55,7 @@ max_peers = 50
 
 # Bootstrap nodes
 bootnodes = [
-  "enode://d18491c5a94ef758b6a15478818a1903054c830afdc2cc6b8d04d30d7c8e94b5bcd9c98f33c7ff5a02f7e4c7a5394fc5a4a41d1552d9e43c0e4745a3127c93d4@testnet-beta.synergy.network:30303"
+  "enode://d18491c5a94ef758b6a15478818a1903054c830afdc2cc6b8d04d30d7c8e94b5bcd9c98f33c7ff5a02f7e4c7a5394fc5a4a41d1552d9e43c0e4745a3127c93d4@testnet.synergy.network:30303"
 ]
 
 [network.listen]
@@ -68,7 +68,7 @@ ws  = "127.0.0.1:8546"
 # Blockchain parameters
 block_time = 5
 max_gas_limit = "0x2fefd8"
-chain_id = 338639
+chain_id = 1262
 
 [storage]
 # Storage configuration
@@ -105,8 +105,8 @@ rate_limit_per_minute = 1000
 
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
-| `id` | integer | 338639 | Network identifier |
-| `name` | string | "Synergy Testnet-Beta" | Human-readable network name |
+| `id` | integer | 1262 | Network identifier |
+| `name` | string | "Synergy Testnet" | Human-readable network name |
 | `p2p_port` | integer | 30303 | P2P communication port |
 | `rpc_port` | integer | 8545 | RPC API port |
 | `ws_port` | integer | 8546 | WebSocket port |
@@ -117,7 +117,7 @@ rate_limit_per_minute = 1000
 
 ```bash
 # Network overrides
-export SYNERGY_NETWORK_ID=synergy-testnet-beta
+export SYNERGY_NETWORK_ID=synergy-testnet
 export SYNERGY_P2P_PORT=30303
 export SYNERGY_RPC_PORT=8545
 export SYNERGY_WS_PORT=8546
@@ -300,13 +300,13 @@ The genesis file defines the initial state of the blockchain:
 ```json
 {
   "meta": {
-    "network": "Synergy Testnet-Beta",
+    "network": "Synergy Testnet",
     "version": "1.0.0",
-    "description": "Synergy Network Testnet Beta Genesis Block",
+    "description": "Synergy Network Testnet Genesis Block",
     "dateGenerated": "2024-01-01T00:00:00Z"
   },
   "config": {
-    "chainId": 338639,
+    "chainId": 1262,
     "synergyConsensus": {
       "algorithm": "Proof of Synergy",
       "parameters": {
@@ -374,8 +374,8 @@ The node supports extensive runtime configuration through environment variables:
 
 #### Network Configuration
 ```bash
-export SYNERGY_NETWORK_ID=synergy-testnet-beta
-export SYNERGY_CHAIN_ID=338639
+export SYNERGY_NETWORK_ID=synergy-testnet
+export SYNERGY_CHAIN_ID=1262
 export SYNERGY_P2P_PORT=30303
 export SYNERGY_RPC_PORT=8545
 export SYNERGY_WS_PORT=8546
@@ -681,13 +681,13 @@ find config/ -name "*.toml" -o -name "*.json" | xargs -I {} sh -c 'echo "Validat
 ```toml
 # config/network-config.toml
 [network]
-id = 338639
+id = 1262
 p2p_port = 30303
 rpc_port = 8545
 
 [blockchain]
 block_time = 5
-chain_id = 338639
+chain_id = 1262
 ```
 
 ### Production Configuration

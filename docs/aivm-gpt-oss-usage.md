@@ -1,10 +1,10 @@
 # AIVM & GPT-OSS Quick Commands
 
-## 1. AIVM Testnet Beta Workflow
+## 1. AIVM Testnet Workflow
 
-- **Start the Testnet Beta with AIVM enabled**  
+- **Start the Testnet with AIVM enabled**  
   ```sh
-  cargo run --release --bin synergy-testbeta -- start
+  cargo run --release --bin synergy-testnet -- start
   ```
   The runtime reads `config/aivm-config.toml`, so confirm `[aivm].enabled = true` and the GPT-OSS endpoint points to `http://localhost:8000`.
 
