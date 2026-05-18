@@ -13,13 +13,13 @@ use crate::validator::{
 use crate::{debug, warn};
 use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -35,6 +35,8 @@ lazy_static::lazy_static! {
         Arc::new(Mutex::new(BTreeSet::new()));
     static ref LOCAL_VOTE_LOCK_FILE_MUTEX: Mutex<()> = Mutex::new(());
 }
+
+static COMMITTED_QC_STORE_INIT: Once = Once::new();
 
 const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
 
@@ -391,16 +393,117 @@ impl DualQuorumConsensus {
     }
 
     pub fn record_committed_qc(qc: QuorumCertificate) {
+        Self::ensure_committed_qc_store_loaded();
         if let Ok(mut store) = COMMITTED_QC_STORE.lock() {
             store.insert(qc.block_hash.clone(), qc);
+            if let Err(error) = Self::persist_committed_qc_store_unlocked(&store) {
+                warn!(
+                    "consensus",
+                    "Failed to persist committed quorum certificate store",
+                    "error" => error
+                );
+            }
         }
     }
 
     pub fn committed_qc_for_block_hash(block_hash: &str) -> Option<QuorumCertificate> {
+        Self::ensure_committed_qc_store_loaded();
         COMMITTED_QC_STORE
             .lock()
             .ok()
             .and_then(|store| store.get(block_hash).cloned())
+    }
+
+    fn ensure_committed_qc_store_loaded() {
+        COMMITTED_QC_STORE_INIT.call_once(|| match Self::load_committed_qc_store_from_disk() {
+            Ok(loaded) => {
+                if let Ok(mut store) = COMMITTED_QC_STORE.lock() {
+                    for (block_hash, qc) in loaded {
+                        store.entry(block_hash).or_insert(qc);
+                    }
+                }
+            }
+            Err(error) => {
+                warn!(
+                    "consensus",
+                    "Failed to load committed quorum certificate store",
+                    "error" => error
+                );
+            }
+        });
+    }
+
+    fn committed_qc_store_path() -> PathBuf {
+        if let Ok(path) = std::env::var("SYNERGY_COMMITTED_QC_STORE_FILE") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+
+        #[cfg(test)]
+        {
+            return std::env::temp_dir().join(format!(
+                "synergy-test-committed-qcs-{}.json",
+                std::process::id()
+            ));
+        }
+
+        #[cfg(not(test))]
+        {
+            crate::utils::resolve_data_path("data/committed_qcs.json")
+        }
+    }
+
+    fn load_committed_qc_store_from_disk() -> Result<HashMap<String, QuorumCertificate>, String> {
+        let path = Self::committed_qc_store_path();
+        if !path.exists() {
+            return Ok(HashMap::new());
+        }
+
+        let data = fs::read(&path)
+            .map_err(|err| format!("failed to read committed QC store {:?}: {err}", path))?;
+        if data.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        serde_json::from_slice::<BTreeMap<String, QuorumCertificate>>(&data)
+            .map(|ordered| ordered.into_iter().collect())
+            .map_err(|err| format!("failed to parse committed QC store {:?}: {err}", path))
+    }
+
+    fn persist_committed_qc_store_unlocked(
+        store: &HashMap<String, QuorumCertificate>,
+    ) -> Result<(), String> {
+        let path = Self::committed_qc_store_path();
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create committed QC store directory: {err}"))?;
+        }
+
+        let ordered = store
+            .iter()
+            .map(|(block_hash, qc)| (block_hash.clone(), qc.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let serialized = serde_json::to_vec_pretty(&ordered)
+            .map_err(|err| format!("failed to encode committed QC store: {err}"))?;
+        let tmp_path = path.with_extension("json.tmp");
+
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&tmp_path)
+            .map_err(|err| format!("failed to open committed QC store temp file: {err}"))?;
+        file.write_all(&serialized)
+            .map_err(|err| format!("failed to write committed QC store temp file: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync committed QC store temp file: {err}"))?;
+        drop(file);
+
+        fs::rename(&tmp_path, &path)
+            .map_err(|err| format!("failed to replace committed QC store file: {err}"))
     }
 
     pub(crate) fn create_vote_for_validator(
@@ -1454,6 +1557,12 @@ impl DualQuorumConsensus {
         if let Ok(mut processed) = PROCESSED_EQUIVOCATION_EVIDENCE.lock() {
             processed.clear();
         }
+        if let Ok(mut qcs) = COMMITTED_QC_STORE.lock() {
+            qcs.clear();
+        }
+        let qc_store_path = Self::committed_qc_store_path();
+        let _ = fs::remove_file(qc_store_path.with_extension("json.tmp"));
+        let _ = fs::remove_file(qc_store_path);
         if let Ok(_guard) = LOCAL_VOTE_LOCK_FILE_MUTEX.lock() {
             let path = Self::local_vote_lock_path();
             let _ = fs::remove_file(path.with_extension("json.tmp"));
@@ -1527,6 +1636,51 @@ mod tests {
             }
         }
         manager
+    }
+
+    fn test_qc(block_hash: &str) -> QuorumCertificate {
+        QuorumCertificate {
+            block_hash: block_hash.to_string(),
+            epoch_number: 0,
+            round_number: 1,
+            aggregate_signature: vec![1, 2, 3],
+            participant_bitmap: vec![0x0f],
+            cumulative_weight: 4.0,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: 1_700_000_000,
+            votes: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn committed_qc_store_is_persisted_deterministically() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let later = test_qc("block-z");
+        let earlier = test_qc("block-a");
+        DualQuorumConsensus::record_committed_qc(later.clone());
+        DualQuorumConsensus::record_committed_qc(earlier.clone());
+
+        assert_eq!(
+            DualQuorumConsensus::committed_qc_for_block_hash("block-a").map(|qc| qc.block_hash),
+            Some("block-a".to_string())
+        );
+
+        let loaded = DualQuorumConsensus::load_committed_qc_store_from_disk()
+            .expect("committed QC store should reload from disk");
+        assert_eq!(loaded.get("block-z").map(|qc| qc.round_number), Some(1));
+
+        let raw =
+            fs::read_to_string(DualQuorumConsensus::committed_qc_store_path()).unwrap_or_default();
+        let first = raw
+            .find("\"block-a\"")
+            .expect("first block hash should be present");
+        let second = raw
+            .find("\"block-z\"")
+            .expect("second block hash should be present");
+        assert!(first < second);
     }
 
     fn signed_block(block_index: u64, nonce: u64, validator_id: &str) -> Block {
