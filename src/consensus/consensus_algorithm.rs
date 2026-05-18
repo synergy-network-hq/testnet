@@ -4,9 +4,10 @@ use super::dual_quorum::{
     DualQuorumConsensus, EntropyBeacon, QuorumCertificate, ValidatorRotation, Vote,
 };
 use super::synergy_score::SynergyScoreCalculator;
+use super::validator_keys::{consensus_algorithm_label, load_local_validator_keypair};
 use super::vrf::{VRFConsensus, VRFSeed};
 use crate::block::{Block, BlockChain};
-use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
+use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPublicKey};
 use crate::genesis::canonical_genesis;
 use crate::p2p::networking::P2PNetwork;
 use crate::rpc::rpc_server::{
@@ -140,8 +141,6 @@ pub struct RewardWeights {
 lazy_static::lazy_static! {
     static ref EPOCH_LEADER_ROTATION: Arc<Mutex<(u64, Vec<String>, usize, Vec<String>)>> =
         Arc::new(Mutex::new((0, Vec::new(), 0, Vec::new()))); // (epoch, top_k_validators, current_index, candidate_set)
-    static ref EPHEMERAL_LEADER_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     static ref PROPOSAL_CACHE_LOCK: Arc<Mutex<()>> = Arc::new(Mutex::new(()));
     static ref LAST_CONSENSUS_CHAIN_PERSIST: Arc<Mutex<Option<(u64, Instant)>>> =
         Arc::new(Mutex::new(None));
@@ -1803,18 +1802,19 @@ impl ProofOfSynergy {
             previous_block.nonce + 1, // Simple nonce increment
         );
 
-        let mut pqc = pqc_manager.lock().unwrap();
         let (leader_public_key, leader_private_key) =
-            Self::get_or_create_leader_keypair(&leader.address, &mut pqc).unwrap_or_else(|error| {
-                panic!("Aegis PQC leader signing key unavailable: {error}")
-            });
+            load_local_validator_keypair(&leader.address, &VALIDATOR_MANAGER).unwrap_or_else(
+                |error| panic!("Aegis PQC leader signing key unavailable: {error}"),
+            );
 
+        let mut pqc = pqc_manager.lock().unwrap();
         let signature = pqc
             .sign(&leader_private_key, block.hash.as_bytes())
             .unwrap_or_else(|error| panic!("Aegis PQC block signing failed: {error}"));
         block.proposer_public_key = leader_public_key.key_data;
         block.block_signature = signature.signature_data;
-        block.block_signature_algorithm = "fndsa".to_string();
+        block.block_signature_algorithm =
+            consensus_algorithm_label(&leader_public_key.algorithm).to_string();
 
         if let Err(error) = Self::persist_cached_block_proposal(&block) {
             warn!(
@@ -2306,30 +2306,6 @@ impl ProofOfSynergy {
         }
     }
 
-    fn get_or_create_leader_keypair(
-        validator_address: &str,
-        pqc_manager: &mut PQCManager,
-    ) -> Result<(PQCPublicKey, PQCPrivateKey), String> {
-        if let Ok(cache) = EPHEMERAL_LEADER_KEYS.lock() {
-            if let Some((public_key, private_key)) = cache.get(validator_address) {
-                return Ok((public_key.clone(), private_key.clone()));
-            }
-        }
-
-        let generated = pqc_manager
-            .generate_keypair(PQCAlgorithm::FNDSA)
-            .map_err(|error| format!("aegis-pqvm FN-DSA leader key generation failed: {error}"))?;
-
-        if let Ok(mut cache) = EPHEMERAL_LEADER_KEYS.lock() {
-            cache.insert(
-                validator_address.to_string(),
-                (generated.0.clone(), generated.1.clone()),
-            );
-        }
-
-        Ok(generated)
-    }
-
     fn get_transaction_public_key(address: &str) -> Option<crate::crypto::pqc::PQCPublicKey> {
         if let Ok(wallet_manager) = WALLET_MANAGER.lock() {
             if let Some(wallet) = wallet_manager.get_wallet(address) {
@@ -2354,8 +2330,12 @@ impl ProofOfSynergy {
 mod tests {
     use super::*;
     use crate::block::{Block, BlockChain};
+    use crate::consensus::validator_keys::{
+        consensus_algorithm_label, register_test_validator_signing_key,
+    };
     use crate::transaction::Transaction;
     use crate::validator::ValidatorStatus;
+    use base64::engine::general_purpose;
     use std::sync::OnceLock;
 
     fn proposal_cache_test_lock() -> &'static Mutex<()> {
@@ -2378,19 +2358,35 @@ mod tests {
 
     fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {
         let manager = Arc::new(ValidatorManager::new());
+        let mut pqc_manager = PQCManager::new();
+        let (public_key, private_key) = pqc_manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test validator Aegis PQC key should generate");
+        register_test_validator_signing_key(address, public_key.clone(), private_key);
+        let encoded_public_key = format!(
+            "{}:{}",
+            consensus_algorithm_label(&public_key.algorithm),
+            general_purpose::STANDARD.encode(&public_key.key_data)
+        );
         let mut validator = Validator::new(
             address.to_string(),
-            format!("{address}-pubkey"),
+            encoded_public_key,
             "Validator".to_string(),
             1_000,
         );
         validator.status = ValidatorStatus::Active;
+        validator.activation_tx_hash = Some(format!("syntxn-test-{address}"));
         manager
             .registry
             .lock()
             .expect("registry lock should succeed")
             .validators
             .insert(address.to_string(), validator);
+        if let Ok(mut registry) = VALIDATOR_MANAGER.registry.lock() {
+            registry
+                .validators
+                .insert(address.to_string(), manager.get_validator(address).unwrap());
+        }
         manager
     }
 
@@ -2771,6 +2767,11 @@ mod tests {
             1_000,
         );
         leader.status = ValidatorStatus::Active;
+        let registered_leaders = active_validator_manager(&leader.address);
+        leader.public_key = registered_leaders
+            .get_validator(&leader.address)
+            .expect("test leader should be registered")
+            .public_key;
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
 
         let first = ProofOfSynergy::create_block_proposal(&previous, &leader, vec![], &pqc_manager);

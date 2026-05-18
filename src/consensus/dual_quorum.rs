@@ -1,4 +1,8 @@
 use crate::block::Block;
+use crate::consensus::validator_keys::{
+    sign_with_local_validator_key, verify_block_proposer_key_matches_validator,
+    verify_signer_key_matches_validator,
+};
 use crate::crypto::pqc::{
     PQCAlgorithm, PQCCiphertext, PQCManager, PQCPrivateKey, PQCPublicKey, PQCSignature,
 };
@@ -20,8 +24,6 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 lazy_static::lazy_static! {
-    static ref EPHEMERAL_VALIDATOR_KEYS: Arc<Mutex<HashMap<String, (PQCPublicKey, PQCPrivateKey)>>> =
-        Arc::new(Mutex::new(HashMap::new()));
     static ref NETWORK_VOTE_MAILBOX: Arc<Mutex<HashMap<String, Vec<Vote>>>> =
         Arc::new(Mutex::new(HashMap::new()));
     static ref COMMITTED_QC_STORE: Arc<Mutex<HashMap<String, QuorumCertificate>>> =
@@ -178,7 +180,8 @@ impl DualQuorumConsensus {
     }
 
     fn validate_block_proposal(&self, block: &Block) -> Result<(), String> {
-        Self::validate_block_proposal_static(block)
+        Self::validate_block_proposal_static(block)?;
+        verify_block_proposer_key_matches_validator(block, &self.validator_manager)
     }
 
     pub fn validate_block_proposal_static(block: &Block) -> Result<(), String> {
@@ -232,11 +235,12 @@ impl DualQuorumConsensus {
             epoch_number,
             round_number,
         )?;
-        let local_vote = Self::create_vote_for_validator(
+        let local_vote = Self::create_vote_for_validator_with_manager(
             &local_validator_address,
             proposed_block,
             epoch_number,
             round_number,
+            &self.validator_manager,
         )?;
         self.register_local_vote_or_slash(&local_vote)?;
         let mut votes = vec![local_vote];
@@ -324,6 +328,7 @@ impl DualQuorumConsensus {
         round_number: u64,
     ) -> Result<Vote, String> {
         Self::validate_block_proposal_static(proposed_block)?;
+        verify_block_proposer_key_matches_validator(proposed_block, &VALIDATOR_MANAGER)?;
 
         let local_validator_address = Self::resolve_local_validator_address()
             .ok_or_else(|| "Local validator address is not configured for voting".to_string())?;
@@ -344,11 +349,12 @@ impl DualQuorumConsensus {
             epoch_number,
             round_number,
         )?;
-        let vote = Self::create_vote_for_validator(
+        let vote = Self::create_vote_for_validator_with_manager(
             &local_validator_address,
             proposed_block,
             epoch_number,
             round_number,
+            &VALIDATOR_MANAGER,
         )?;
         if let Some(evidence) = Self::register_local_vote_attempt(&vote) {
             return Err(format!(
@@ -403,6 +409,22 @@ impl DualQuorumConsensus {
         epoch_number: u64,
         round_number: u64,
     ) -> Result<Vote, String> {
+        Self::create_vote_for_validator_with_manager(
+            validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+            &VALIDATOR_MANAGER,
+        )
+    }
+
+    pub(crate) fn create_vote_for_validator_with_manager(
+        validator_address: &str,
+        proposed_block: &Block,
+        epoch_number: u64,
+        round_number: u64,
+        validator_manager: &Arc<ValidatorManager>,
+    ) -> Result<Vote, String> {
         let timestamp = Self::current_timestamp();
         let message = Self::vote_signature_payload(
             validator_address,
@@ -412,10 +434,11 @@ impl DualQuorumConsensus {
             round_number,
         );
 
-        let (public_key, private_key) = Self::get_or_create_validator_keypair(validator_address)?;
-
-        let mut pqc_manager = PQCManager::new();
-        let signature = pqc_manager.sign(&private_key, message.as_bytes())?;
+        let (public_key, signature) = sign_with_local_validator_key(
+            validator_address,
+            message.as_bytes(),
+            validator_manager,
+        )?;
 
         Ok(Vote {
             validator_address: validator_address.to_string(),
@@ -492,7 +515,9 @@ impl DualQuorumConsensus {
         let mut handles = Vec::new();
         for (vote, cache_key) in uncached_votes {
             handles.push(Self::spawn_vote_signature_verification_with_key(
-                vote, cache_key,
+                vote,
+                cache_key,
+                Arc::clone(&self.validator_manager),
             ));
         }
 
@@ -529,9 +554,10 @@ impl DualQuorumConsensus {
     fn spawn_vote_signature_verification_with_key(
         vote: Vote,
         cache_key: String,
+        validator_manager: Arc<ValidatorManager>,
     ) -> thread::JoinHandle<(Vote, String, Result<(), String>)> {
         thread::spawn(move || {
-            let verification = Self::verify_vote_signature_uncached(&vote);
+            let verification = Self::verify_vote_signature_uncached(&vote, &validator_manager);
             (vote, cache_key, verification)
         })
     }
@@ -847,30 +873,6 @@ impl DualQuorumConsensus {
         })
     }
 
-    fn get_or_create_validator_keypair(
-        validator_address: &str,
-    ) -> Result<(PQCPublicKey, PQCPrivateKey), String> {
-        if let Ok(cache) = EPHEMERAL_VALIDATOR_KEYS.lock() {
-            if let Some((public_key, private_key)) = cache.get(validator_address) {
-                return Ok((public_key.clone(), private_key.clone()));
-            }
-        }
-
-        let mut pqc_manager = PQCManager::new();
-        let generated = pqc_manager
-            .generate_keypair(PQCAlgorithm::FNDSA)
-            .map_err(|e| format!("Failed to generate validator keypair: {e}"))?;
-
-        if let Ok(mut cache) = EPHEMERAL_VALIDATOR_KEYS.lock() {
-            cache.insert(
-                validator_address.to_string(),
-                (generated.0.clone(), generated.1.clone()),
-            );
-        }
-
-        Ok(generated)
-    }
-
     fn is_block_hash_valid(block: &Block) -> bool {
         let expected = format!(
             "{:?}{}{}{}{}{}",
@@ -901,12 +903,15 @@ impl DualQuorumConsensus {
             return Ok(());
         }
 
-        Self::verify_vote_signature_uncached(vote)?;
+        Self::verify_vote_signature_uncached(vote, &self.validator_manager)?;
         self.cache_verified_vote_signature(cache_key);
         Ok(())
     }
 
-    fn verify_vote_signature_uncached(vote: &Vote) -> Result<(), String> {
+    fn verify_vote_signature_uncached(
+        vote: &Vote,
+        validator_manager: &Arc<ValidatorManager>,
+    ) -> Result<(), String> {
         let message = Self::vote_signature_payload(
             &vote.validator_address,
             &vote.block_hash,
@@ -914,12 +919,17 @@ impl DualQuorumConsensus {
             vote.epoch_number,
             vote.round_number,
         );
-        let public_key = PQCPublicKey {
-            algorithm: vote.signature.algorithm.clone(),
-            key_data: vote.signer_public_key.clone(),
-            key_id: format!("vote_{}", vote.validator_address),
-            created_at: vote.timestamp,
-        };
+        let public_key = verify_signer_key_matches_validator(
+            &vote.validator_address,
+            &vote.signer_public_key,
+            validator_manager,
+        )?;
+        if vote.signature.algorithm != public_key.algorithm {
+            return Err(format!(
+                "vote signature algorithm does not match canonical consensus key for validator {}",
+                vote.validator_address
+            ));
+        }
 
         let pqc_manager = PQCManager::new();
         let valid = pqc_manager
@@ -942,6 +952,7 @@ impl DualQuorumConsensus {
         validator_manager: &Arc<ValidatorManager>,
     ) -> Result<(), String> {
         block.verify_proposer_signature()?;
+        verify_block_proposer_key_matches_validator(block, validator_manager)?;
 
         if qc.block_hash != block.hash {
             return Err("QC block hash does not match exact block".to_string());
@@ -987,7 +998,7 @@ impl DualQuorumConsensus {
             let Some(validator) = active_by_address.get(&vote.validator_address) else {
                 return Err("QC contains signer outside active validator set".to_string());
             };
-            Self::verify_vote_signature_uncached(vote)?;
+            Self::verify_vote_signature_uncached(vote, validator_manager)?;
             signed_weight += (validator.synergy_score / 100.0).max(0.0);
         }
 
@@ -1461,18 +1472,32 @@ impl DualQuorumConsensus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::validator_keys::{
+        consensus_algorithm_label, register_test_validator_signing_key,
+    };
     use crate::crypto::pqc::PQCAlgorithm;
-    use crate::validator::{ValidatorRegistration, ValidatorStatus};
+    use crate::validator::{Validator, ValidatorRegistration, ValidatorStatus};
+    use base64::{engine::general_purpose, Engine as _};
     use std::fs;
     use std::path::PathBuf;
 
     fn approved_validator_manager(addresses: &[&str]) -> Arc<ValidatorManager> {
         let manager = Arc::new(ValidatorManager::new());
         for address in addresses {
+            let mut pqc_manager = PQCManager::new();
+            let (public_key, private_key) = pqc_manager
+                .generate_keypair(PQCAlgorithm::FNDSA)
+                .expect("test validator consensus key should generate");
+            register_test_validator_signing_key(address, public_key.clone(), private_key);
+            let encoded_public_key = format!(
+                "{}:{}",
+                consensus_algorithm_label(&public_key.algorithm),
+                general_purpose::STANDARD.encode(&public_key.key_data)
+            );
             manager
                 .register_validator(ValidatorRegistration {
                     address: (*address).to_string(),
-                    public_key: format!("{}-key", address),
+                    public_key: encoded_public_key,
                     name: format!("{address} validator"),
                     stake_amount: 1_000,
                     submitted_at: 0,
@@ -1482,6 +1507,24 @@ mod tests {
             manager
                 .approve_validator(address)
                 .expect("validator approval should succeed");
+
+            if let Ok(mut registry) = VALIDATOR_MANAGER.registry.lock() {
+                let mut validator = Validator::new(
+                    (*address).to_string(),
+                    manager
+                        .get_validator(address)
+                        .expect("test validator should be registered")
+                        .public_key,
+                    format!("{address} validator"),
+                    1_000,
+                );
+                validator.status = ValidatorStatus::Active;
+                validator.activation_tx_hash = Some(format!("syntxn-test-{address}"));
+                registry
+                    .validators
+                    .insert((*address).to_string(), validator);
+                registry.pending_registrations.remove(*address);
+            }
         }
         manager
     }

@@ -5094,9 +5094,15 @@ mod tests {
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
     use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate, Vote};
+    use crate::consensus::validator_keys::{
+        consensus_algorithm_label, load_local_validator_keypair,
+        register_test_validator_signing_key,
+    };
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
-    use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
+    use crate::validator::{Validator, ValidatorRegistration, ValidatorStatus, VALIDATOR_MANAGER};
+    use base64::{engine::general_purpose, Engine as _};
+    use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
@@ -5111,17 +5117,26 @@ mod tests {
         );
     }
 
+    lazy_static! {
+        static ref TEST_VALIDATOR_KEY_LOCK: Mutex<()> = Mutex::new(());
+    }
+
     fn sign_test_block(block: &mut Block) {
+        let _guard = TEST_VALIDATOR_KEY_LOCK
+            .lock()
+            .expect("test validator key lock should succeed");
+        ensure_test_validator_key_locked(&block.validator_id);
+        let (public_key, private_key) =
+            load_local_validator_keypair(&block.validator_id, &VALIDATOR_MANAGER)
+                .expect("test validator signing key should load");
         let mut manager = PQCManager::new();
-        let (public_key, private_key) = manager
-            .generate_keypair(PQCAlgorithm::FNDSA)
-            .expect("test Aegis PQC block key should generate");
         let signature = manager
             .sign(&private_key, block.hash.as_bytes())
             .expect("test Aegis PQC block signature should sign");
         block.proposer_public_key = public_key.key_data;
         block.block_signature = signature.signature_data;
-        block.block_signature_algorithm = "fndsa".to_string();
+        block.block_signature_algorithm =
+            consensus_algorithm_label(&public_key.algorithm).to_string();
     }
 
     fn signed_block(
@@ -5144,26 +5159,77 @@ mod tests {
         block
     }
 
+    fn ensure_test_validator_key(address: &str) {
+        let _guard = TEST_VALIDATOR_KEY_LOCK
+            .lock()
+            .expect("test validator key lock should succeed");
+        ensure_test_validator_key_locked(address);
+    }
+
+    fn ensure_test_validator_key_locked(address: &str) {
+        if load_local_validator_keypair(address, &VALIDATOR_MANAGER).is_ok() {
+            VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+            return;
+        }
+
+        let mut manager = PQCManager::new();
+        let (public_key, private_key) = manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test Aegis PQC validator key should generate");
+        register_test_validator_signing_key(address, public_key.clone(), private_key);
+        let encoded_public_key = format!(
+            "{}:{}",
+            consensus_algorithm_label(&public_key.algorithm),
+            general_purpose::STANDARD.encode(&public_key.key_data)
+        );
+
+        if let Ok(mut registry) = VALIDATOR_MANAGER.registry.lock() {
+            let mut validator = Validator::new(
+                address.to_string(),
+                encoded_public_key.clone(),
+                format!("Test validator {address}"),
+                50_000_000_000_000,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator.synergy_score = 100.0;
+            validator.activation_tx_hash = Some(format!("syntxn-test-{address}"));
+            registry.validators.insert(address.to_string(), validator);
+            registry.pending_registrations.remove(address);
+        } else if VALIDATOR_MANAGER.get_validator(address).is_none() {
+            let _ = VALIDATOR_MANAGER.register_validator(ValidatorRegistration {
+                address: address.to_string(),
+                public_key: encoded_public_key,
+                name: format!("Test validator {address}"),
+                stake_amount: 50_000_000_000_000,
+                submitted_at: 0,
+                registration_tx_hash: format!("test-registration-{address}"),
+            });
+            let _ = VALIDATOR_MANAGER.approve_validator(address);
+        }
+        VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+    }
+
     fn ensure_test_qc_validators(addresses: &[&str]) {
         for address in addresses {
-            if VALIDATOR_MANAGER.get_validator(address).is_none() {
-                let _ = VALIDATOR_MANAGER.register_validator(ValidatorRegistration {
-                    address: (*address).to_string(),
-                    public_key: format!("{address}-pqc"),
-                    name: format!("Test validator {address}"),
-                    stake_amount: 50_000_000_000_000,
-                    submitted_at: 0,
-                    registration_tx_hash: format!("test-registration-{address}"),
-                });
-            }
-            let _ = VALIDATOR_MANAGER.approve_validator(address);
-            VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+            ensure_test_validator_key_locked(address);
         }
     }
 
     fn test_quorum_certificate(block: &Block) -> QuorumCertificate {
+        let _guard = TEST_VALIDATOR_KEY_LOCK
+            .lock()
+            .expect("test validator key lock should succeed");
         let signers = ["synv1qc01", "synv1qc02", "synv1qc03", "synv1qc04"];
+        ensure_test_validator_key_locked(&block.validator_id);
         ensure_test_qc_validators(&signers);
+        let active_before_signing = VALIDATOR_MANAGER
+            .get_active_validators()
+            .into_iter()
+            .map(|validator| validator.address)
+            .collect::<Vec<_>>();
+        for address in active_before_signing {
+            ensure_test_validator_key_locked(&address);
+        }
         let mut signer_addresses = VALIDATOR_MANAGER
             .get_active_validators()
             .into_iter()

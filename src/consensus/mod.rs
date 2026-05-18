@@ -12,6 +12,7 @@ pub mod posy;
 pub mod synergy_score;
 #[cfg(test)]
 pub mod tests;
+pub mod validator_keys;
 pub mod vrf;
 
 use self::consensus_algorithm::ProofOfSynergy;

@@ -3,9 +3,48 @@ use crate::consensus::cartel_detection::{CartelDetectionEngine, VoteRecord};
 use crate::consensus::dao_governance::{DAOGovernance, ProposalType};
 use crate::consensus::dual_quorum::{DualQuorumConsensus, EntropyBeacon, QuorumCertificate};
 use crate::consensus::synergy_score::SynergyScoreCalculator;
+use crate::consensus::validator_keys::{
+    consensus_algorithm_label, load_local_validator_keypair, register_test_validator_signing_key,
+};
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
-use crate::validator::{Validator, ValidatorManager};
+use crate::validator::{Validator, ValidatorManager, ValidatorRegistration};
+use base64::{engine::general_purpose, Engine as _};
 use std::sync::{Arc, Mutex};
+
+fn register_test_consensus_validator(validator_manager: &Arc<ValidatorManager>, address: &str) {
+    let mut pqc_manager = PQCManager::new();
+    let (public_key, private_key) = pqc_manager
+        .generate_keypair(PQCAlgorithm::FNDSA)
+        .expect("test validator Aegis PQC key should generate");
+    register_test_validator_signing_key(address, public_key.clone(), private_key);
+    let encoded_public_key = format!(
+        "{}:{}",
+        consensus_algorithm_label(&public_key.algorithm),
+        general_purpose::STANDARD.encode(&public_key.key_data)
+    );
+    let _ = validator_manager.register_validator(ValidatorRegistration {
+        address: address.to_string(),
+        public_key: encoded_public_key,
+        name: format!("Test Validator {address}"),
+        stake_amount: 1000,
+        submitted_at: 0,
+        registration_tx_hash: format!("test-{address}"),
+    });
+    let _ = validator_manager.approve_validator(address);
+}
+
+fn sign_block_as_validator(block: &mut Block, validator_manager: &Arc<ValidatorManager>) {
+    let (public_key, private_key) =
+        load_local_validator_keypair(&block.validator_id, validator_manager)
+            .expect("test validator signing key should load");
+    let mut pqc_manager = PQCManager::new();
+    let signature = pqc_manager
+        .sign(&private_key, block.hash.as_bytes())
+        .expect("test block signing should succeed");
+    block.proposer_public_key = public_key.key_data;
+    block.block_signature = signature.signature_data;
+    block.block_signature_algorithm = consensus_algorithm_label(&public_key.algorithm).to_string();
+}
 
 #[test]
 fn test_synergy_score_calculation() {
@@ -66,15 +105,7 @@ fn test_dual_quorum_consensus() {
     let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
 
     // Register + approve the proposer so consensus can resolve validator metadata.
-    let _ = validator_manager.register_validator(crate::validator::ValidatorRegistration {
-        address: "test_validator".to_string(),
-        public_key: "test_key".to_string(),
-        name: "Test Validator".to_string(),
-        stake_amount: 1000,
-        submitted_at: 0,
-        registration_tx_hash: "test".to_string(),
-    });
-    let _ = validator_manager.approve_validator("test_validator");
+    register_test_consensus_validator(&validator_manager, "test_validator");
 
     // Give the proposer enough contribution so the proposal bond check passes.
     for _ in 0..10 {
@@ -105,19 +136,7 @@ fn test_dual_quorum_consensus() {
         12345,
     );
 
-    // Attach a real FN-DSA signature for block proposal validation.
-    {
-        let mut manager = pqc_manager.lock().unwrap();
-        let (public_key, private_key) = manager
-            .generate_keypair(PQCAlgorithm::FNDSA)
-            .expect("FN-DSA key generation should succeed");
-        let signature = manager
-            .sign(&private_key, test_block.hash.as_bytes())
-            .expect("FN-DSA block signing should succeed");
-        test_block.proposer_public_key = public_key.key_data;
-        test_block.block_signature = signature.signature_data;
-        test_block.block_signature_algorithm = "fndsa".to_string();
-    }
+    sign_block_as_validator(&mut test_block, &validator_manager);
 
     // Test consensus execution
     let result = dual_quorum.start_consensus_round(&test_block, 1);
@@ -145,15 +164,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
 
     for index in 1..=1 {
         let address = format!("validator{}", index);
-        let _ = validator_manager.register_validator(crate::validator::ValidatorRegistration {
-            address: address.clone(),
-            public_key: format!("test_key_{}", index),
-            name: format!("Test Validator {}", index),
-            stake_amount: 1000,
-            submitted_at: 0,
-            registration_tx_hash: format!("test_{}", index),
-        });
-        let _ = validator_manager.approve_validator(&address);
+        register_test_consensus_validator(&validator_manager, &address);
     }
 
     let mut dual_quorum = DualQuorumConsensus::new(
@@ -174,18 +185,7 @@ fn test_dual_quorum_enforces_minimum_validator_count() {
         12345,
     );
 
-    {
-        let mut manager = pqc_manager.lock().unwrap();
-        let (public_key, private_key) = manager
-            .generate_keypair(PQCAlgorithm::FNDSA)
-            .expect("FN-DSA key generation should succeed");
-        let signature = manager
-            .sign(&private_key, test_block.hash.as_bytes())
-            .expect("FN-DSA block signing should succeed");
-        test_block.proposer_public_key = public_key.key_data;
-        test_block.block_signature = signature.signature_data;
-        test_block.block_signature_algorithm = "fndsa".to_string();
-    }
+    sign_block_as_validator(&mut test_block, &validator_manager);
 
     let result = dual_quorum.start_consensus_round(&test_block, 1);
     assert!(result.is_err());

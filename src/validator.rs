@@ -965,6 +965,31 @@ fn configured_consensus_order(active_validators: &[Validator]) -> (Option<Vec<St
             .filter(|address| active_addresses.contains(address))
             .collect::<Vec<_>>();
         if !ordered.is_empty() {
+            let mut activated = active_validators
+                .iter()
+                .filter(|validator| !ordered.contains(&validator.address))
+                .filter(|validator| {
+                    validator
+                        .activation_tx_hash
+                        .as_deref()
+                        .map(|hash| hash == "genesis" || hash.starts_with("syntxn-"))
+                        .unwrap_or(false)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            activated.sort_by(|left, right| {
+                right
+                    .stake_amount
+                    .cmp(&left.stake_amount)
+                    .then_with(|| {
+                        right
+                            .synergy_score
+                            .partial_cmp(&left.synergy_score)
+                            .unwrap_or(Ordering::Equal)
+                    })
+                    .then_with(|| left.address.cmp(&right.address))
+            });
+            ordered.extend(activated.into_iter().map(|validator| validator.address));
             ordered.truncate(max_validators);
             return (Some(ordered), max_validators);
         }
