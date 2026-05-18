@@ -3,8 +3,8 @@
   "balance_total_nwei": "12000000000000000000",
   "chain_id": 1264,
   "errors": [],
-  "genesis_hash": "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75",
-  "network_magic_bytes": "e312fa40",
+  "genesis_hash": "5809ed3fe0a1ae40bad1f7db6309917e47bfc0b1734cbc170b738ebc38b312ba",
+  "network_magic_bytes": "f133316a",
   "total_supply_cap_nwei": "12000000000000000000",
   "valid": true,
   "validator_count": 5

@@ -141,8 +141,8 @@ Get node information.
 - `name`: Node name
 - `version`: Node version
 - `protocolVersion`: Protocol version
-- `networkId`: Network ID (1262 for testnet)
-- `chainId`: Chain ID (1262 for testnet)
+- `networkId`: Network ID (1264 for testnet)
+- `chainId`: Chain ID (1264 for testnet)
 - `consensus`: Consensus algorithm
 - `syncing`: Sync status
 - `currentBlock`: Current block number

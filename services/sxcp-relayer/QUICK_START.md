@@ -106,7 +106,7 @@ Look for log lines like:
 {
   "sepoliaChainId": 11155111,
   "amoyChainId": 80002,
-  "destinationChainId": 1262,
+  "destinationChainId": 1264,
   "sxcpIntentHubAddress": "0x...",
   "sxcpVaultAddress": "0x...",
   "threshold": 2,

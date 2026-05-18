@@ -232,8 +232,8 @@ Get node information.
 - `name`: Node name
 - `version`: Node version
 - `protocolVersion`: Protocol version (null if not set)
-- `networkId`: Network ID (1262 for testnet)
-- `chainId`: Chain ID (1262 for testnet)
+- `networkId`: Network ID (1264 for testnet)
+- `chainId`: Chain ID (1264 for testnet)
 - `consensus`: Consensus algorithm
 - `syncing`: Sync status (boolean)
 - `currentBlock`: Current block number
@@ -1346,7 +1346,7 @@ Get the chain ID.
 
 **Parameters**: None
 
-**Returns**: `number` - Chain ID (1262 for testnet)
+**Returns**: `number` - Chain ID (1264 for testnet)
 
 ---
 
@@ -1713,8 +1713,8 @@ Common error codes:
 4. **AIVM Methods**: AIVM (Artificial Intelligence Virtual Machine) methods are currently disabled in the testnet.
 
 5. **Network IDs**: 
-   - Testnet Network ID: 1262
-   - Testnet Chain ID: 1262
+   - Testnet Network ID: 1264
+   - Testnet Chain ID: 1264
 
 6. **Address Formats**:
    - Wallet addresses: `synw...` (bech32m encoded)

@@ -47,7 +47,7 @@ class SXCPRelayer {
       // Default configuration
       sepoliaChainId: 11155111,
       amoyChainId: 80002,
-      destinationChainId: 1262, // Synergy Testnet
+      destinationChainId: 1264, // Synergy Testnet
       relayerAddress: process.env.RELAYER_ADDRESS || '',
       pqcAlgorithm: process.env.PQC_ALGORITHM || 'fndsa',
       pqcPublicKeyB64: process.env.PQC_PUBLIC_KEY_B64 || '',

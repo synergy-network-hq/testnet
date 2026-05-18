@@ -81,7 +81,7 @@ Optional `testnet-sxcp-relayer-config.json`:
 {
   "sepoliaChainId": 11155111,
   "amoyChainId": 80002,
-  "destinationChainId": 1262,
+  "destinationChainId": 1264,
   "sxcpIntentHubAddress": "0x...",
   "sxcpVaultAddress": "0x...",
   "threshold": 2,
@@ -303,7 +303,7 @@ All events are logged to stdout/stderr with ISO timestamps:
 [Watcher:80002] IntentCommitted: 0x... from 0x... (nonce: 42)
 [Coordinator] Registered bundle 0x... with threshold 2
 [Coordinator] Bundle 0x... reached quorum!
-[Submitter] Bundle 0x... submitted to chain 1262: 0x...
+[Submitter] Bundle 0x... submitted to chain 1264: 0x...
 [Reporter] Submitted attestation for bundle 0x...
 ```
 

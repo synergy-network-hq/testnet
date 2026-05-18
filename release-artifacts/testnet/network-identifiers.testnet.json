@@ -202,15 +202,15 @@
     "synergy_native": {
       "canonical_caip2": "synergy:testnet",
       "decimal": 1264,
-      "hex": "0x4ef",
+      "hex": "0x4f0",
       "status": "active",
       "type": "uint64"
     }
   },
   "cryptographic_identity": {
-    "genesis_artifact_sha256": "20c74a8821737d43901db19d8cee1bf880c7425965e78c2784d20552e2be82c0",
+    "genesis_artifact_sha256": "1d85cf65f4f7ddc18d2c9c7ede384ee8cdfdd0188d772280f9aa735b21d9b0d4",
     "genesis_file": "genesis.testnet.json",
-    "genesis_hash": "69cd6ae25399d542632ac770a3263761bac585003d2b48dac74e9902f4b5d75c",
+    "genesis_hash": "5809ed3fe0a1ae40bad1f7db6309917e47bfc0b1734cbc170b738ebc38b312ba",
     "genesis_hash_algorithm": "blake3-256",
     "genesis_hash_format": "lowercase_hex_without_0x",
     "genesis_hash_status": "final",
@@ -219,7 +219,7 @@
       "format": "lowercase_hex_without_0x",
       "length_bytes": 4,
       "status": "final",
-      "value": "76350cb6"
+      "value": "f133316a"
     }
   },
   "endpoints": {
@@ -446,7 +446,7 @@
       "blockExplorerUrls": [
         "https://testnet-atlas.synergy-network.io"
       ],
-      "chainId": "0x4ef",
+      "chainId": "0x4f0",
       "chainName": "Synergy Testnet",
       "nativeCurrency": {
         "decimals": 9,

@@ -19,7 +19,7 @@ Get the chain ID.
 
 **Parameters**: None
 
-**Returns**: `number` - Chain ID (1262 for testnet)
+**Returns**: `number` - Chain ID (1264 for testnet)
 
 ---
 

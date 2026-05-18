@@ -7,7 +7,7 @@ global:
   evaluation_interval: 15s
   external_labels:
     network: testnet
-    chain_id: "1262"
+    chain_id: "1264"
 
 alerting:
   alertmanagers:

@@ -665,7 +665,7 @@ mod tests {
         assert!(tx.validate_for_admission().is_valid);
 
         let mut wrong_chain = tx.clone();
-        wrong_chain.chain_id = 1262;
+        wrong_chain.chain_id = 999;
         assert!(!wrong_chain.validate_for_admission().is_valid);
 
         let mut wrong_network = tx.clone();

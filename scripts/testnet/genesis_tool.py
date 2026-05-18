@@ -28,6 +28,7 @@ import blake3
 
 CHAIN_ID = 1264
 NETWORK_ID = 1264
+CHAIN_ID_HEX = hex(CHAIN_ID)
 CAIP2 = "synergy:testnet"
 EIP155 = "eip155:1264"
 TOKEN_NAME = "Synergy Testnet Token"
@@ -500,7 +501,7 @@ def update_network_identifiers(template: dict[str, Any], genesis_hash: str, netw
         {
             "status": "active",
             "decimal": CHAIN_ID,
-            "hex": "0x4ef",
+            "hex": CHAIN_ID_HEX,
             "type": "uint64",
             "canonical_caip2": CAIP2,
         }
@@ -534,7 +535,7 @@ def update_network_identifiers(template: dict[str, Any], genesis_hash: str, netw
         {"domain_id": CHAIN_ID, "status": "reserved"}
     )
     doc.setdefault("wallet_metadata", {}).setdefault("wallet_add_network_payload", {}).update(
-        {"chainId": "0x4ef", "chainName": "Synergy Testnet"}
+        {"chainId": CHAIN_ID_HEX, "chainName": "Synergy Testnet"}
     )
     cryptographic = doc.setdefault("cryptographic_identity", {})
     cryptographic.update(
@@ -699,7 +700,7 @@ def build_genesis(key_dir: Path, template_path: Path) -> tuple[dict[str, Any], d
         "network_slug": "synergy-testnet",
         "environment_family": "public_test_network",
         "synergy_native_chain_id": CHAIN_ID,
-        "synergy_native_chain_id_hex": "0x4ef",
+        "synergy_native_chain_id_hex": CHAIN_ID_HEX,
         "canonical_caip2": {
             "status": "active",
             "namespace": "synergy",

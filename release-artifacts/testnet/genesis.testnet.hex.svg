@@ -2,9 +2,9 @@
 <rect width="100%" height="100%" fill="#061014"/>
 <rect x="20" y="20" width="1000" height="3060" rx="8" fill="#081820" stroke="#1f5a66"/>
 <text x="32" y="58" fill="#f4fbff" font-family="Menlo, Consolas, monospace" font-size="24" font-weight="700">Synergy Genesis Block Raw Hex</text>
-<text x="32" y="88" fill="#7ee7ff" font-family="Menlo, Consolas, monospace" font-size="13">chain_id=1264  hash=69cd6ae25399d542632ac770...  magic=76350cb6</text>
+<text x="32" y="88" fill="#7ee7ff" font-family="Menlo, Consolas, monospace" font-size="13">chain_id=1264  hash=5809ed3fe0a1ae40bad1f7db...  magic=f133316a</text>
 <text x="32" y="116" fill="#a8b8c0" font-family="Menlo, Consolas, monospace" font-size="12">16 May 2026 - Synergy Testnet chain 1264 resets the public testnet with a post-quantum Proof of Synergy network with cluster-local certified DAG data availability and dual-quorum finality.</text>
-<text x="32" y="146" fill="#6fffd2" font-family="Menlo, Consolas, monospace" font-size="12">state_root=a2d43eb9d19de9e9d50ac78271e013313047fcbc63ecc251c650c97cca8f0a1c</text>
+<text x="32" y="146" fill="#6fffd2" font-family="Menlo, Consolas, monospace" font-size="12">state_root=34c374780ae9e9467a02b74f2214e0b9fe026a747c545b57237a8ffa11178d16</text>
 <text x="32" y="164" fill="#6fffd2" font-family="Menlo, Consolas, monospace" font-size="12">validator_set_hash=8b2cb9f8eb296dd1491d3ed777da3f7264dd4d0bc467556902ebe63363577dfc allocation_hash=e4db5cbe7fccce3efb9cc452df0936ee226338866368059defeb4c5eb3288a13</text>
 <text x="32" y="186" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">SYNERGY GENESIS BLOCK RAW HEX</text>
 <text x="32" y="202" fill="#d6f3ff" font-family="Menlo, Consolas, monospace" font-size="12">Canonical serialization: deterministic JSON sorted keys, no insignificant whitespace</text>
