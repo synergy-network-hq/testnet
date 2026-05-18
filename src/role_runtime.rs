@@ -16,6 +16,7 @@ use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dao_governance::{DAOGovernance, SynergyOracle};
 use crate::consensus::dual_quorum::{EntropyBeacon, ValidatorRotation};
 use crate::consensus::synergy_score::SynergyScoreCalculator;
+use crate::consensus::validator_keys::load_local_validator_keypair;
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
@@ -30,7 +31,7 @@ use crate::telemetry;
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::utils;
-use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
+use crate::validator::{consensus_membership_validators, ValidatorRegistration, VALIDATOR_MANAGER};
 use crate::wallet;
 use crate::{info, warn};
 use serde::Deserialize;
@@ -444,7 +445,71 @@ fn ensure_consensus_pqc_runtime_ready(config: &NodeConfig) -> Result<(), String>
     }
     AegisPqvmSigner::initialize_required()
         .map(|_| ())
-        .map_err(|error| format!("aegis-pqvm initialization failed: {error}"))
+        .map_err(|error| format!("aegis-pqvm initialization failed: {error}"))?;
+    ensure_local_validator_consensus_key_bound(config)
+}
+
+fn ensure_local_validator_consensus_key_bound(config: &NodeConfig) -> Result<(), String> {
+    let validator_address = resolve_local_validator_address(config);
+    ensure_local_validator_record_available(&validator_address)?;
+
+    let consensus_members =
+        consensus_membership_validators(VALIDATOR_MANAGER.get_active_validators());
+    if !consensus_members
+        .iter()
+        .any(|validator| validator.address == validator_address)
+    {
+        return Err(format!(
+            "local validator {validator_address} is not ACTIVE in canonical Testnet consensus membership"
+        ));
+    }
+
+    load_local_validator_keypair(&validator_address, &VALIDATOR_MANAGER)
+        .map(|_| ())
+        .map_err(|error| {
+            format!(
+                "local validator {validator_address} cannot load a canonical Aegis PQC consensus signing key: {error}"
+            )
+        })
+}
+
+fn ensure_local_validator_record_available(validator_address: &str) -> Result<(), String> {
+    if VALIDATOR_MANAGER.get_validator(validator_address).is_some() {
+        return Ok(());
+    }
+
+    let genesis = canonical_genesis().map_err(|error| {
+        format!("failed to load canonical genesis for validator preflight: {error}")
+    })?;
+    let Some(genesis_validator) = genesis
+        .validators()
+        .iter()
+        .find(|validator| validator.operator_address == validator_address)
+    else {
+        return Err(format!(
+            "local validator {validator_address} is not present in finalized validator registry or canonical Testnet genesis"
+        ));
+    };
+
+    VALIDATOR_MANAGER
+        .register_validator(ValidatorRegistration {
+            address: genesis_validator.operator_address.clone(),
+            public_key: genesis_validator.consensus_public_key.clone(),
+            name: genesis_validator.moniker.clone(),
+            stake_amount: genesis_validator.stake_nwei,
+            submitted_at: now_ts(),
+            registration_tx_hash: "genesis".to_string(),
+        })
+        .map_err(|error| {
+            format!("failed to register canonical genesis validator {validator_address}: {error}")
+        })?;
+    VALIDATOR_MANAGER
+        .approve_validator(validator_address)
+        .map_err(|error| {
+            format!("failed to activate canonical genesis validator {validator_address}: {error}")
+        })?;
+    VALIDATOR_MANAGER.update_validator_stake(validator_address, genesis_validator.stake_nwei);
+    Ok(())
 }
 
 fn normalize_expected_profile(
@@ -2475,6 +2540,17 @@ mod tests {
             Some(NodeRole::Validator.profile()),
             consensus_enabled,
         ));
+    }
+
+    #[test]
+    fn consensus_preflight_rejects_validator_without_canonical_record() {
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1missingpreflight".to_string();
+
+        let error = ensure_local_validator_consensus_key_bound(&config)
+            .expect_err("validator without canonical record must fail preflight");
+
+        assert!(error.contains("not present in finalized validator registry"));
     }
 
     #[test]
