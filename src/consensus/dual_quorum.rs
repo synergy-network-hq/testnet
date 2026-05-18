@@ -183,12 +183,7 @@ impl DualQuorumConsensus {
             return Err("Invalid block hash payload".to_string());
         }
 
-        // Verify leader signature
-        let leader = Self::get_block_leader_static(block)?;
-
-        if !Self::verify_block_signature_static(block, &leader) {
-            return Err("Invalid block signature".to_string());
-        }
+        block.verify_proposer_signature()?;
 
         // Verify all transactions in the block
         for tx in &block.transactions {
@@ -759,15 +754,6 @@ impl DualQuorumConsensus {
         bitmap
     }
 
-    fn get_block_leader_static(block: &Block) -> Result<String, String> {
-        // In PoSy, the leader is determined by the block's validator_id field
-        if block.validator_id.is_empty() {
-            Err("No validator specified in block".to_string())
-        } else {
-            Ok(block.validator_id.clone())
-        }
-    }
-
     fn collect_live_validators(&self) -> Vec<Validator> {
         let active_validators =
             consensus_membership_validators(self.validator_manager.get_active_validators());
@@ -854,32 +840,6 @@ impl DualQuorumConsensus {
         Ok(generated)
     }
 
-    fn verify_block_signature_static(block: &Block, leader_address: &str) -> bool {
-        if block.block_signature.is_empty() || block.proposer_public_key.is_empty() {
-            return false;
-        }
-
-        let public_key_obj = PQCPublicKey {
-            algorithm: PQCAlgorithm::FNDSA,
-            key_data: block.proposer_public_key.clone(),
-            key_id: format!("block_{}", leader_address),
-            created_at: block.timestamp,
-        };
-
-        let signature_obj = PQCSignature {
-            algorithm: PQCAlgorithm::FNDSA,
-            signature_data: block.block_signature.clone(),
-            message_hash: block.hash.as_bytes().to_vec(),
-            public_key_id: format!("block_{}", leader_address),
-            created_at: block.timestamp,
-        };
-
-        let pqc_manager = PQCManager::new();
-        pqc_manager
-            .verify(&public_key_obj, &signature_obj, block.hash.as_bytes())
-            .unwrap_or(false)
-    }
-
     fn is_block_hash_valid(block: &Block) -> bool {
         let expected = format!(
             "{:?}{}{}{}{}{}",
@@ -893,14 +853,15 @@ impl DualQuorumConsensus {
         blake3::hash(expected.as_bytes()).to_hex().to_string() == block.hash
     }
 
-    fn verify_transaction_static(_tx: &crate::transaction::Transaction) -> Result<(), String> {
-        // Verify transaction signature
-        // Verify sender balance
-        // Verify nonce
-        // Execute contract if applicable
-
-        // Simplified for now
-        Ok(())
+    fn verify_transaction_static(tx: &crate::transaction::Transaction) -> Result<(), String> {
+        let validation = tx.validate_for_admission();
+        if validation.is_valid {
+            Ok(())
+        } else {
+            Err(validation
+                .error_message
+                .unwrap_or_else(|| "transaction failed admission validation".to_string()))
+        }
     }
 
     fn verify_vote_signature(&self, vote: &Vote) -> Result<(), String> {
@@ -1436,6 +1397,47 @@ mod tests {
         block.block_signature = signature.signature_data;
         block.block_signature_algorithm = "fndsa".to_string();
         block
+    }
+
+    fn signed_test_transaction() -> crate::transaction::Transaction {
+        let mut tx = crate::transaction::Transaction::new(
+            "synw1sender".to_string(),
+            "synw1receiver".to_string(),
+            1,
+            0,
+            Vec::new(),
+            1,
+            21_000,
+            None,
+            "fndsa".to_string(),
+        );
+        let mut pqc_manager = PQCManager::new();
+        let (public_key, private_key) = pqc_manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("FN-DSA transaction key generation should succeed");
+        tx.sign_with_public_key(&public_key, &private_key, &mut pqc_manager)
+            .expect("transaction signing should succeed");
+        tx
+    }
+
+    #[test]
+    fn block_proposal_rejects_transaction_without_valid_pqc_admission() {
+        let mut block = signed_block(1, 1, "validator1");
+        block.transactions = vec![signed_test_transaction()];
+        block.transactions[0].signature.clear();
+        block.transactions_root = crate::block::compute_merkle_root(&block.transactions);
+        block.hash = block.recompute_hash();
+        let mut pqc_manager = PQCManager::new();
+        let (public_key, private_key) = pqc_manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("FN-DSA block key generation should succeed");
+        let signature = pqc_manager
+            .sign(&private_key, block.hash.as_bytes())
+            .expect("block signing should succeed");
+        block.proposer_public_key = public_key.key_data;
+        block.block_signature = signature.signature_data;
+
+        assert!(DualQuorumConsensus::validate_block_proposal_static(&block).is_err());
     }
 
     fn temp_vote_lock_path(test_name: &str) -> PathBuf {
