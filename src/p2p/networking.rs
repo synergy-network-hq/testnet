@@ -50,10 +50,11 @@ const DEFAULT_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
 const TCP_KEEPALIVE_IDLE_SECS: u64 = 300;
 const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
-const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 64;
-const MAX_STATUS_SYNC_BATCH: u32 = 128;
-const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 160;
-const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 3;
+const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
+const MAX_STATUS_SYNC_BATCH: u32 = 16;
+const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
+const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
+const BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS: u64 = 5;
 const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS: u64 = 900;
 const VOTE_REQUEST_PARENT_SYNC_POLL_MILLIS: u64 = 25;
@@ -95,6 +96,7 @@ lazy_static! {
     static ref PENDING_BLOCKS: Mutex<BTreeMap<u64, Vec<PendingCommittedBlock>>> =
         Mutex::new(BTreeMap::new());
     static ref CHAIN_PERSIST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+    static ref BLOCK_SYNC_LAST_SERVED: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
 }
 
 pub struct P2PNetwork {
@@ -1500,6 +1502,41 @@ fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
         .unwrap_or(0)
 }
 
+fn select_block_sync_targets(peers: &PeerMap, max_targets: usize) -> Vec<String> {
+    let mut candidates = peers
+        .iter()
+        .filter(|(_, peer)| peer.stream.is_some())
+        .map(|(address, peer)| {
+            let has_validator_identity = peer
+                .validator_address
+                .as_deref()
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+            (
+                address.clone(),
+                peer.last_known_height,
+                has_validator_identity,
+                peer.status_received_at.unwrap_or(0),
+            )
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        right
+            .1
+            .cmp(&left.1)
+            .then_with(|| right.2.cmp(&left.2))
+            .then_with(|| right.3.cmp(&left.3))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+
+    candidates
+        .into_iter()
+        .take(max_targets.max(1))
+        .map(|(address, _, _, _)| address)
+        .collect()
+}
+
 fn best_connected_validator_height_with_support(
     connected_peers: &PeersArc,
     min_support: usize,
@@ -2260,7 +2297,11 @@ impl P2PNetwork {
         let message = NetworkMessage::GetBlocks { from_height, count };
 
         let mut peers = self.connected_peers.lock().unwrap();
-        for (address, peer) in peers.iter_mut() {
+        let target_addresses = select_block_sync_targets(&peers, 1);
+        for address in target_addresses {
+            let Some(peer) = peers.get_mut(&address) else {
+                continue;
+            };
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_message(stream, &message) {
                     eprintln!("❌ Failed to request blocks from {}: {}", address, e);
@@ -2986,6 +3027,31 @@ fn handle_get_blocks_message(
         "count" => count as u64
     );
 
+    let now = current_timestamp();
+    let rate_limit_key = peer_socket_host(peer_address);
+    let should_serve = BLOCK_SYNC_LAST_SERVED
+        .lock()
+        .map(|mut served| {
+            let last_served = served.get(&rate_limit_key).copied().unwrap_or(0);
+            if now.saturating_sub(last_served) < BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS {
+                return false;
+            }
+            served.insert(rate_limit_key.clone(), now);
+            true
+        })
+        .unwrap_or(false);
+    if !should_serve {
+        debug!(
+            "p2p",
+            "Throttling block sync response",
+            "peer" => peer_address.to_string(),
+            "host" => rate_limit_key,
+            "from_height" => from_height,
+            "count" => count as u64
+        );
+        return;
+    }
+
     let response_count = count.min(MAX_BLOCK_SYNC_RESPONSE_BLOCKS);
     let (blocks, quorum_certificates) = {
         let chain = blockchain.lock().unwrap();
@@ -3106,8 +3172,6 @@ fn bypasses_shared_message_queue(message: &NetworkMessage) -> bool {
         NetworkMessage::VoteRequest { .. }
             | NetworkMessage::Vote { .. }
             | NetworkMessage::Block { .. }
-            | NetworkMessage::GetBlocks { .. }
-            | NetworkMessage::Blocks { .. }
     )
 }
 
@@ -6137,11 +6201,11 @@ mod tests {
                 round_number: 1,
             }
         ));
-        assert!(bypasses_shared_message_queue(&NetworkMessage::GetBlocks {
+        assert!(!bypasses_shared_message_queue(&NetworkMessage::GetBlocks {
             from_height: 10,
             count: 25,
         }));
-        assert!(bypasses_shared_message_queue(&NetworkMessage::Blocks {
+        assert!(!bypasses_shared_message_queue(&NetworkMessage::Blocks {
             blocks: vec![Block::new(
                 1,
                 Vec::new(),

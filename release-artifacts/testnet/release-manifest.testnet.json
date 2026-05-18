@@ -8,68 +8,68 @@
     {
       "bytes": 50989,
       "file": "genesis.testnet.annotated.txt",
-      "sha256": "513ec963048d1899dd5a4d6c554f6d8d2c06f9fc0b5fb68ca8c74d9737a897d2"
+      "sha256": "cfe72a141ad15a62b02bfb47ac8cbe04dc64fb722911c99a1121329156d704d8"
     },
     {
       "bytes": 167765,
       "file": "genesis.testnet.bin",
-      "sha256": "7b1f8c5c4bfa7c03a260c73a51c6d65ad1832b91e185cea3da78865a284a2c02"
+      "sha256": "374cd7efd8c969f22936b97109dc800984363bfe8b91897c823d17b119be1fa5"
     },
     {
       "bytes": 65,
       "file": "genesis.testnet.hash.txt",
-      "sha256": "c315386cbb9238c50e33bb3fc567b87df4b875b51f0cdad1800c557d28cc2a67"
+      "sha256": "3a163d85f55f1c0436a94b983dd8c8280da25aad317727b763c4fd3d5fa578c7"
     },
     {
       "bytes": 335531,
       "file": "genesis.testnet.hex",
-      "sha256": "e7583fc136a5581200c46cd512c8187da466245b569b666c2586438a18c152be"
+      "sha256": "337470bc1c571eea7453477e272532e90ea5de2c7df7119e85a081e9b5e7d83a"
     },
     {
-      "bytes": 1410971,
+      "bytes": 1412695,
       "file": "genesis.testnet.hex.png",
-      "sha256": "799dae598046e51fb6f2f3db706f5c9569afa0c7f566bd04090b51cde19e0cf5"
+      "sha256": "4cb98e9516c20cbde6dca98bfc5025f17390dbec8abdb061760de9e2c5029fe2"
     },
     {
       "bytes": 33917,
       "file": "genesis.testnet.hex.svg",
-      "sha256": "14d61cc14f8465a7361d13d75076f44f1f0158b251a89e49241bb0215a90c763"
+      "sha256": "5a46c7a9195467219c8700ef90093ffb6f2702a7c6f5069c897da8334426907f"
     },
     {
       "bytes": 183423,
       "file": "genesis.testnet.json",
-      "sha256": "1d85cf65f4f7ddc18d2c9c7ede384ee8cdfdd0188d772280f9aa735b21d9b0d4"
+      "sha256": "085c4283cf587ff8a22e8bf4a3de022f86a99d8af7d9fe9b4c0dbdfd082a5a95"
     },
     {
       "bytes": 797195,
       "file": "genesis.testnet.prettyhex.txt",
-      "sha256": "a85154e663e2445236a2668ea3f83c59248ab4258aa507c40be455c11836add3"
+      "sha256": "400b8d7f2fcdba2f673c43300217c5bc51328ffcf060f45ffcadf982d18ef7e3"
     },
     {
       "bytes": 14710,
       "file": "network-identifiers.testnet.json",
-      "sha256": "bb3e8ba2b7be884136fe83cc45a27df242d0221bb419ae139cd092abce54a3bf"
+      "sha256": "bc223d1e49d5780b24314fe1896b2dbc22b1cf1d139b788953eef7de11eef6b2"
     },
     {
       "bytes": 9,
       "file": "network-magic-bytes.testnet.txt",
-      "sha256": "610c1152d672a92390b6f36c31252f1cd7c3cc2b37e8dfa4ab22ddd63267a110"
+      "sha256": "a466f36443853c499066758298ba57775c7e2862c78836444b495ab7ebd714cb"
     },
     {
       "bytes": 353,
       "file": "validation-report.testnet.json",
-      "sha256": "1500f1682511adc8b63f5b8bcee7d0eefd6cf336ff54587319af165e02ea5268"
+      "sha256": "f6831036abce47e76269945a01577f9665891a8931eee89107d79c0aea51dcbb"
     },
     {
       "bytes": 44585,
       "file": "validator-public-manifest.testnet.json",
-      "sha256": "6eec4bd25e3bbb108e9b18ecb0403e033945df96565854ab90bdb78991cab0cb"
+      "sha256": "c33965456e6ef5005385a4156ba798d9c42f5f31ac879d9d2bdfb1a0def708a7"
     }
   ],
   "chain_id": 1264,
-  "genesis_hash": "5809ed3fe0a1ae40bad1f7db6309917e47bfc0b1734cbc170b738ebc38b312ba",
+  "genesis_hash": "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789",
   "name": "Synergy Testnet Genesis Release Artifacts",
   "native_caip2": "synergy:testnet",
   "network_id": 1264,
-  "network_magic_bytes": "f133316a"
+  "network_magic_bytes": "ec6a253c"
 }

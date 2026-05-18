@@ -1265,6 +1265,15 @@ impl DualQuorumConsensus {
                 return Ok(());
             }
 
+            if round_number > existing.latest_round_number {
+                existing.block_hash = proposed_block.hash.clone();
+                existing.proposer = proposed_block.validator_id.clone();
+                existing.latest_round_number = round_number;
+                existing.updated_at = now;
+                Self::persist_local_vote_locks_unlocked(&locks)?;
+                return Ok(());
+            }
+
             return Err(format!(
                 "already locally voted for different block at height {}: locked_hash={}, locked_proposer={}, locked_epoch={}, locked_first_round={}, locked_latest_round={}, requested_hash={}, requested_proposer={}, requested_epoch={}, requested_round={}",
                 proposed_block.block_index,
@@ -1869,7 +1878,7 @@ mod tests {
     }
 
     #[test]
-    fn local_vote_intent_rejects_same_height_conflict_across_rounds() {
+    fn local_vote_intent_allows_same_height_conflict_in_higher_round() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -1903,23 +1912,14 @@ mod tests {
             "unexpected local vote lock error: {stale_error}"
         );
 
-        let higher_round_error = DualQuorumConsensus::register_local_vote_intent(
-            "validator2",
-            &conflicting_block,
-            40,
-            3,
-        )
-        .expect_err("higher-round conflicting proposal must stay locked out");
-        assert!(
-            higher_round_error.contains("already locally voted for different block"),
-            "unexpected local vote lock error: {higher_round_error}"
-        );
+        DualQuorumConsensus::register_local_vote_intent("validator2", &conflicting_block, 40, 3)
+            .expect("higher-round conflicting proposal should advance the local view-change lock");
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
-            .expect("unchanged vote locks should load");
-        assert_eq!(locks[&key].block_hash, block.hash);
+            .expect("updated vote locks should load");
+        assert_eq!(locks[&key].block_hash, conflicting_block.hash);
         assert_eq!(locks[&key].first_round_number, 1);
-        assert_eq!(locks[&key].latest_round_number, 2);
+        assert_eq!(locks[&key].latest_round_number, 3);
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {

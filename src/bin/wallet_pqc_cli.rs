@@ -19,6 +19,9 @@ fn usage() {
         "wallet-pqc-cli
 
 Usage:
+  wallet-pqc-cli gen-keypair [--algo fndsa|mldsa|slhdsa]
+      Generate a real Aegis PQC signing keypair and emit public/private key material as base64.
+
   wallet-pqc-cli passcode --passcode <secret> --mnemonic <bip39 words>
       Derive ML-KEM-1024 keypair, encapsulate, and seal the passcode with AES-GCM using SHA3-256(shared_secret || mnemonic).
 
@@ -72,6 +75,22 @@ fn parse_algorithm(value: Option<&String>) -> PQCAlgorithm {
         Some("slhdsa") => PQCAlgorithm::SLHDSA,
         _ => PQCAlgorithm::FNDSA,
     }
+}
+
+fn generate_keypair(algorithm: PQCAlgorithm) -> Result<(), String> {
+    let mut manager = PQCManager::new();
+    let (public_key, private_key) = manager.generate_keypair(algorithm.clone())?;
+    let output = serde_json::json!({
+        "algorithm": format!("{:?}", algorithm),
+        "key_id": public_key.key_id,
+        "public_key_base64": general_purpose::STANDARD.encode(&public_key.key_data),
+        "private_key_base64": general_purpose::STANDARD.encode(&private_key.key_data),
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&output).unwrap_or_else(|_| "{}".into())
+    );
+    Ok(())
 }
 
 fn sign_transaction(
@@ -152,6 +171,14 @@ fn main() {
 
     let command = args.remove(0);
     match command.as_str() {
+        "gen-keypair" => {
+            let algo_idx = args.iter().position(|a| a == "--algo");
+            let algorithm = parse_algorithm(algo_idx.and_then(|idx| args.get(idx + 1)));
+            if let Err(err) = generate_keypair(algorithm) {
+                eprintln!("Error: {err}");
+                std::process::exit(1);
+            }
+        }
         "passcode" => {
             let passcode_idx = args.iter().position(|a| a == "--passcode");
             let mnemonic_idx = args.iter().position(|a| a == "--mnemonic");
