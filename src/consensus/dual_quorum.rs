@@ -24,6 +24,8 @@ lazy_static::lazy_static! {
         Arc::new(Mutex::new(HashMap::new()));
     static ref NETWORK_VOTE_MAILBOX: Arc<Mutex<HashMap<String, Vec<Vote>>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    static ref COMMITTED_QC_STORE: Arc<Mutex<HashMap<String, QuorumCertificate>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     static ref OBSERVED_VOTES: Arc<Mutex<HashMap<String, Vote>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref EQUIVOCATION_EVIDENCE_LOG: Arc<Mutex<HashMap<String, VoteEquivocationEvidence>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -33,7 +35,6 @@ lazy_static::lazy_static! {
 }
 
 const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
-const QUORUM_COMPARISON_EPSILON: f64 = 0.000_000_001;
 
 #[cfg(test)]
 lazy_static::lazy_static! {
@@ -91,6 +92,8 @@ pub struct QuorumCertificate {
     pub validation_quorum_met: bool,
     pub cooperation_quorum_met: bool,
     pub timestamp: u64,
+    #[serde(default)]
+    pub votes: Vec<Vote>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -381,7 +384,20 @@ impl DualQuorumConsensus {
         }
     }
 
-    fn create_vote_for_validator(
+    pub fn record_committed_qc(qc: QuorumCertificate) {
+        if let Ok(mut store) = COMMITTED_QC_STORE.lock() {
+            store.insert(qc.block_hash.clone(), qc);
+        }
+    }
+
+    pub fn committed_qc_for_block_hash(block_hash: &str) -> Option<QuorumCertificate> {
+        COMMITTED_QC_STORE
+            .lock()
+            .ok()
+            .and_then(|store| store.get(block_hash).cloned())
+    }
+
+    pub(crate) fn create_vote_for_validator(
         validator_address: &str,
         proposed_block: &Block,
         epoch_number: u64,
@@ -554,13 +570,17 @@ impl DualQuorumConsensus {
         } else {
             0.0
         };
-        let validation_quorum_met =
-            validation_ratio + QUORUM_COMPARISON_EPSILON >= self.validation_quorum_threshold;
+        let required_validation_ratio = self
+            .validation_quorum_threshold
+            .max(TWO_THIRDS_QUORUM_THRESHOLD);
+        let validation_quorum_met = validation_ratio > required_validation_ratio;
 
         // Check cooperation quorum using a BFT-style supermajority count.
         let cooperation_ratio = validator_count as f64 / total_validators as f64;
-        let cooperation_quorum_met = cooperation_ratio + QUORUM_COMPARISON_EPSILON
-            >= self.cooperation_quorum_threshold
+        let required_cooperation_ratio = self
+            .cooperation_quorum_threshold
+            .max(TWO_THIRDS_QUORUM_THRESHOLD);
+        let cooperation_quorum_met = cooperation_ratio > required_cooperation_ratio
             && validator_count >= required_validator_votes;
 
         if validation_quorum_met && cooperation_quorum_met {
@@ -599,8 +619,10 @@ impl DualQuorumConsensus {
     }
 
     fn required_validator_votes(&self, total_validators: usize) -> usize {
+        let bft_required = ((total_validators * 2) / 3) + 1;
         self.validator_vote_threshold
             .max(1)
+            .max(bft_required)
             .min(total_validators.max(1))
     }
 
@@ -620,8 +642,10 @@ impl DualQuorumConsensus {
         }
 
         let cumulative_weight = self.calculate_cumulative_vote_weight(votes);
-        (cumulative_weight / total_live_weight) + QUORUM_COMPARISON_EPSILON
-            >= self.validation_quorum_threshold
+        let required_validation_ratio = self
+            .validation_quorum_threshold
+            .max(TWO_THIRDS_QUORUM_THRESHOLD);
+        (cumulative_weight / total_live_weight) > required_validation_ratio
     }
 
     fn record_missed_vote_timeouts(&self, live_validators: &[Validator], votes: &[Vote]) {
@@ -683,7 +707,7 @@ impl DualQuorumConsensus {
         // Calculate cumulative weight
         let cumulative_weight = self.calculate_cumulative_vote_weight(votes);
 
-        Ok(QuorumCertificate {
+        let qc = QuorumCertificate {
             block_hash: block_hash.to_string(),
             epoch_number,
             round_number,
@@ -693,7 +717,14 @@ impl DualQuorumConsensus {
             validation_quorum_met: true,
             cooperation_quorum_met: true,
             timestamp: Self::current_timestamp(),
-        })
+            votes: {
+                let mut sorted_votes = votes.to_vec();
+                sorted_votes.sort_by(|a, b| a.validator_address.cmp(&b.validator_address));
+                sorted_votes
+            },
+        };
+        Self::record_committed_qc(qc.clone());
+        Ok(qc)
     }
 
     fn aggregate_signatures(&self, votes: &[Vote]) -> Result<AggregateSignature, String> {
@@ -903,6 +934,84 @@ impl DualQuorumConsensus {
                 vote.validator_address
             ))
         }
+    }
+
+    pub fn verify_commit_certificate_for_block_static(
+        block: &Block,
+        qc: &QuorumCertificate,
+        validator_manager: &Arc<ValidatorManager>,
+    ) -> Result<(), String> {
+        block.verify_proposer_signature()?;
+
+        if qc.block_hash != block.hash {
+            return Err("QC block hash does not match exact block".to_string());
+        }
+        if qc.aggregate_signature.is_empty() {
+            return Err("QC aggregate signature is missing".to_string());
+        }
+        if qc.participant_bitmap.is_empty() {
+            return Err("QC signer bitmap is missing".to_string());
+        }
+        if !qc.validation_quorum_met || !qc.cooperation_quorum_met {
+            return Err("QC does not prove both validation and cooperation quorum".to_string());
+        }
+        if qc.votes.is_empty() {
+            return Err("QC does not include individually verifiable Aegis PQC votes".to_string());
+        }
+
+        let active_validators =
+            consensus_membership_validators(validator_manager.get_active_validators());
+        if active_validators.is_empty() {
+            return Err("QC verification has no active validator set".to_string());
+        }
+        let active_by_address = active_validators
+            .iter()
+            .map(|validator| (validator.address.clone(), validator))
+            .collect::<HashMap<_, _>>();
+
+        let mut seen = BTreeSet::new();
+        let mut signed_weight = 0.0;
+        for vote in &qc.votes {
+            if vote.block_hash != block.hash {
+                return Err("QC vote signs a different block hash".to_string());
+            }
+            if vote.block_index != block.block_index {
+                return Err("QC vote signs a different block height".to_string());
+            }
+            if vote.epoch_number != qc.epoch_number || vote.round_number != qc.round_number {
+                return Err("QC vote context does not match QC epoch/round".to_string());
+            }
+            if !seen.insert(vote.validator_address.clone()) {
+                return Err("QC contains duplicate signer".to_string());
+            }
+            let Some(validator) = active_by_address.get(&vote.validator_address) else {
+                return Err("QC contains signer outside active validator set".to_string());
+            };
+            Self::verify_vote_signature_uncached(vote)?;
+            signed_weight += (validator.synergy_score / 100.0).max(0.0);
+        }
+
+        let required_votes = ((active_validators.len() * 2) / 3) + 1;
+        if seen.len() < required_votes {
+            return Err(format!(
+                "QC has {} signer(s), {} required for BFT quorum",
+                seen.len(),
+                required_votes
+            ));
+        }
+
+        let total_weight = active_validators
+            .iter()
+            .map(|validator| (validator.synergy_score / 100.0).max(0.0))
+            .sum::<f64>();
+        if total_weight <= 0.0 {
+            return Err("active validator set has zero voting weight".to_string());
+        }
+        if (signed_weight / total_weight) <= TWO_THIRDS_QUORUM_THRESHOLD {
+            return Err("QC signed weight is not strictly greater than two thirds".to_string());
+        }
+
+        Ok(())
     }
 
     fn vote_signature_cache_contains(&self, cache_key: &str) -> bool {
@@ -1805,7 +1914,7 @@ mod tests {
     }
 
     #[test]
-    fn four_of_six_equal_weight_votes_satisfy_two_thirds_validation_quorum() {
+    fn four_of_six_equal_weight_votes_do_not_satisfy_strict_bft_quorum() {
         let validator_manager = approved_validator_manager(&[
             "validator1",
             "validator2",
@@ -1847,8 +1956,38 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(
-            consensus.has_commit_quorum(&active_validators, &votes),
-            "4 of 6 equal-weight votes is exactly two thirds and must not wait for a fifth vote"
+            !consensus.has_commit_quorum(&active_validators, &votes),
+            "4 of 6 equal-weight votes is exactly two thirds, not strictly greater"
+        );
+
+        let five_votes = [
+            "validator1",
+            "validator2",
+            "validator3",
+            "validator4",
+            "validator5",
+        ]
+        .into_iter()
+        .map(|validator_address| Vote {
+            validator_address: validator_address.to_string(),
+            block_hash: "block-hash".to_string(),
+            block_index: 42,
+            epoch_number: 1,
+            round_number: 1,
+            signature: PQCSignature {
+                algorithm: PQCAlgorithm::FNDSA,
+                signature_data: Vec::new(),
+                message_hash: Vec::new(),
+                public_key_id: String::new(),
+                created_at: 0,
+            },
+            signer_public_key: Vec::new(),
+            timestamp: 0,
+        })
+        .collect::<Vec<_>>();
+        assert!(
+            consensus.has_commit_quorum(&active_validators, &five_votes),
+            "5 of 6 equal-weight votes is strictly greater than two thirds"
         );
     }
 
@@ -1960,6 +2099,7 @@ mod tests {
             validation_quorum_met: true,
             cooperation_quorum_met: true,
             timestamp: 1_777_000_000,
+            votes: Vec::new(),
         };
         let mut beacon_a = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
         let mut beacon_b = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
@@ -1982,6 +2122,7 @@ mod tests {
             validation_quorum_met: true,
             cooperation_quorum_met: true,
             timestamp: 1_777_000_000,
+            votes: Vec::new(),
         };
         let mut previous_qc_b = previous_qc_a.clone();
         previous_qc_b.timestamp += 42;
@@ -2007,6 +2148,7 @@ mod tests {
             validation_quorum_met: true,
             cooperation_quorum_met: true,
             timestamp: 1_777_000_000,
+            votes: Vec::new(),
         };
         let mut beacon_a = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));
         let mut beacon_b = EntropyBeacon::new(Arc::new(Mutex::new(PQCManager::new())));

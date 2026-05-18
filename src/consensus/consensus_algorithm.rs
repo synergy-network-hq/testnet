@@ -1056,7 +1056,7 @@ impl ProofOfSynergy {
 
                                 // Broadcast the committed block to peers (best-effort).
                                 if let Some(p2p) = crate::p2p::get_p2p_network() {
-                                    p2p.broadcast_block(&new_block);
+                                    p2p.broadcast_committed_block(&new_block, &qc);
                                 }
 
                                 // Validator health metrics and reward payouts are currently
@@ -1559,6 +1559,7 @@ impl ProofOfSynergy {
                 validation_quorum_met: false,
                 cooperation_quorum_met: false,
                 timestamp: Self::current_timestamp(),
+                votes: Vec::new(),
             }
         } else {
             QuorumCertificate {
@@ -1571,6 +1572,7 @@ impl ProofOfSynergy {
                 validation_quorum_met: false,
                 cooperation_quorum_met: false,
                 timestamp: Self::current_timestamp(),
+                votes: Vec::new(),
             }
         }
     }
@@ -1832,7 +1834,11 @@ impl ProofOfSynergy {
         qc: &QuorumCertificate,
         expected_epoch: u64,
     ) -> Result<(), String> {
-        block.verify_proposer_signature()?;
+        DualQuorumConsensus::verify_commit_certificate_for_block_static(
+            block,
+            qc,
+            &VALIDATOR_MANAGER,
+        )?;
         if qc.block_hash != block.hash {
             return Err("QC block hash does not match exact block".to_string());
         }

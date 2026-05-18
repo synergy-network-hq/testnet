@@ -140,7 +140,7 @@ ws_port = 5660
 algorithm = "proof_of_synergy"
 block_time = 5
 min_validators = 4
-validator_vote_threshold = 3
+validator_vote_threshold = 4
 max_validators = 5
 ```
 

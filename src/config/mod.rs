@@ -99,7 +99,7 @@ fn default_min_validators() -> usize {
 }
 
 fn default_validator_vote_threshold() -> usize {
-    3
+    4
 }
 
 fn default_max_validators() -> usize {
@@ -1397,7 +1397,7 @@ algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
 validator_cluster_size = 7
-validator_vote_threshold = 3
+validator_vote_threshold = 4
 max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true
@@ -1711,7 +1711,7 @@ algorithm = "Proof of Synergy"
 block_time_secs = 5
 epoch_length = 1000
 validator_cluster_size = 7
-validator_vote_threshold = 3
+validator_vote_threshold = 4
 max_validators = 100
 synergy_score_decay_rate = 0.05
 vrf_enabled = true

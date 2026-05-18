@@ -1,6 +1,6 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
-use crate::consensus::dual_quorum::DualQuorumConsensus;
+use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::crypto::aegis_pqvm::{
     AegisPqvmKeyRegistry, AegisPqvmSigner, AegisPqvmVerifier, SYNERGY_P2P_HANDSHAKE_V1,
 };
@@ -81,9 +81,16 @@ struct DialReservation {
     last_attempt_at: Instant,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCommittedBlock {
+    block: Block,
+    quorum_certificate: QuorumCertificate,
+}
+
 lazy_static! {
     static ref LAST_CHAIN_PERSIST: Mutex<Option<(u64, Instant)>> = Mutex::new(None);
-    static ref PENDING_BLOCKS: Mutex<BTreeMap<u64, Vec<Block>>> = Mutex::new(BTreeMap::new());
+    static ref PENDING_BLOCKS: Mutex<BTreeMap<u64, Vec<PendingCommittedBlock>>> =
+        Mutex::new(BTreeMap::new());
     static ref CHAIN_PERSIST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 }
 
@@ -2034,8 +2041,22 @@ impl P2PNetwork {
     }
 
     pub fn broadcast_block(&self, block: &Block) {
+        let Some(qc) = DualQuorumConsensus::committed_qc_for_block_hash(&block.hash) else {
+            warn!(
+                "p2p",
+                "Refusing to broadcast committed block without locally stored QC",
+                "height" => block.block_index,
+                "hash" => block.hash.clone()
+            );
+            return;
+        };
+        self.broadcast_committed_block(block, &qc);
+    }
+
+    pub fn broadcast_committed_block(&self, block: &Block, qc: &QuorumCertificate) {
         let message = NetworkMessage::Block {
             block_data: block.clone(),
+            quorum_certificate: Some(qc.clone()),
         };
 
         let mut peers = self.connected_peers.lock().unwrap();
@@ -2874,6 +2895,7 @@ fn handle_block_message(
     config: &NodeConfig,
     peer_address: &str,
     block_data: Block,
+    quorum_certificate: Option<QuorumCertificate>,
 ) {
     if config.node.bootstrap_only {
         debug!(
@@ -2906,7 +2928,7 @@ fn handle_block_message(
         }
     }
 
-    if apply_block_if_new(blockchain, block_data.clone()) {
+    if apply_block_if_new(blockchain, block_data.clone(), quorum_certificate) {
         info!(
             "p2p",
             "Block applied",
@@ -2940,7 +2962,10 @@ fn handle_get_blocks_message(
             "from_height" => from_height,
             "count" => count as u64
         );
-        let response = NetworkMessage::Blocks { blocks: Vec::new() };
+        let response = NetworkMessage::Blocks {
+            blocks: Vec::new(),
+            quorum_certificates: Vec::new(),
+        };
         let mut peers = connected_peers.lock().unwrap();
         if let Some(peer) = peers.get_mut(peer_address) {
             if let Some(ref mut stream) = peer.stream {
@@ -2959,17 +2984,25 @@ fn handle_get_blocks_message(
     );
 
     let response_count = count.min(MAX_BLOCK_SYNC_RESPONSE_BLOCKS);
-    let blocks = {
+    let (blocks, quorum_certificates) = {
         let chain = blockchain.lock().unwrap();
-        chain
+        let blocks = chain
             .chain
             .iter()
             .filter(|b| b.block_index >= from_height)
             .take(response_count as usize)
             .cloned()
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        let quorum_certificates = blocks
+            .iter()
+            .filter_map(|block| DualQuorumConsensus::committed_qc_for_block_hash(&block.hash))
+            .collect::<Vec<_>>();
+        (blocks, quorum_certificates)
     };
-    let response = NetworkMessage::Blocks { blocks };
+    let response = NetworkMessage::Blocks {
+        blocks,
+        quorum_certificates,
+    };
 
     let mut peers = connected_peers.lock().unwrap();
     if let Some(peer) = peers.get_mut(peer_address) {
@@ -3001,6 +3034,7 @@ fn handle_blocks_message(
     config: &NodeConfig,
     peer_address: &str,
     blocks: Vec<Block>,
+    quorum_certificates: Vec<QuorumCertificate>,
 ) {
     if config.node.bootstrap_only {
         debug!(
@@ -3022,7 +3056,7 @@ fn handle_blocks_message(
         return;
     }
 
-    let applied = apply_block_batch(blockchain, blocks);
+    let applied = apply_block_batch(blockchain, blocks, quorum_certificates);
     if applied > 0 {
         info!(
             "p2p",
@@ -3111,7 +3145,10 @@ fn dispatch_peer_message(
             handle_vote_message(connected_peers, config, peer_address, vote);
             Ok(())
         }
-        NetworkMessage::Block { block_data } => {
+        NetworkMessage::Block {
+            block_data,
+            quorum_certificate,
+        } => {
             handle_block_message(
                 blockchain,
                 connected_peers,
@@ -3119,6 +3156,7 @@ fn dispatch_peer_message(
                 config,
                 peer_address,
                 block_data,
+                quorum_certificate,
             );
             Ok(())
         }
@@ -3133,7 +3171,10 @@ fn dispatch_peer_message(
             );
             Ok(())
         }
-        NetworkMessage::Blocks { blocks } => {
+        NetworkMessage::Blocks {
+            blocks,
+            quorum_certificates,
+        } => {
             handle_blocks_message(
                 blockchain,
                 connected_peers,
@@ -3141,6 +3182,7 @@ fn dispatch_peer_message(
                 config,
                 peer_address,
                 blocks,
+                quorum_certificates,
             );
             Ok(())
         }
@@ -3869,7 +3911,10 @@ fn handle_messages(
                             }
                         }
                     }
-                    NetworkMessage::Block { block_data } => {
+                    NetworkMessage::Block {
+                        block_data,
+                        quorum_certificate,
+                    } => {
                         handle_block_message(
                             &blockchain,
                             &connected_peers,
@@ -3877,6 +3922,7 @@ fn handle_messages(
                             &config,
                             &peer_address,
                             block_data,
+                            quorum_certificate,
                         );
                     }
                     NetworkMessage::VoteRequest {
@@ -4066,7 +4112,10 @@ fn handle_messages(
                     }
                     NetworkMessage::GetBlockBodies { hashes } => {
                         if config.node.bootstrap_only {
-                            let response = NetworkMessage::BlockBodies { blocks: Vec::new() };
+                            let response = NetworkMessage::BlockBodies {
+                                blocks: Vec::new(),
+                                quorum_certificates: Vec::new(),
+                            };
                             let mut peers = connected_peers.lock().unwrap();
                             if let Some(peer) = peers.get_mut(&peer_address) {
                                 if let Some(ref mut stream) = peer.stream {
@@ -4076,9 +4125,9 @@ fn handle_messages(
                             continue;
                         }
 
-                        let blocks = {
+                        let (blocks, quorum_certificates) = {
                             let chain = blockchain.lock().unwrap();
-                            hashes
+                            let blocks = hashes
                                 .iter()
                                 .filter_map(|hash| {
                                     chain
@@ -4087,9 +4136,19 @@ fn handle_messages(
                                         .find(|block| &block.hash == hash)
                                         .cloned()
                                 })
-                                .collect::<Vec<_>>()
+                                .collect::<Vec<_>>();
+                            let quorum_certificates = blocks
+                                .iter()
+                                .filter_map(|block| {
+                                    DualQuorumConsensus::committed_qc_for_block_hash(&block.hash)
+                                })
+                                .collect::<Vec<_>>();
+                            (blocks, quorum_certificates)
                         };
-                        let response = NetworkMessage::BlockBodies { blocks };
+                        let response = NetworkMessage::BlockBodies {
+                            blocks,
+                            quorum_certificates,
+                        };
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             if let Some(ref mut stream) = peer.stream {
@@ -4097,7 +4156,10 @@ fn handle_messages(
                             }
                         }
                     }
-                    NetworkMessage::BlockBodies { blocks } => {
+                    NetworkMessage::BlockBodies {
+                        blocks,
+                        quorum_certificates,
+                    } => {
                         if config.node.bootstrap_only {
                             debug!(
                                 "p2p",
@@ -4109,14 +4171,15 @@ fn handle_messages(
                         }
 
                         debug!("p2p", "Received block bodies", "peer" => peer_address.clone(), "count" => blocks.len());
-                        for block in blocks {
-                            let height = block.block_index;
-                            if apply_block_if_new(&blockchain, block) {
-                                info!("p2p", "Body block applied", "height" => height);
-                            }
+                        let applied = apply_block_batch(&blockchain, blocks, quorum_certificates);
+                        if applied > 0 {
+                            info!("p2p", "Body blocks applied", "count" => applied);
                         }
                     }
-                    NetworkMessage::Blocks { blocks } => {
+                    NetworkMessage::Blocks {
+                        blocks,
+                        quorum_certificates,
+                    } => {
                         handle_blocks_message(
                             &blockchain,
                             &connected_peers,
@@ -4124,6 +4187,7 @@ fn handle_messages(
                             &config,
                             &peer_address,
                             blocks,
+                            quorum_certificates,
                         );
                     }
                     NetworkMessage::GetPeers => {
@@ -4498,27 +4562,79 @@ fn verify_network_block(block: &Block) -> Result<(), String> {
     block.verify_proposer_signature()
 }
 
-fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
-    if let Err(error) = verify_network_block(&block) {
-        warn!(
-            "p2p",
-            "Rejecting block with invalid Aegis PQC proposer signature",
-            "height" => block.block_index,
-            "hash" => block.hash.clone(),
-            "error" => error
-        );
-        return false;
+fn verify_network_commit_certificate(
+    block: &Block,
+    qc: Option<&QuorumCertificate>,
+) -> Result<QuorumCertificate, String> {
+    if let Err(error) = verify_network_block(block) {
+        return Err(format!("invalid Aegis PQC proposer signature: {error}"));
+    }
+
+    if block.block_index == 0 {
+        return Ok(QuorumCertificate {
+            block_hash: block.hash.clone(),
+            epoch_number: 0,
+            round_number: 0,
+            aggregate_signature: vec![0],
+            participant_bitmap: vec![0],
+            cumulative_weight: 0.0,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: block.timestamp,
+            votes: Vec::new(),
+        });
+    }
+
+    let qc = qc
+        .cloned()
+        .ok_or_else(|| "missing QC for committed network block".to_string())?;
+    DualQuorumConsensus::verify_commit_certificate_for_block_static(
+        block,
+        &qc,
+        &VALIDATOR_MANAGER,
+    )?;
+    Ok(qc)
+}
+
+fn apply_block_if_new(
+    blockchain: &BlockchainArc,
+    block: Block,
+    quorum_certificate: Option<QuorumCertificate>,
+) -> bool {
+    let qc = match verify_network_commit_certificate(&block, quorum_certificate.as_ref()) {
+        Ok(qc) => qc,
+        Err(error) => {
+            warn!(
+                "p2p",
+                "Rejecting block without valid Aegis PQC quorum certificate",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => error
+            );
+            return false;
+        }
+    };
+    if block.block_index > 0 {
+        DualQuorumConsensus::record_committed_qc(qc.clone());
     }
 
     let mut applied_blocks = Vec::new();
     let mut confirmed_hashes = HashSet::new();
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
-        let mut candidate = Some(block);
+        let mut candidate = Some(PendingCommittedBlock {
+            block,
+            quorum_certificate: qc,
+        });
         let mut final_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
 
-        while let Some(next_block) = candidate {
+        while let Some(next) = candidate {
+            let next_block = next.block;
+            let next_qc = next.quorum_certificate;
             let Some(tip) = chain.last() else {
+                if next_block.block_index != 0 {
+                    break;
+                }
                 confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
                 chain.add_block(next_block.clone());
                 final_tip_height = next_block.block_index;
@@ -4531,7 +4647,7 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
             }
 
             if next_block.block_index > tip.block_index.saturating_add(1) {
-                cache_pending_block(next_block);
+                cache_pending_block(next_block, next_qc);
                 break;
             }
 
@@ -4540,9 +4656,12 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
             }
 
             confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
-            chain.add_block(next_block.clone());
+            if chain.add_block_extending_tip(next_block.clone()).is_err() {
+                break;
+            }
             final_tip_height = next_block.block_index;
             applied_blocks.push(next_block);
+            DualQuorumConsensus::record_committed_qc(next_qc);
 
             let next_tip = chain.last().cloned();
             candidate = next_tip.as_ref().and_then(take_pending_block_extending_tip);
@@ -4572,11 +4691,11 @@ fn apply_block_if_new(blockchain: &BlockchainArc, block: Block) -> bool {
     true
 }
 
-fn cache_pending_block(block: Block) {
-    if let Err(error) = verify_network_block(&block) {
+fn cache_pending_block(block: Block, quorum_certificate: QuorumCertificate) {
+    if let Err(error) = verify_network_commit_certificate(&block, Some(&quorum_certificate)) {
         warn!(
             "p2p",
-            "Rejecting pending block with invalid Aegis PQC proposer signature",
+            "Rejecting pending block without valid Aegis PQC quorum certificate",
             "height" => block.block_index,
             "hash" => block.hash.clone(),
             "error" => error
@@ -4595,16 +4714,22 @@ fn cache_pending_block(block: Block) {
     }
 
     let entry = pending.entry(block.block_index).or_default();
-    if entry.iter().any(|candidate| candidate.hash == block.hash) {
+    if entry
+        .iter()
+        .any(|candidate| candidate.block.hash == block.hash)
+    {
         return;
     }
     if entry.len() >= MAX_PENDING_BLOCKS_PER_HEIGHT {
         entry.remove(0);
     }
-    entry.push(block);
+    entry.push(PendingCommittedBlock {
+        block,
+        quorum_certificate,
+    });
 }
 
-fn take_pending_block_extending_tip(tip: &Block) -> Option<Block> {
+fn take_pending_block_extending_tip(tip: &Block) -> Option<PendingCommittedBlock> {
     let Ok(mut pending) = PENDING_BLOCKS.lock() else {
         return None;
     };
@@ -4612,24 +4737,32 @@ fn take_pending_block_extending_tip(tip: &Block) -> Option<Block> {
     let entry = pending.get_mut(&next_height)?;
     let position = entry
         .iter()
-        .position(|candidate| candidate.previous_hash == tip.hash)?;
-    let block = entry.remove(position);
+        .position(|candidate| candidate.block.previous_hash == tip.hash)?;
+    let pending_block = entry.remove(position);
     if entry.is_empty() {
         pending.remove(&next_height);
     }
-    Some(block)
+    Some(pending_block)
 }
 
-fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 {
+fn apply_block_batch(
+    blockchain: &BlockchainArc,
+    mut blocks: Vec<Block>,
+    quorum_certificates: Vec<QuorumCertificate>,
+) -> u64 {
     if blocks.is_empty() {
         return 0;
     }
 
+    let qc_by_hash = quorum_certificates
+        .into_iter()
+        .map(|qc| (qc.block_hash.clone(), qc))
+        .collect::<HashMap<_, _>>();
     for block in &blocks {
-        if let Err(error) = verify_network_block(block) {
+        if let Err(error) = verify_network_commit_certificate(block, qc_by_hash.get(&block.hash)) {
             warn!(
                 "p2p",
-                "Rejecting block batch with invalid Aegis PQC proposer signature",
+                "Rejecting block batch without valid Aegis PQC quorum certificate",
                 "height" => block.block_index,
                 "hash" => block.hash.clone(),
                 "error" => error
@@ -4698,7 +4831,12 @@ fn apply_block_batch(blockchain: &BlockchainArc, mut blocks: Vec<Block>) -> u64 
             }
 
             applied_blocks.push(block.clone());
-            chain.add_block(block);
+            if chain.add_block_extending_tip(block.clone()).is_err() {
+                break;
+            }
+            if let Some(qc) = qc_by_hash.get(&block.hash) {
+                DualQuorumConsensus::record_committed_qc(qc.clone());
+            }
             applied += 1;
         }
 
@@ -4955,9 +5093,10 @@ mod tests {
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
-    use crate::consensus::dual_quorum::Vote;
+    use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate, Vote};
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
+    use crate::validator::{ValidatorRegistration, VALIDATOR_MANAGER};
     use std::collections::HashMap;
     use std::fs;
     use std::net::TcpListener;
@@ -5003,6 +5142,53 @@ mod tests {
         );
         sign_test_block(&mut block);
         block
+    }
+
+    fn ensure_test_qc_validators(addresses: &[&str]) {
+        for address in addresses {
+            if VALIDATOR_MANAGER.get_validator(address).is_none() {
+                let _ = VALIDATOR_MANAGER.register_validator(ValidatorRegistration {
+                    address: (*address).to_string(),
+                    public_key: format!("{address}-pqc"),
+                    name: format!("Test validator {address}"),
+                    stake_amount: 50_000_000_000_000,
+                    submitted_at: 0,
+                    registration_tx_hash: format!("test-registration-{address}"),
+                });
+            }
+            let _ = VALIDATOR_MANAGER.approve_validator(address);
+            VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+        }
+    }
+
+    fn test_quorum_certificate(block: &Block) -> QuorumCertificate {
+        let signers = ["synv1qc01", "synv1qc02", "synv1qc03", "synv1qc04"];
+        ensure_test_qc_validators(&signers);
+        let mut signer_addresses = VALIDATOR_MANAGER
+            .get_active_validators()
+            .into_iter()
+            .map(|validator| validator.address)
+            .collect::<Vec<_>>();
+        signer_addresses.sort();
+        let votes = signer_addresses
+            .iter()
+            .map(|validator| {
+                DualQuorumConsensus::create_vote_for_validator(validator, block, 0, 1)
+                    .expect("test vote should sign")
+            })
+            .collect::<Vec<_>>();
+        QuorumCertificate {
+            block_hash: block.hash.clone(),
+            epoch_number: 0,
+            round_number: 1,
+            aggregate_signature: vec![42],
+            participant_bitmap: vec![0x0f],
+            cumulative_weight: votes.len() as f64,
+            validation_quorum_met: true,
+            cooperation_quorum_met: true,
+            timestamp: block.timestamp,
+            votes,
+        }
     }
 
     #[test]
@@ -5844,6 +6030,7 @@ mod tests {
                 "synv1leader".to_string(),
                 1,
             )],
+            quorum_certificates: Vec::new(),
         }));
         assert!(bypasses_shared_message_queue(&NetworkMessage::Block {
             block_data: Block::new(
@@ -5853,6 +6040,7 @@ mod tests {
                 "synv1leader".to_string(),
                 1,
             ),
+            quorum_certificate: None,
         }));
         assert!(!bypasses_shared_message_queue(&NetworkMessage::Status {
             block_height: 1,
@@ -5943,10 +6131,20 @@ mod tests {
         chain.add_block(genesis);
         let blockchain = Arc::new(Mutex::new(chain));
 
-        assert!(!apply_block_if_new(&blockchain, block_two.clone()));
+        let block_two_qc = test_quorum_certificate(&block_two);
+        assert!(!apply_block_if_new(
+            &blockchain,
+            block_two.clone(),
+            Some(block_two_qc)
+        ));
         assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
 
-        assert!(apply_block_if_new(&blockchain, block_one));
+        let block_one_qc = test_quorum_certificate(&block_one);
+        assert!(apply_block_if_new(
+            &blockchain,
+            block_one,
+            Some(block_one_qc)
+        ));
         let chain = blockchain.lock().unwrap();
         assert_eq!(chain.last().unwrap().block_index, 2);
         assert_eq!(chain.last().unwrap().hash, block_two.hash);
@@ -5976,7 +6174,33 @@ mod tests {
         chain.add_block(genesis);
         let blockchain = Arc::new(Mutex::new(chain));
 
-        assert!(!apply_block_if_new(&blockchain, unsigned_block));
+        assert!(!apply_block_if_new(&blockchain, unsigned_block, None));
+        assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
+    }
+
+    #[test]
+    fn signed_network_block_without_qc_is_rejected() {
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let signed_block = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        assert!(!apply_block_if_new(&blockchain, signed_block, None));
         assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
     }
 
@@ -6479,10 +6703,14 @@ mod tests {
             1_700_000_099,
         );
         let remote_block4 = test_block(&remote_block3, 4, "validator-e", 4);
+        let block2_qc = test_quorum_certificate(&block2);
+        let remote_block3_qc = test_quorum_certificate(&remote_block3);
+        let remote_block4_qc = test_quorum_certificate(&remote_block4);
 
         let applied = apply_block_batch(
             &blockchain,
             vec![block2.clone(), remote_block3.clone(), remote_block4.clone()],
+            vec![block2_qc, remote_block3_qc, remote_block4_qc],
         );
         assert_eq!(applied, 2);
 
@@ -6522,7 +6750,15 @@ mod tests {
         chain.add_block(block5.clone());
 
         let blockchain = Arc::new(Mutex::new(chain));
-        let applied = apply_block_batch(&blockchain, vec![block2, block3, block4]);
+        let applied = apply_block_batch(
+            &blockchain,
+            vec![block2.clone(), block3.clone(), block4.clone()],
+            vec![
+                test_quorum_certificate(&block2),
+                test_quorum_certificate(&block3),
+                test_quorum_certificate(&block4),
+            ],
+        );
         assert_eq!(applied, 0);
 
         let chain = blockchain.lock().unwrap();

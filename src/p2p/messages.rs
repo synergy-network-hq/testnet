@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::block::{Block, BlockHeader};
-use crate::consensus::dual_quorum::Vote;
+use crate::consensus::dual_quorum::{QuorumCertificate, Vote};
 use crate::synergy_types::AegisPqSignature;
 use crate::transaction::Transaction;
 
@@ -54,6 +54,8 @@ pub enum NetworkMessage {
     },
     Block {
         block_data: Block,
+        #[serde(default)]
+        quorum_certificate: Option<QuorumCertificate>,
     },
     VoteRequest {
         block_data: Block,
@@ -72,6 +74,8 @@ pub enum NetworkMessage {
     },
     Blocks {
         blocks: Vec<Block>,
+        #[serde(default)]
+        quorum_certificates: Vec<QuorumCertificate>,
     },
     GetPeers,
     Peers {
@@ -100,5 +104,7 @@ pub enum NetworkMessage {
     },
     BlockBodies {
         blocks: Vec<Block>,
+        #[serde(default)]
+        quorum_certificates: Vec<QuorumCertificate>,
     },
 }

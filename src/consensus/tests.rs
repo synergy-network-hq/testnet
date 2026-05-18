@@ -212,6 +212,7 @@ fn test_entropy_beacon() {
         validation_quorum_met: true,
         cooperation_quorum_met: true,
         timestamp: 1234567890,
+        votes: Vec::new(),
     };
 
     // Generate epoch randomness
