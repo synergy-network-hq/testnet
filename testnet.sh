@@ -169,6 +169,11 @@ clean_data() {
         fi
 
         rm -rf data/chain data/logs data/chain.json data/validator_registry.json
+        rm -f data/token_state.json
+        rm -f data/committed_qcs.json data/committed_qcs.json.tmp
+        rm -f data/canonical_locks.json data/canonical_locks.json.tmp
+        rm -f data/consensus_vote_locks.json data/consensus_vote_locks.json.tmp
+        rm -f data/dag_state.json
         rm -f "$PID_FILE"
         if [ -d "data" ]; then
             find data -maxdepth 1 -type f -name "*.pid" -delete 2>/dev/null
