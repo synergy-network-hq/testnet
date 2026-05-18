@@ -206,7 +206,7 @@ impl WalletManager {
 
             let private_key_bytes = decode_key_material(private_key)
                 .map_err(|e| format!("Invalid private key format: {}", e))?;
-            let _ = decode_key_material(public_key)
+            let public_key_bytes = decode_key_material(public_key)
                 .map_err(|e| format!("Invalid public key format: {}", e))?;
 
             let pqc_private_key = PQCPrivateKey {
@@ -218,9 +218,15 @@ impl WalletManager {
                     .unwrap()
                     .as_secs(),
             };
+            let pqc_public_key = crate::crypto::pqc::PQCPublicKey {
+                algorithm: PQCAlgorithm::FNDSA,
+                key_data: public_key_bytes,
+                key_id: address.to_string(),
+                created_at: pqc_private_key.created_at,
+            };
 
             let mut pqc_manager = PQCManager::new();
-            tx.sign(&pqc_private_key, &mut pqc_manager)?;
+            tx.sign_with_public_key(&pqc_public_key, &pqc_private_key, &mut pqc_manager)?;
             tx.sender = address.to_string();
 
             Ok("Transaction signed successfully".to_string())

@@ -17,14 +17,14 @@ pub fn broadcast_transaction() {
     );
 
     let mut pqc_manager = PQCManager::new();
-    let (_public_key, private_key) = match pqc_manager.generate_keypair(PQCAlgorithm::FNDSA) {
+    let (public_key, private_key) = match pqc_manager.generate_keypair(PQCAlgorithm::FNDSA) {
         Ok(keys) => keys,
         Err(error) => {
             eprintln!("❌ Failed to create FN-DSA keypair: {}", error);
             return;
         }
     };
-    if let Err(error) = tx.sign(&private_key, &mut pqc_manager) {
+    if let Err(error) = tx.sign_with_public_key(&public_key, &private_key, &mut pqc_manager) {
         eprintln!("❌ Failed to sign transaction with FN-DSA: {}", error);
         return;
     }

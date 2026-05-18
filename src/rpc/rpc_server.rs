@@ -195,6 +195,12 @@ struct RpcTransactionEnvelope {
     nonce: Option<u64>,
     #[serde(default)]
     signature: Option<Value>,
+    #[serde(rename = "signerPublicKey", default)]
+    signer_public_key_alias: Option<Value>,
+    #[serde(default)]
+    signer_public_key: Option<Value>,
+    #[serde(rename = "publicKey", default)]
+    public_key_alias: Option<Value>,
     #[serde(default)]
     timestamp: Option<u64>,
     #[serde(default)]
@@ -218,6 +224,10 @@ struct RpcTransactionEnvelope {
     #[serde(rename = "chainId", default)]
     chain_id: Option<Value>,
     #[serde(default)]
+    network_id: Option<String>,
+    #[serde(rename = "networkId", default)]
+    network_id_alias: Option<String>,
+    #[serde(default)]
     tx_type: Option<String>,
     #[serde(rename = "type", default)]
     envelope_type: Option<String>,
@@ -231,17 +241,19 @@ struct RpcTransactionEnvelope {
 
 #[derive(Debug, Clone)]
 struct NormalizedRpcTransaction {
+    chain_id: u64,
+    network_id: String,
     sender: String,
     receiver: String,
     amount: u64,
     nonce: u64,
     signature: Vec<u8>,
+    signer_public_key: Vec<u8>,
     timestamp: u64,
     gas_price: u64,
     gas_limit: u64,
     data: Option<String>,
     signature_algorithm: String,
-    chain_id: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -1133,7 +1145,7 @@ fn handle_json_rpc(
                             }
                         }
 
-                        match normalized.transaction.validate() {
+                        match normalized.transaction.validate_for_admission() {
                             crate::transaction::TransactionValidationResult {
                                 is_valid: true,
                                 ..
@@ -4110,6 +4122,41 @@ fn parse_signature_bytes(
     }
 }
 
+fn parse_required_hex_or_bytes(
+    value: Option<&Value>,
+    missing_message: &'static str,
+    invalid_message: &'static str,
+) -> Result<Vec<u8>, RpcError> {
+    let Some(value) = value else {
+        return Err(RpcError::new(-32602, missing_message));
+    };
+    match value {
+        Value::String(text) => {
+            let normalized = text.trim().strip_prefix("0x").unwrap_or(text.trim());
+            if normalized.is_empty() {
+                return Err(RpcError::new(-32602, missing_message));
+            }
+            hex::decode(normalized).map_err(|_| RpcError::new(-32602, invalid_message))
+        }
+        Value::Array(values) => {
+            let mut bytes = Vec::with_capacity(values.len());
+            for value in values {
+                let byte = value
+                    .as_u64()
+                    .filter(|entry| *entry <= 255)
+                    .ok_or_else(|| RpcError::new(-32602, invalid_message))?;
+                bytes.push(byte as u8);
+            }
+            if bytes.is_empty() {
+                Err(RpcError::new(-32602, missing_message))
+            } else {
+                Ok(bytes)
+            }
+        }
+        _ => Err(RpcError::new(-32602, invalid_message)),
+    }
+}
+
 fn normalize_signature_algorithm(value: Option<&str>) -> Result<String, RpcError> {
     let normalized = value.unwrap_or("fndsa").trim().to_ascii_lowercase();
     match normalized.as_str() {
@@ -4133,8 +4180,9 @@ fn normalize_rpc_transaction(
     require_signature: bool,
 ) -> Result<NormalizedEnvelopeResult, RpcError> {
     if let Ok(transaction) = serde_json::from_value::<Transaction>(value.clone()) {
+        let chain_id = Some(transaction.chain_id);
         return Ok(NormalizedEnvelopeResult {
-            chain_id: None,
+            chain_id,
             warnings: Vec::new(),
             transaction,
         });
@@ -4191,26 +4239,56 @@ fn normalize_rpc_transaction(
     )?
     .unwrap_or(crate::gas::constants::GAS_LIMIT_TRANSFER);
     let signature = parse_signature_bytes(envelope.signature.as_ref(), require_signature)?;
+    let signer_public_key_value = envelope
+        .signer_public_key_alias
+        .as_ref()
+        .or(envelope.signer_public_key.as_ref())
+        .or(envelope.public_key_alias.as_ref());
+    let signer_public_key = if require_signature {
+        parse_required_hex_or_bytes(
+            signer_public_key_value,
+            "Missing signerPublicKey",
+            "signerPublicKey must be a valid hex string or byte array",
+        )?
+    } else {
+        signer_public_key_value
+            .map(|value| {
+                parse_required_hex_or_bytes(
+                    Some(value),
+                    "Missing signerPublicKey",
+                    "signerPublicKey must be a valid hex string or byte array",
+                )
+            })
+            .transpose()?
+            .unwrap_or_default()
+    };
     let signature_algorithm = normalize_signature_algorithm(
         envelope
             .signature_algorithm_alias
             .as_deref()
             .or(envelope.signature_algorithm.as_deref()),
     )?;
-    let chain_id = parse_u64ish(envelope.chain_id.as_ref())?;
+    let chain_id = parse_u64ish(envelope.chain_id.as_ref())?.unwrap_or(0);
+    let network_id = envelope
+        .network_id_alias
+        .clone()
+        .or(envelope.network_id.clone())
+        .unwrap_or_default();
 
     let normalized = NormalizedRpcTransaction {
+        chain_id,
+        network_id,
         sender,
         receiver,
         amount,
         nonce,
         signature,
+        signer_public_key,
         timestamp: envelope.timestamp.unwrap_or_else(current_timestamp),
         gas_price,
         gas_limit,
         data: envelope.data.clone(),
         signature_algorithm,
-        chain_id,
     };
 
     let mut warnings = Vec::new();
@@ -4235,11 +4313,14 @@ fn normalize_rpc_transaction(
     }
 
     let transaction = Transaction {
+        chain_id: normalized.chain_id,
+        network_id: normalized.network_id,
         sender: normalized.sender,
         receiver: normalized.receiver,
         amount: normalized.amount,
         nonce: normalized.nonce,
         signature: normalized.signature,
+        signer_public_key: normalized.signer_public_key,
         timestamp: normalized.timestamp,
         gas_price: normalized.gas_price,
         gas_limit: normalized.gas_limit,
@@ -4250,7 +4331,7 @@ fn normalize_rpc_transaction(
     Ok(NormalizedEnvelopeResult {
         transaction,
         warnings,
-        chain_id: normalized.chain_id,
+        chain_id: Some(normalized.chain_id),
     })
 }
 
@@ -4930,6 +5011,8 @@ fn tx_to_explorer_json(
         "amount": tx.amount, // amount in nWei (for compatibility)
         "amount_snrg": amount_snrg, // amount in SNRG (for explorer display)
         "nonce": tx.nonce,
+        "chain_id": tx.chain_id,
+        "network_id": tx.network_id.clone(),
         "gas_price": tx.gas_price,
         "gas_limit": tx.gas_limit,
         "fee": tx.get_fee(),
@@ -4980,8 +5063,10 @@ mod tests {
             "gasLimit": 21000,
             "maxFee": 1000,
             "signature": "0x01020304",
+            "signerPublicKey": "0x05060708",
             "signatureAlgorithm": "FN-DSA-1024",
-            "chainId": "0x1234"
+            "chainId": "0x1234",
+            "networkId": "synergy-testnet-v2"
         });
 
         let normalized =
@@ -4993,7 +5078,9 @@ mod tests {
         assert_eq!(normalized.transaction.gas_limit, 21000);
         assert_eq!(normalized.transaction.gas_price, 1000);
         assert_eq!(normalized.transaction.signature, vec![1, 2, 3, 4]);
+        assert_eq!(normalized.transaction.signer_public_key, vec![5, 6, 7, 8]);
         assert_eq!(normalized.transaction.signature_algorithm, "fndsa");
+        assert_eq!(normalized.transaction.network_id, "synergy-testnet-v2");
         assert_eq!(normalized.chain_id, Some(0x1234));
     }
 

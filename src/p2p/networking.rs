@@ -3916,6 +3916,20 @@ fn handle_messages(
                             }
                         }
 
+                        let validation = transaction_data.validate_for_admission();
+                        if !validation.is_valid {
+                            warn!(
+                                "p2p",
+                                "Rejecting transaction before DAG/mempool admission",
+                                "peer" => peer_address.clone(),
+                                "tx_hash" => transaction_data.hash(),
+                                "error" => validation
+                                    .error_message
+                                    .unwrap_or_else(|| "invalid transaction".to_string())
+                            );
+                            continue;
+                        }
+
                         let tx_hash = transaction_data.hash();
                         let should_forward = {
                             let mut pool = TX_POOL.lock().unwrap();

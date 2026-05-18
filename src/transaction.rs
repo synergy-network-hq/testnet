@@ -1,19 +1,24 @@
+use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
+use crate::synergy_types::{SYNERGY_TESTNET_V2_CHAIN_ID, SYNERGY_TESTNET_V2_NETWORK_ID};
 use bincode::config::standard;
 use bincode::{decode_from_slice, encode_to_vec};
 use bincode::{Decode, Encode};
 use blake3::Hasher;
 use serde::{Deserialize, Serialize};
-// Removed unused sha3 imports
-use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPrivateKey, PQCPublicKey};
-use hex;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 pub struct Transaction {
+    #[serde(default)]
+    pub chain_id: u64,
+    #[serde(default)]
+    pub network_id: String,
     pub sender: String,
     pub receiver: String,
     pub amount: u64,
     pub nonce: u64,
     pub signature: Vec<u8>, // Changed from String to Vec<u8> for binary signature data
+    #[serde(default)]
+    pub signer_public_key: Vec<u8>,
     pub timestamp: u64,
     pub gas_price: u64,
     pub gas_limit: u64,
@@ -40,11 +45,14 @@ impl Transaction {
         signature_algorithm: String,
     ) -> Self {
         Transaction {
+            chain_id: SYNERGY_TESTNET_V2_CHAIN_ID,
+            network_id: SYNERGY_TESTNET_V2_NETWORK_ID.to_string(),
             sender,
             receiver,
             amount,
             nonce,
             signature,
+            signer_public_key: Vec::new(),
             timestamp: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -59,6 +67,9 @@ impl Transaction {
     /// Returns the raw hash (hex string) for internal use (signing, verification)
     pub fn raw_hash(&self) -> String {
         let mut hasher = Hasher::new();
+        hasher.update(&self.chain_id.to_be_bytes());
+        hasher.update(&(self.network_id.len() as u64).to_be_bytes());
+        hasher.update(self.network_id.as_bytes());
         hasher.update(self.sender.as_bytes());
         hasher.update(self.receiver.as_bytes());
         hasher.update(&self.amount.to_le_bytes());
@@ -118,6 +129,17 @@ impl Transaction {
         Ok(())
     }
 
+    pub fn sign_with_public_key(
+        &mut self,
+        public_key: &PQCPublicKey,
+        private_key: &PQCPrivateKey,
+        pqc_manager: &mut PQCManager,
+    ) -> Result<(), String> {
+        self.sign(private_key, pqc_manager)?;
+        self.signer_public_key = public_key.key_data.clone();
+        Ok(())
+    }
+
     pub fn verify_signature(&self, public_key: &PQCPublicKey, pqc_manager: &PQCManager) -> bool {
         // Get the raw transaction hash (without prefix) that was signed
         let message = self.raw_hash();
@@ -140,6 +162,63 @@ impl Transaction {
         match pqc_manager.verify(public_key, &signature, &message_bytes) {
             Ok(is_valid) => is_valid,
             Err(_) => false,
+        }
+    }
+
+    pub fn verify_embedded_signature(&self) -> Result<(), String> {
+        if self.signer_public_key.is_empty() {
+            return Err("Transaction signer public key is missing".to_string());
+        }
+        if self.signature.is_empty() {
+            return Err("Transaction signature is missing".to_string());
+        }
+        let algorithm = parse_algorithm_name(&self.signature_algorithm)?;
+        let public_key = PQCPublicKey {
+            algorithm,
+            key_data: self.signer_public_key.clone(),
+            key_id: self.sender.clone(),
+            created_at: self.timestamp,
+        };
+        let manager = PQCManager::new();
+        if self.verify_signature(&public_key, &manager) {
+            Ok(())
+        } else {
+            Err("Aegis PQC transaction signature verification failed".to_string())
+        }
+    }
+
+    pub fn validate_for_admission(&self) -> TransactionValidationResult {
+        let basic = self.validate();
+        if !basic.is_valid {
+            return basic;
+        }
+        if self.chain_id != SYNERGY_TESTNET_V2_CHAIN_ID {
+            return TransactionValidationResult {
+                is_valid: false,
+                error_message: Some(format!(
+                    "Transaction chain_id {} does not match Synergy Testnet chain {}",
+                    self.chain_id, SYNERGY_TESTNET_V2_CHAIN_ID
+                )),
+            };
+        }
+        if self.network_id != SYNERGY_TESTNET_V2_NETWORK_ID {
+            return TransactionValidationResult {
+                is_valid: false,
+                error_message: Some(format!(
+                    "Transaction network_id {} does not match {}",
+                    self.network_id, SYNERGY_TESTNET_V2_NETWORK_ID
+                )),
+            };
+        }
+        match self.verify_embedded_signature() {
+            Ok(()) => TransactionValidationResult {
+                is_valid: true,
+                error_message: None,
+            },
+            Err(error) => TransactionValidationResult {
+                is_valid: false,
+                error_message: Some(error),
+            },
         }
     }
 
@@ -561,6 +640,45 @@ mod tests {
         let result = invalid_tx.validate();
         assert!(!result.is_valid);
         assert!(result.error_message.is_some());
+    }
+
+    #[test]
+    fn admission_requires_testnet_context_and_real_pqc_signature() {
+        let mut manager = PQCManager::new();
+        let (public_key, private_key) = manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test keypair should generate");
+        let mut tx = Transaction::new(
+            "sender123".to_string(),
+            "receiver456".to_string(),
+            1000,
+            1,
+            Vec::new(),
+            100,
+            21000,
+            None,
+            "fndsa".to_string(),
+        );
+        tx.sign_with_public_key(&public_key, &private_key, &mut manager)
+            .expect("test transaction should sign");
+
+        assert!(tx.validate_for_admission().is_valid);
+
+        let mut wrong_chain = tx.clone();
+        wrong_chain.chain_id = 1262;
+        assert!(!wrong_chain.validate_for_admission().is_valid);
+
+        let mut wrong_network = tx.clone();
+        wrong_network.network_id = "synergy-testnet".to_string();
+        assert!(!wrong_network.validate_for_admission().is_valid);
+
+        let mut tampered = tx.clone();
+        tampered.amount = tampered.amount.saturating_add(1);
+        assert!(!tampered.validate_for_admission().is_valid);
+
+        let mut missing_key = tx;
+        missing_key.signer_public_key.clear();
+        assert!(!missing_key.validate_for_admission().is_valid);
     }
 
     #[test]
