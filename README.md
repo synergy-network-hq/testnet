@@ -120,7 +120,7 @@ curl -X POST http://localhost:8545 \
 
 ### Technical Documentation
 - **[Validator Guide](./docs/validator-guide.md)**: Running validator nodes
-- **[Synergy Testnet Validator Onboarding](./docs/synergy-testnet-validator-onboarding.md)**: Chain `1262` genesis verification, preflight, admission, and failure modes
+- **[Synergy Testnet Validator Onboarding](./docs/synergy-testnet-validator-onboarding.md)**: Chain `1264` genesis verification, preflight, admission, and failure modes
 - **[Configuration Guide](./docs/config-guide.md)**: Configuration options
 - **[Troubleshooting](./docs/troubleshooting.md)**: Common issues and solutions
 
@@ -131,7 +131,7 @@ curl -X POST http://localhost:8545 \
 # config/network-config.toml
 [network]
 name = "synergy-testnet"
-chain_id = 1262
+chain_id = 1264
 p2p_port = 5622
 rpc_port = 5640
 ws_port = 5660

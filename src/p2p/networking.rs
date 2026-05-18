@@ -4965,12 +4965,12 @@ mod tests {
     #[test]
     fn peer_identity_key_prefers_validator_address_over_node_id() {
         assert_eq!(
-            peer_identity_key("tbeta-random-node-id", Some("synv1validator")),
+            peer_identity_key("testnet-random-node-id", Some("synv1validator")),
             "validator:synv1validator".to_string()
         );
         assert_eq!(
-            peer_identity_key("tbeta-random-node-id", None),
-            "node:tbeta-random-node-id".to_string()
+            peer_identity_key("testnet-random-node-id", None),
+            "node:testnet-random-node-id".to_string()
         );
     }
 
@@ -4979,7 +4979,7 @@ mod tests {
         let mut config = NodeConfig::default();
         config.node.bootstrap_only = false;
         config.node.validator_address = "synv1local".to_string();
-        config.p2p.node_name = "tbeta-local".to_string();
+        config.p2p.node_name = "testnet-local".to_string();
 
         assert_eq!(
             local_peer_identity(&config),
@@ -5129,7 +5129,7 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
-            node_id: Some("tbeta-peer-b".to_string()),
+            node_id: Some("testnet-peer-b".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
             last_known_height: 42,
@@ -5151,7 +5151,7 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
-            node_id: Some("tbeta-peer-b".to_string()),
+            node_id: Some("testnet-peer-b".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
             last_known_height: 0,
@@ -5160,7 +5160,7 @@ mod tests {
             status_received_at: None,
         };
 
-        let peer_identity = peer_identity_key("tbeta-peer-b", Some("synv1peer-b"));
+        let peer_identity = peer_identity_key("testnet-peer-b", Some("synv1peer-b"));
         hydrate_peer_from_cache(&cache, &peer_identity, &mut replacement);
 
         assert_eq!(replacement.last_known_height, 42);
@@ -5183,7 +5183,7 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
-            node_id: Some("tbeta-peer-a".to_string()),
+            node_id: Some("testnet-peer-a".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
             last_known_height: 9,
@@ -5203,7 +5203,7 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
-            node_id: Some("tbeta-peer-a".to_string()),
+            node_id: Some("testnet-peer-a".to_string()),
             version: None,
             capabilities: Vec::new(),
             last_known_height: 0,
@@ -5344,7 +5344,7 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
-                node_id: Some("tbeta-incoming".to_string()),
+                node_id: Some("testnet-incoming".to_string()),
                 version: None,
                 capabilities: Vec::new(),
                 last_known_height: 0,
@@ -5367,7 +5367,7 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
-                node_id: Some("tbeta-outgoing".to_string()),
+                node_id: Some("testnet-outgoing".to_string()),
                 version: None,
                 capabilities: Vec::new(),
                 last_known_height: 0,
@@ -5421,7 +5421,7 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
-            node_id: Some("tbeta-peer-a".to_string()),
+            node_id: Some("testnet-peer-a".to_string()),
             version: None,
             capabilities: Vec::new(),
             last_known_height: 0,
@@ -5901,7 +5901,7 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
-                node_id: Some("tbeta-peer-a".to_string()),
+                node_id: Some("testnet-peer-a".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: vec!["blocks".to_string()],
                 last_known_height: 0,
@@ -5986,7 +5986,7 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: Some(client),
-                node_id: Some("tbeta-peer-a".to_string()),
+                node_id: Some("testnet-peer-a".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: vec!["blocks".to_string()],
                 last_known_height: 0,

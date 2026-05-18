@@ -1,8 +1,8 @@
 provider,zone,name,type,content,ttl,proxy_status,action,notes
-NameSilo,synergy-network.io,testnet,A,65.21.202.144,3600,,keep,"Frozen beta binary and update manifest host for testnet.synergy-network.io"
-NameSilo,synergy-network.io,testnet-core-rpc,A,74.208.227.23,3600,,keep,"Canonical public beta RPC endpoint"
-NameSilo,synergy-network.io,testnet-core-ws,A,74.208.227.23,3600,,keep,"Canonical public beta WebSocket endpoint"
-NameSilo,synergy-network.io,testnet-api,A,65.21.202.144,3600,,keep,"Canonical beta API endpoint"
+NameSilo,synergy-network.io,testnet,A,65.21.202.144,3600,,keep,"Frozen Testnet binary and update manifest host for testnet.synergy-network.io"
+NameSilo,synergy-network.io,testnet-core-rpc,A,74.208.227.23,3600,,keep,"Canonical public Testnet RPC endpoint"
+NameSilo,synergy-network.io,testnet-core-ws,A,74.208.227.23,3600,,keep,"Canonical public Testnet WebSocket endpoint"
+NameSilo,synergy-network.io,testnet-api,A,65.21.202.144,3600,,keep,"Canonical Testnet API endpoint"
 NameSilo,synergy-network.io,testnet-wallet-api,A,65.21.202.144,3600,,keep,"Wallet helper API endpoint"
 NameSilo,synergy-network.io,testnet-faucet,A,65.21.202.144,3600,,keep,"Faucet endpoint"
 NameSilo,synergy-network.io,testnet-sxcp-api,A,65.21.202.144,3600,,keep,"SXCP API endpoint"

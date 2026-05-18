@@ -1745,7 +1745,7 @@ cors_origins = []
 [p2p]
 listen_address = "0.0.0.0:5622"
 public_address = "62.146.182.207:5622"
-node_name = "tbeta-test"
+node_name = "testnet-test"
 enable_discovery = true
 discovery_port = 5680
 heartbeat_interval = 10

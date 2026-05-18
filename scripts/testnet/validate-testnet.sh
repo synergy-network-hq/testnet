@@ -260,7 +260,7 @@ for doc in "$BUNDLE_DIR/DEPLOYMENT_GUIDE.md" "$BUNDLE_DIR/DNS_RECORDS.txt" "$BUN
     continue
   fi
   if rg -q '38638|48638|58638|18080|5730|5830|5930|synergy-testnet-closed' "$doc"; then
-    echo "Support document contains stale beta data: $doc" >&2
+    echo "Support document contains stale legacy network data: $doc" >&2
     failures=$((failures + 1))
   fi
 done

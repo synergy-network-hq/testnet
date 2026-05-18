@@ -4,7 +4,7 @@ This file is the frozen DNS baseline for `synergy-testnet`.
 
 It reflects:
 
-- the canonical beta hostnames referenced by the live repo
+- the canonical Testnet hostnames referenced by the live repo
 - the current DNS inventory for `synergy-network.io` and `synergynode.xyz`
 - the frozen bootstrap topology of exactly 3 bootnodes and 3 seed services
 
@@ -12,7 +12,7 @@ It reflects:
 
 No additional launch-critical DNS records remain to be created.
 
-The required beta records should now be treated as the frozen keep set. Remaining launch work is service deployment and endpoint verification, not creation of new names.
+The required Testnet records should now be treated as the frozen keep set. Remaining launch work is service deployment and endpoint verification, not creation of new names.
 
 The required 3-host bootstrap set is:
 
@@ -25,17 +25,17 @@ The required 3-host bootstrap set is:
 - `_dnsaddr.bootstrap.synergynode.xyz` TXT records for bootnodes 1-3
 - `_synergy-seed._tcp.synergynode.xyz` SRV records for seeds 1-3
 
-The required beta surface on `synergy-network.io` is also part of the frozen keep set.
+The required Testnet surface on `synergy-network.io` is also part of the frozen keep set.
 
-## Canonical Beta Keep Set
+## Canonical Testnet Keep Set
 
 These are the records the canonical Testnet launch surfaces expect to exist and remain stable.
 
 | Host | Type | Target | Status |
 | --- | --- | --- | --- |
-| `testnet-core-rpc.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public beta RPC endpoint |
-| `testnet-core-ws.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public beta WebSocket endpoint |
-| `testnet-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the canonical beta API endpoint |
+| `testnet-core-rpc.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public Testnet RPC endpoint |
+| `testnet-core-ws.synergy-network.io` | `A` | `74.208.227.23` | Keep as the canonical public Testnet WebSocket endpoint |
+| `testnet-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the canonical Testnet API endpoint |
 | `testnet-wallet-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the wallet helper API endpoint |
 | `testnet-faucet.synergy-network.io` | `A` | `65.21.202.144` | Keep as the faucet endpoint |
 | `testnet-sxcp-api.synergy-network.io` | `A` | `65.21.202.144` | Keep as the SXCP API endpoint |
@@ -77,6 +77,6 @@ DNS work is now limited to:
 
 ## Assumptions
 
-- `65.21.202.144` remains the host for the shared beta API, wallet, faucet, verification, SXCP, and compatibility EVM surfaces.
+- `65.21.202.144` remains the host for the shared Testnet API, wallet, faucet, verification, SXCP, and compatibility EVM surfaces.
 - `74.208.227.23` remains the host for the core RPC, core WS, explorer, indexer, and Atlas surfaces.
 - `testnet.synergy-network.io` should resolve to the machine serving `/var/www/synergy-portal/binaries`. If that is not `65.21.202.144` in your environment, change that one record to the correct binary host.

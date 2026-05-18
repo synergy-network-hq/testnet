@@ -43,7 +43,7 @@ config/
 ```toml
 [network]
 # Network identification
-id = 1262
+id = 1264
 name = "Synergy Testnet"
 description = "Synergy Network Testnet"
 
@@ -68,7 +68,7 @@ ws  = "127.0.0.1:8546"
 # Blockchain parameters
 block_time = 5
 max_gas_limit = "0x2fefd8"
-chain_id = 1262
+chain_id = 1264
 
 [storage]
 # Storage configuration
@@ -375,7 +375,7 @@ The node supports extensive runtime configuration through environment variables:
 #### Network Configuration
 ```bash
 export SYNERGY_NETWORK_ID=synergy-testnet
-export SYNERGY_CHAIN_ID=1262
+export SYNERGY_CHAIN_ID=1264
 export SYNERGY_P2P_PORT=30303
 export SYNERGY_RPC_PORT=8545
 export SYNERGY_WS_PORT=8546
@@ -681,13 +681,13 @@ find config/ -name "*.toml" -o -name "*.json" | xargs -I {} sh -c 'echo "Validat
 ```toml
 # config/network-config.toml
 [network]
-id = 1262
+id = 1264
 p2p_port = 30303
 rpc_port = 8545
 
 [blockchain]
 block_time = 5
-chain_id = 1262
+chain_id = 1264
 ```
 
 ### Production Configuration
