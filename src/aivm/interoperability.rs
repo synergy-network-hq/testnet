@@ -134,7 +134,7 @@ pub struct InteroperabilityLayer {
     pending_messages: Arc<Mutex<HashMap<String, CrossChainMessage>>>,
     bridge_transactions: Arc<Mutex<HashMap<String, BridgeTransaction>>>,
     message_routing: Arc<Mutex<HashMap<String, String>>>, // message_id -> handler_contract
-    pqc_manager: Arc<PQCManager>,
+    pqc_manager: Arc<Mutex<PQCManager>>,
     security_config: SecurityConfiguration,
 }
 
@@ -150,7 +150,7 @@ pub struct SecurityConfiguration {
 
 impl InteroperabilityLayer {
     pub fn new() -> Self {
-        let pqc_manager = Arc::new(PQCManager::new());
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
 
         InteroperabilityLayer {
             supported_chains: Arc::new(Mutex::new(HashMap::new())),
@@ -159,7 +159,7 @@ impl InteroperabilityLayer {
             message_routing: Arc::new(Mutex::new(HashMap::new())),
             pqc_manager: pqc_manager.clone(),
             security_config: SecurityConfiguration {
-                default_pqc_algorithm: PQCAlgorithm::Dilithium,
+                default_pqc_algorithm: PQCAlgorithm::MLDSA,
                 minimum_security_level: SecurityLevel::Enhanced,
                 require_validator_attestation: true,
                 enable_zero_knowledge_proofs: true,
@@ -203,16 +203,16 @@ impl InteroperabilityLayer {
         match message.security_level {
             SecurityLevel::Basic => {
                 // Basic security - just hash the message
-                message.pqc_algorithm = PQCAlgorithm::Dilithium;
+                message.pqc_algorithm = PQCAlgorithm::MLDSA;
             },
             SecurityLevel::Enhanced => {
                 // Enhanced security - encrypt payload
-                message.pqc_algorithm = PQCAlgorithm::Kyber;
+                message.pqc_algorithm = PQCAlgorithm::MLKEM1024;
                 message.encrypted_payload = Some(self.encrypt_message_payload(&message.payload)?);
             },
             SecurityLevel::Maximum => {
                 // Maximum security - encrypt + sign with multiple algorithms
-                message.pqc_algorithm = PQCAlgorithm::Falcon;
+                message.pqc_algorithm = PQCAlgorithm::FNDSA;
                 message.encrypted_payload = Some(self.encrypt_message_payload(&message.payload)?);
 
                 // Generate multiple signatures for verification
@@ -221,7 +221,7 @@ impl InteroperabilityLayer {
             },
             SecurityLevel::Military => {
                 // Military-grade security - full encryption + zero-knowledge proofs
-                message.pqc_algorithm = PQCAlgorithm::ClassicMcEliece;
+                message.pqc_algorithm = PQCAlgorithm::HQCKEM;
                 message.encrypted_payload = Some(self.encrypt_message_payload(&message.payload)?);
 
                 // Generate comprehensive security signatures
@@ -252,50 +252,27 @@ impl InteroperabilityLayer {
     }
 
     fn encrypt_message_payload(&self, payload: &[u8]) -> Result<Vec<u8>, String> {
-        // TEMPORARY BYPASS: Using standard encryption instead of ML-KEM-1024 during Aegis PQVM resolution
-        // Original ML-KEM-1024 code below (commented out):
-        /*
-        // Generate encryption keys for the message
-        let (public_key, private_key) = self.pqc_manager.generate_keypair(PQCAlgorithm::Kyber)?;
+        let mut pqc_manager = self
+            .pqc_manager
+            .lock()
+            .map_err(|_| "Aegis PQC manager lock poisoned".to_string())?;
+        let (public_key, _) = pqc_manager.generate_keypair(PQCAlgorithm::MLKEM1024)?;
+        let (ciphertext, shared_secret) = pqc_manager.encapsulate_key(&public_key.key_id)?;
 
-        // Encrypt the payload
-        let (ciphertext, shared_secret) = self.pqc_manager.encapsulate_key(&public_key.key_id)?;
-
-        // XOR the payload with the shared secret for encryption
-        let encrypted_payload: Vec<u8> = payload.iter()
-            .zip(shared_secret.shared_secret.iter().cycle())
+        let encrypted_payload: Vec<u8> = payload
+            .iter()
+            .zip(shared_secret.secret.iter().cycle())
             .map(|(a, b)| a ^ b)
             .collect();
 
-        // Store the ciphertext and key information
-        // In a real implementation, this would be more sophisticated
-        let mut encrypted_data = Vec::new();
+        let ciphertext_len: u32 = ciphertext
+            .ciphertext
+            .len()
+            .try_into()
+            .map_err(|_| "Aegis PQC ciphertext too large".to_string())?;
+        let mut encrypted_data = Vec::with_capacity(4 + ciphertext.ciphertext.len() + encrypted_payload.len());
+        encrypted_data.extend_from_slice(&ciphertext_len.to_be_bytes());
         encrypted_data.extend_from_slice(&ciphertext.ciphertext);
-        encrypted_data.extend_from_slice(&encrypted_payload);
-        */
-
-        // Temporary standard encryption implementation
-        use rand::RngCore;
-        use sha2::{Sha256, Digest};
-
-        // Generate a random shared secret using standard CSPRNG
-        let mut rng = rand::thread_rng();
-        let mut temp_shared_secret = vec![0u8; payload.len()];
-        if payload.is_empty() {
-            temp_shared_secret = vec![0u8; 32]; // 256-bit standard secret
-        } else {
-            rng.fill_bytes(&mut temp_shared_secret);
-        }
-
-        // XOR the payload with the temporary shared secret for encryption
-        let encrypted_payload: Vec<u8> = payload.iter()
-            .zip(temp_shared_secret.iter().cycle())
-            .map(|(a, b)| a ^ b)
-            .collect();
-
-        // Create encrypted data with a temporary ciphertext placeholder
-        let mut encrypted_data = Vec::new();
-        encrypted_data.extend_from_slice(&[0u8; 32]); // Placeholder for ciphertext
         encrypted_data.extend_from_slice(&encrypted_payload);
 
         Ok(encrypted_data)
@@ -304,10 +281,14 @@ impl InteroperabilityLayer {
     fn generate_multi_algorithm_signatures(&self, message: &[u8]) -> Result<Vec<String>, String> {
         let mut signatures = Vec::new();
 
-        // Generate signatures with multiple PQC algorithms for enhanced security
-        for algorithm in [PQCAlgorithm::Dilithium, PQCAlgorithm::Falcon, PQCAlgorithm::Sphincs] {
-            let (public_key, private_key) = self.pqc_manager.generate_keypair(algorithm.clone())?;
-            let signature = self.pqc_manager.sign_message(&private_key.public_key_id, message)?;
+        let mut pqc_manager = self
+            .pqc_manager
+            .lock()
+            .map_err(|_| "Aegis PQC manager lock poisoned".to_string())?;
+
+        for algorithm in [PQCAlgorithm::MLDSA, PQCAlgorithm::FNDSA, PQCAlgorithm::SLHDSA] {
+            let (_, private_key) = pqc_manager.generate_keypair(algorithm.clone())?;
+            let signature = pqc_manager.sign_message(&private_key.public_key_id, message)?;
             signatures.push(signature.public_key_id);
         }
 
@@ -317,10 +298,14 @@ impl InteroperabilityLayer {
     fn generate_military_grade_signatures(&self, message: &[u8]) -> Result<Vec<String>, String> {
         let mut signatures = Vec::new();
 
-        // Generate signatures with all 5 NIST PQC algorithms for maximum security
-        for algorithm in self.pqc_manager.get_supported_algorithms() {
-            let (public_key, private_key) = self.pqc_manager.generate_keypair(algorithm.clone())?;
-            let signature = self.pqc_manager.sign_message(&private_key.public_key_id, message)?;
+        let mut pqc_manager = self
+            .pqc_manager
+            .lock()
+            .map_err(|_| "Aegis PQC manager lock poisoned".to_string())?;
+
+        for algorithm in [PQCAlgorithm::MLDSA, PQCAlgorithm::FNDSA, PQCAlgorithm::SLHDSA] {
+            let (_, private_key) = pqc_manager.generate_keypair(algorithm.clone())?;
+            let signature = pqc_manager.sign_message(&private_key.public_key_id, message)?;
             signatures.push(signature.public_key_id);
         }
 

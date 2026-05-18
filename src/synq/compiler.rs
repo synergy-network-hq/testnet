@@ -78,7 +78,7 @@ impl SynQCompiler {
         }
     }
 
-    pub fn compile_synq_code(&self, synq_code: &str, contract_name: &str) -> Result<CompilationResult, String> {
+    pub fn compile_synq_code(&mut self, synq_code: &str, contract_name: &str) -> Result<CompilationResult, String> {
         // Parse SynQ code
         let parsed_contract = self.parse_synq_code(synq_code, contract_name)?;
 
@@ -114,7 +114,7 @@ impl SynQCompiler {
             code: code.to_string(),
             bytecode: vec![], // Will be generated
             abi: self.generate_abi(code)?,
-            pqc_algorithm: PQCAlgorithm::Dilithium, // Default PQC algorithm
+            pqc_algorithm: PQCAlgorithm::MLDSA,
             cross_chain_enabled: true,
             created_at: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -137,11 +137,11 @@ impl SynQCompiler {
 
         // Add PQC algorithm identifier
         match contract.pqc_algorithm {
-            PQCAlgorithm::Dilithium => bytecode.push(0x01),
-            PQCAlgorithm::Kyber => bytecode.push(0x02),
-            PQCAlgorithm::Falcon => bytecode.push(0x03),
-            PQCAlgorithm::Sphincs => bytecode.push(0x04),
-            PQCAlgorithm::ClassicMcEliece => bytecode.push(0x05),
+            PQCAlgorithm::MLDSA => bytecode.push(0x01),
+            PQCAlgorithm::MLKEM1024 => bytecode.push(0x02),
+            PQCAlgorithm::FNDSA => bytecode.push(0x03),
+            PQCAlgorithm::SLHDSA => bytecode.push(0x04),
+            PQCAlgorithm::HQCKEM => bytecode.push(0x05),
         }
 
         // Add contract metadata
@@ -219,20 +219,18 @@ contract {} {{
 
         let abi = format!(
             r#"[{{ "name": "{}", "type": "contract", "version": "1.0.0", "pqc_algorithm": "{:?}" }}]"#,
-            "SynQContract", PQCAlgorithm::Dilithium
+            "SynQContract", PQCAlgorithm::MLDSA
         );
 
         Ok(abi)
     }
 
-    fn generate_pqc_signatures(&self, contract: &SynQContract) -> Result<Vec<String>, String> {
+    fn generate_pqc_signatures(&mut self, contract: &SynQContract) -> Result<Vec<String>, String> {
         let mut signatures = Vec::new();
 
-        // Generate signatures for different PQC algorithms
-        for algorithm in self.pqc_manager.get_supported_algorithms() {
-            let (public_key, private_key) = self.pqc_manager.generate_keypair(algorithm.clone())?;
+        for algorithm in [PQCAlgorithm::MLDSA, PQCAlgorithm::FNDSA, PQCAlgorithm::SLHDSA] {
+            let (_, private_key) = self.pqc_manager.generate_keypair(algorithm.clone())?;
 
-            // Sign the contract bytecode
             let signature = self.pqc_manager.sign_message(&private_key.public_key_id, &contract.bytecode)?;
 
             signatures.push(format!("{:?}_{}", algorithm, signature.public_key_id));
