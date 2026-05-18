@@ -1790,7 +1790,9 @@ impl ProofOfSynergy {
 
         let mut pqc = pqc_manager.lock().unwrap();
         let (leader_public_key, leader_private_key) =
-            Self::get_or_create_leader_keypair(&leader.address, &mut pqc);
+            Self::get_or_create_leader_keypair(&leader.address, &mut pqc).unwrap_or_else(|error| {
+                panic!("Aegis PQC leader signing key unavailable: {error}")
+            });
 
         if let Ok(signature) = pqc.sign(&leader_private_key, block.hash.as_bytes()) {
             block.proposer_public_key = leader_public_key.key_data;
@@ -1997,9 +1999,8 @@ impl ProofOfSynergy {
             }
         }
 
-        // 1. Verify transaction signature (best-effort)
-        // NOTE: Testnet currently allows transactions even if the sender public key
-        // isn't known locally (remote wallets). If a public key is available, we verify.
+        // 1. Verify transaction signature. Missing sender public keys fail closed:
+        // consensus cannot admit unsigned or unverifiable transactions.
         let public_key = Self::get_transaction_public_key(&tx.sender);
         if let Some(public_key) = public_key {
             let pqc = pqc_manager.lock().unwrap();
@@ -2027,9 +2028,10 @@ impl ProofOfSynergy {
         } else {
             warn!(
                 "consensus",
-                "No public key for sender - skipping signature verification",
+                "Rejecting transaction because sender public key is unavailable",
                 "sender" => tx.sender.clone()
             );
+            return false;
         }
 
         // 2. Verify sender balance via token manager to reflect on-chain state
@@ -2247,31 +2249,16 @@ impl ProofOfSynergy {
     fn get_or_create_leader_keypair(
         validator_address: &str,
         pqc_manager: &mut PQCManager,
-    ) -> (PQCPublicKey, PQCPrivateKey) {
+    ) -> Result<(PQCPublicKey, PQCPrivateKey), String> {
         if let Ok(cache) = EPHEMERAL_LEADER_KEYS.lock() {
             if let Some((public_key, private_key)) = cache.get(validator_address) {
-                return (public_key.clone(), private_key.clone());
+                return Ok((public_key.clone(), private_key.clone()));
             }
         }
 
         let generated = pqc_manager
             .generate_keypair(PQCAlgorithm::FNDSA)
-            .unwrap_or_else(|_| {
-                (
-                    PQCPublicKey {
-                        algorithm: PQCAlgorithm::FNDSA,
-                        key_data: Vec::new(),
-                        key_id: format!("fallback_pub_{validator_address}"),
-                        created_at: Self::current_timestamp(),
-                    },
-                    PQCPrivateKey {
-                        algorithm: PQCAlgorithm::FNDSA,
-                        key_data: Vec::new(),
-                        public_key_id: format!("fallback_pub_{validator_address}"),
-                        created_at: Self::current_timestamp(),
-                    },
-                )
-            });
+            .map_err(|error| format!("aegis-pqvm FN-DSA leader key generation failed: {error}"))?;
 
         if let Ok(mut cache) = EPHEMERAL_LEADER_KEYS.lock() {
             cache.insert(
@@ -2280,7 +2267,7 @@ impl ProofOfSynergy {
             );
         }
 
-        generated
+        Ok(generated)
     }
 
     fn get_transaction_public_key(address: &str) -> Option<crate::crypto::pqc::PQCPublicKey> {

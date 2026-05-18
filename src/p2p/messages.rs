@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::block::{Block, BlockHeader};
 use crate::consensus::dual_quorum::Vote;
+use crate::synergy_types::AegisPqSignature;
 use crate::transaction::Transaction;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -14,6 +15,8 @@ pub enum NetworkMessage {
         chain_id: Option<u64>,
         #[serde(default)]
         network_id: Option<u64>,
+        #[serde(default)]
+        network_id_text: Option<String>,
         #[serde(default)]
         genesis_hash: String,
         #[serde(default)]
@@ -30,6 +33,24 @@ pub enum NetworkMessage {
         public_address: Option<String>,
         #[serde(default)]
         validator_address: Option<String>,
+        #[serde(default)]
+        role: Option<String>,
+        #[serde(default)]
+        active_validator_set_hash: Option<String>,
+        #[serde(default)]
+        cluster_map_hash: Option<String>,
+        #[serde(default)]
+        protocol_config_hash: Option<String>,
+        #[serde(default)]
+        aegis_pqvm_version: Option<String>,
+        #[serde(default)]
+        aegis_pq_public_key_id: Option<String>,
+        #[serde(default)]
+        aegis_pq_public_key_algorithm: Option<String>,
+        #[serde(default)]
+        aegis_pq_public_key: Vec<u8>,
+        #[serde(default)]
+        aegis_pq_handshake_signature: Option<AegisPqSignature>,
     },
     Block {
         block_data: Block,

@@ -1,12 +1,17 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
+use crate::crypto::aegis_pqvm::{
+    AegisPqvmKeyRegistry, AegisPqvmSigner, AegisPqvmVerifier, SYNERGY_P2P_HANDSHAKE_V1,
+};
+use crate::crypto::pqc::{PQCAlgorithm, PQCPublicKey};
 use crate::genesis::canonical_genesis;
 use crate::p2p::messages::NetworkMessage;
 use crate::rpc::rpc_server::{
     prune_transaction_hashes_from_pool, transaction_hashes, SYNC_MANAGER, TX_POOL,
 };
 use crate::sync::SyncState;
+use crate::synergy_types::{AegisPqKeyId, AegisPqKeyRole, Epoch};
 use crate::transaction::Transaction;
 use crate::validator::{
     apply_validator_activation_transaction, is_validator_activation_transaction, VALIDATOR_MANAGER,
@@ -15,7 +20,7 @@ use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::Resolver;
 use lazy_static::lazy_static;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json;
 use socket2::{SockRef, TcpKeepalive};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -61,6 +66,8 @@ const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
 const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
 const TESTNET_NATIVE_CAIP2: &str = "synergy:testnet";
 const TESTNET_RESERVED_EIP155: &str = "eip155:1264";
+const TESTNET_NETWORK_ID_TEXT: &str = "synergy-testnet-v2";
+const TESTNET_AEGIS_PQVM_VERSION: &str = "aegis-pqvm";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ConnectionDirection {
@@ -215,10 +222,284 @@ fn local_consensus_version(config: &NodeConfig) -> String {
         .unwrap_or_else(|_| config.consensus.algorithm.clone())
 }
 
+fn local_p2p_role(config: &NodeConfig) -> String {
+    config
+        .identity
+        .role
+        .trim()
+        .split_whitespace()
+        .next()
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            config
+                .node
+                .validator_address
+                .trim()
+                .is_empty()
+                .then_some("observer")
+        })
+        .unwrap_or("validator")
+        .to_string()
+}
+
+fn canonical_validator_set_hash() -> String {
+    canonical_genesis()
+        .ok()
+        .and_then(|genesis| {
+            genesis
+                .value()
+                .get("integrity")
+                .and_then(|value| value.get("validator_set_hash"))
+                .and_then(|value| value.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_default()
+}
+
+fn canonical_json_subtree_hash(path: &[&str]) -> String {
+    let Some(mut value) = canonical_genesis().ok().map(|genesis| genesis.value()) else {
+        return String::new();
+    };
+    for segment in path {
+        let Some(next) = value.get(*segment) else {
+            return String::new();
+        };
+        value = next;
+    }
+    serde_json::to_vec(value)
+        .map(|bytes| blake3::hash(&bytes).to_hex().to_string())
+        .unwrap_or_default()
+}
+
+fn canonical_cluster_map_hash() -> String {
+    canonical_json_subtree_hash(&["validators"])
+}
+
+fn canonical_protocol_config_hash() -> String {
+    canonical_json_subtree_hash(&["network"])
+}
+
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
+struct HandshakePqSigningPayload {
+    node_id: String,
+    version: String,
+    capabilities: Vec<String>,
+    chain_id: Option<u64>,
+    network_id: Option<u64>,
+    network_id_text: Option<String>,
+    genesis_hash: String,
+    network_magic_bytes: String,
+    protocol_version: Option<String>,
+    consensus_version: Option<String>,
+    native_caip2: Option<String>,
+    reserved_eip155: Option<String>,
+    public_address: Option<String>,
+    validator_address: Option<String>,
+    role: Option<String>,
+    active_validator_set_hash: Option<String>,
+    cluster_map_hash: Option<String>,
+    protocol_config_hash: Option<String>,
+    aegis_pqvm_version: Option<String>,
+    aegis_pq_public_key_id: Option<String>,
+    aegis_pq_public_key_algorithm: Option<String>,
+    aegis_pq_public_key: Vec<u8>,
+}
+
+fn handshake_pq_signing_payload(message: &NetworkMessage) -> Result<Vec<u8>, String> {
+    let NetworkMessage::Handshake {
+        node_id,
+        version,
+        capabilities,
+        chain_id,
+        network_id,
+        network_id_text,
+        genesis_hash,
+        network_magic_bytes,
+        protocol_version,
+        consensus_version,
+        native_caip2,
+        reserved_eip155,
+        public_address,
+        validator_address,
+        role,
+        active_validator_set_hash,
+        cluster_map_hash,
+        protocol_config_hash,
+        aegis_pqvm_version,
+        aegis_pq_public_key_id,
+        aegis_pq_public_key_algorithm,
+        aegis_pq_public_key,
+        ..
+    } = message
+    else {
+        return Err("P2P handshake signature payload requested for non-handshake".to_string());
+    };
+
+    serde_json::to_vec(&HandshakePqSigningPayload {
+        node_id: node_id.clone(),
+        version: version.clone(),
+        capabilities: capabilities.clone(),
+        chain_id: *chain_id,
+        network_id: *network_id,
+        network_id_text: network_id_text.clone(),
+        genesis_hash: genesis_hash.clone(),
+        network_magic_bytes: network_magic_bytes.clone(),
+        protocol_version: protocol_version.clone(),
+        consensus_version: consensus_version.clone(),
+        native_caip2: native_caip2.clone(),
+        reserved_eip155: reserved_eip155.clone(),
+        public_address: public_address.clone(),
+        validator_address: validator_address.clone(),
+        role: role.clone(),
+        active_validator_set_hash: active_validator_set_hash.clone(),
+        cluster_map_hash: cluster_map_hash.clone(),
+        protocol_config_hash: protocol_config_hash.clone(),
+        aegis_pqvm_version: aegis_pqvm_version.clone(),
+        aegis_pq_public_key_id: aegis_pq_public_key_id.clone(),
+        aegis_pq_public_key_algorithm: aegis_pq_public_key_algorithm.clone(),
+        aegis_pq_public_key: aegis_pq_public_key.clone(),
+    })
+    .map_err(|error| format!("serialize canonical P2P handshake payload: {error}"))
+}
+
+fn parse_handshake_pqc_algorithm(value: &str) -> Result<PQCAlgorithm, String> {
+    match value.trim() {
+        "fndsa" | "FN-DSA-1024" => Ok(PQCAlgorithm::FNDSA),
+        "mldsa" | "ML-DSA-65" | "ML-DSA-87" => Ok(PQCAlgorithm::MLDSA),
+        "slhdsa" | "SLH-DSA" => Ok(PQCAlgorithm::SLHDSA),
+        other => Err(format!("unsupported Aegis PQC peer key algorithm: {other}")),
+    }
+}
+
+fn build_local_handshake(config: &NodeConfig) -> Result<NetworkMessage, String> {
+    let mut signer = AegisPqvmSigner::initialize_required()
+        .map_err(|error| format!("aegis-pqvm P2P signer initialization failed: {error}"))?;
+    let peer_uma = config
+        .p2p
+        .node_name
+        .trim()
+        .is_empty()
+        .then_some("synergy-node")
+        .unwrap_or_else(|| config.p2p.node_name.trim());
+    let key_id = signer
+        .generate_and_register_key(peer_uma, vec![AegisPqKeyRole::PeerIdentity], Epoch(0))
+        .map_err(|error| format!("aegis-pqvm P2P key loading failed: {error}"))?;
+    let public_key = signer
+        .public_key_record(&key_id)
+        .map_err(|error| format!("aegis-pqvm P2P public key loading failed: {error}"))?;
+    let mut handshake = NetworkMessage::Handshake {
+        node_id: config.p2p.node_name.clone(),
+        version: "1.0.0".to_string(),
+        capabilities: vec!["blocks".to_string(), "transactions".to_string()],
+        chain_id: Some(local_chain_id(config)),
+        network_id: Some(local_network_id(config)),
+        network_id_text: Some(TESTNET_NETWORK_ID_TEXT.to_string()),
+        genesis_hash: canonical_genesis_hash(),
+        network_magic_bytes: canonical_network_magic_bytes(),
+        protocol_version: Some(local_protocol_version(config)),
+        consensus_version: Some(local_consensus_version(config)),
+        native_caip2: Some(TESTNET_NATIVE_CAIP2.to_string()),
+        reserved_eip155: Some(TESTNET_RESERVED_EIP155.to_string()),
+        public_address: Some(config.p2p.public_address.clone()),
+        validator_address: announced_validator_address(config),
+        role: Some(local_p2p_role(config)),
+        active_validator_set_hash: Some(canonical_validator_set_hash()),
+        cluster_map_hash: Some(canonical_cluster_map_hash()),
+        protocol_config_hash: Some(canonical_protocol_config_hash()),
+        aegis_pqvm_version: Some(TESTNET_AEGIS_PQVM_VERSION.to_string()),
+        aegis_pq_public_key_id: Some(public_key.key_id.0.clone()),
+        aegis_pq_public_key_algorithm: Some(public_key.algorithm.clone()),
+        aegis_pq_public_key: public_key.key_bytes.clone(),
+        aegis_pq_handshake_signature: None,
+    };
+    let payload = handshake_pq_signing_payload(&handshake)?;
+    let signature = signer
+        .sign_peer_hello(&payload, &key_id)
+        .map_err(|error| format!("aegis-pqvm P2P handshake signing failed: {error}"))?;
+    if let NetworkMessage::Handshake {
+        aegis_pq_handshake_signature,
+        ..
+    } = &mut handshake
+    {
+        *aegis_pq_handshake_signature = Some(signature);
+    }
+    Ok(handshake)
+}
+
+fn verify_handshake_pq_signature(message: &NetworkMessage) -> Result<(), String> {
+    let NetworkMessage::Handshake {
+        node_id,
+        chain_id,
+        network_id_text,
+        aegis_pq_public_key_id,
+        aegis_pq_public_key_algorithm,
+        aegis_pq_public_key,
+        aegis_pq_handshake_signature,
+        ..
+    } = message
+    else {
+        return Err("P2P handshake verification requested for non-handshake".to_string());
+    };
+
+    if *chain_id != Some(1264) {
+        return Err("Aegis PQC handshake must bind chain_id 1264".to_string());
+    }
+    if network_id_text.as_deref() != Some(TESTNET_NETWORK_ID_TEXT) {
+        return Err(format!(
+            "Aegis PQC handshake must bind network_id {TESTNET_NETWORK_ID_TEXT}"
+        ));
+    }
+    let key_id = aegis_pq_public_key_id
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing Aegis PQC peer key id".to_string())?;
+    let algorithm = aegis_pq_public_key_algorithm
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing Aegis PQC peer key algorithm".to_string())
+        .and_then(|value| parse_handshake_pqc_algorithm(value))?;
+    if aegis_pq_public_key.is_empty() {
+        return Err("missing Aegis PQC peer public key".to_string());
+    }
+    let signature = aegis_pq_handshake_signature
+        .as_ref()
+        .filter(|signature| signature.is_present())
+        .ok_or_else(|| "missing Aegis PQC peer handshake signature".to_string())?;
+
+    let payload = handshake_pq_signing_payload(message)?;
+    let key_id = AegisPqKeyId(key_id.clone());
+    let mut registry = AegisPqvmKeyRegistry::default();
+    registry.register_public_key(
+        node_id,
+        PQCPublicKey {
+            algorithm,
+            key_data: aegis_pq_public_key.clone(),
+            key_id: key_id.0.clone(),
+            created_at: 0,
+        },
+        vec![AegisPqKeyRole::PeerIdentity],
+        Epoch(0),
+    );
+    let verifier = AegisPqvmVerifier::initialize_required(registry)
+        .map_err(|error| format!("aegis-pqvm P2P verifier initialization failed: {error}"))?;
+    verifier
+        .verify_domain_signature(
+            SYNERGY_P2P_HANDSHAKE_V1,
+            &payload,
+            node_id,
+            &key_id,
+            Epoch(0),
+            AegisPqKeyRole::PeerIdentity,
+            signature,
+        )
+        .map_err(|error| format!("Aegis PQC peer handshake verification failed: {error}"))
+}
+
 fn handshake_mismatch_reason(
     config: &NodeConfig,
     chain_id: Option<u64>,
     network_id: Option<u64>,
+    network_id_text: Option<&str>,
     genesis_hash: &str,
     network_magic_bytes: &str,
     native_caip2: Option<&str>,
@@ -249,6 +530,20 @@ fn handshake_mismatch_reason(
             return Some(format!(
                 "network_id missing: expected {expected_network_id}"
             ))
+        }
+    }
+
+    match network_id_text {
+        Some(value) if value == TESTNET_NETWORK_ID_TEXT => {}
+        Some(value) => {
+            return Some(format!(
+                "network_id text differs: expected {TESTNET_NETWORK_ID_TEXT}, remote {value}"
+            ));
+        }
+        None => {
+            return Some(format!(
+                "network_id text missing: expected {TESTNET_NETWORK_ID_TEXT}"
+            ));
         }
     }
 
@@ -2964,21 +3259,8 @@ fn handle_incoming_connection(
     );
 
     // Send handshake
-    let handshake = NetworkMessage::Handshake {
-        node_id: config.p2p.node_name.clone(),
-        version: "1.0.0".to_string(),
-        capabilities: vec!["blocks".to_string(), "transactions".to_string()],
-        chain_id: Some(local_chain_id(&config)),
-        network_id: Some(local_network_id(&config)),
-        genesis_hash: canonical_genesis_hash(),
-        network_magic_bytes: canonical_network_magic_bytes(),
-        protocol_version: Some(local_protocol_version(&config)),
-        consensus_version: Some(local_consensus_version(&config)),
-        native_caip2: Some(TESTNET_NATIVE_CAIP2.to_string()),
-        reserved_eip155: Some(TESTNET_RESERVED_EIP155.to_string()),
-        public_address: Some(config.p2p.public_address.clone()),
-        validator_address: announced_validator_address(&config),
-    };
+    let handshake = build_local_handshake(&config)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
@@ -3077,21 +3359,8 @@ fn handle_outgoing_connection(
     );
 
     // Send handshake
-    let handshake = NetworkMessage::Handshake {
-        node_id: config.p2p.node_name.clone(),
-        version: "1.0.0".to_string(),
-        capabilities: vec!["blocks".to_string(), "transactions".to_string()],
-        chain_id: Some(local_chain_id(&config)),
-        network_id: Some(local_network_id(&config)),
-        genesis_hash: canonical_genesis_hash(),
-        network_magic_bytes: canonical_network_magic_bytes(),
-        protocol_version: Some(local_protocol_version(&config)),
-        consensus_version: Some(local_consensus_version(&config)),
-        native_caip2: Some(TESTNET_NATIVE_CAIP2.to_string()),
-        reserved_eip155: Some(TESTNET_RESERVED_EIP155.to_string()),
-        public_address: Some(config.p2p.public_address.clone()),
-        validator_address: announced_validator_address(&config),
-    };
+    let handshake = build_local_handshake(&config)
+        .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
 
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
@@ -3166,6 +3435,7 @@ fn handle_messages(
                         capabilities,
                         chain_id,
                         network_id,
+                        network_id_text,
                         genesis_hash,
                         network_magic_bytes,
                         protocol_version,
@@ -3174,8 +3444,42 @@ fn handle_messages(
                         reserved_eip155,
                         public_address,
                         validator_address,
+                        role,
+                        active_validator_set_hash,
+                        cluster_map_hash,
+                        protocol_config_hash,
+                        aegis_pqvm_version,
+                        aegis_pq_public_key_id,
+                        aegis_pq_public_key_algorithm,
+                        aegis_pq_public_key,
+                        aegis_pq_handshake_signature,
                     } => {
                         let node_id = node_id.trim().to_string();
+                        let handshake_for_verification = NetworkMessage::Handshake {
+                            node_id: node_id.clone(),
+                            version: version.clone(),
+                            capabilities: capabilities.clone(),
+                            chain_id,
+                            network_id,
+                            network_id_text: network_id_text.clone(),
+                            genesis_hash: genesis_hash.clone(),
+                            network_magic_bytes: network_magic_bytes.clone(),
+                            protocol_version: protocol_version.clone(),
+                            consensus_version: consensus_version.clone(),
+                            native_caip2: native_caip2.clone(),
+                            reserved_eip155: reserved_eip155.clone(),
+                            public_address: public_address.clone(),
+                            validator_address: validator_address.clone(),
+                            role: role.clone(),
+                            active_validator_set_hash: active_validator_set_hash.clone(),
+                            cluster_map_hash: cluster_map_hash.clone(),
+                            protocol_config_hash: protocol_config_hash.clone(),
+                            aegis_pqvm_version: aegis_pqvm_version.clone(),
+                            aegis_pq_public_key_id: aegis_pq_public_key_id.clone(),
+                            aegis_pq_public_key_algorithm: aegis_pq_public_key_algorithm.clone(),
+                            aegis_pq_public_key: aegis_pq_public_key.clone(),
+                            aegis_pq_handshake_signature: aegis_pq_handshake_signature.clone(),
+                        };
                         if node_id.is_empty() {
                             warn!(
                                 "p2p",
@@ -3203,6 +3507,7 @@ fn handle_messages(
                             &config,
                             chain_id,
                             network_id,
+                            network_id_text.as_deref(),
                             &genesis_hash,
                             &network_magic_bytes,
                             native_caip2.as_deref(),
@@ -3217,6 +3522,21 @@ fn handle_messages(
                                 "local_network_id" => local_network_id(&config),
                                 "local_genesis_hash" => canonical_genesis_hash(),
                                 "local_network_magic_bytes" => canonical_network_magic_bytes()
+                            );
+                            let mut peers = connected_peers.lock().unwrap();
+                            disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
+                            continue;
+                        }
+
+                        if let Err(reason) =
+                            verify_handshake_pq_signature(&handshake_for_verification)
+                        {
+                            warn!(
+                                "p2p",
+                                "Rejecting peer handshake because Aegis PQC authentication failed",
+                                "peer" => peer_address.clone(),
+                                "node_id" => node_id.clone(),
+                                "reason" => reason
                             );
                             let mut peers = connected_peers.lock().unwrap();
                             disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
@@ -4558,22 +4878,24 @@ fn dial_peer_async(
 mod tests {
     use super::{
         apply_block_batch, apply_block_if_new, background_poll_interval,
-        best_connected_validator_height, block_sync_request_range, bypasses_shared_message_queue,
-        cache_peer_state, canonical_genesis_hash, collect_known_peer_addresses,
-        connected_validator_participants, current_bootstrap_refresh_interval, current_timestamp,
-        dial_with_timeout, dispatch_peer_message, ensure_peer_status_allows_chain_data,
-        handle_status_message, hydrate_peer_from_cache, local_peer_identity,
-        merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
-        peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
-        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        best_connected_validator_height, block_sync_request_range, build_local_handshake,
+        bypasses_shared_message_queue, cache_peer_state, canonical_genesis_hash,
+        collect_known_peer_addresses, connected_validator_participants,
+        current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
+        dispatch_peer_message, ensure_peer_status_allows_chain_data, handle_status_message,
+        hydrate_peer_from_cache, local_peer_identity, merge_peer_state_from_existing,
+        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
+        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
         validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
-        validator_status_genesis_within_grace_window, vote_request_parent_sync_range,
-        ConnectionDirection, DialTargetsArc, DuplicateResolution, PeerConnection, PeerEntryGuard,
-        BACKGROUND_SYNC_POLL_MILLIS, DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
-        MAX_STATUS_SYNC_BATCH, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
-        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
+        validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
+        vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
+        PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
+        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH, MAX_STATUS_SYNC_BATCH,
+        NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS, STALE_UNIDENTIFIED_PEER_SECS,
+        STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -4663,6 +4985,77 @@ mod tests {
             local_peer_identity(&config),
             "validator:synv1local".to_string()
         );
+    }
+
+    #[test]
+    fn signed_aegis_pqc_handshake_verifies() {
+        configure_canonical_genesis_path_for_tests();
+        let mut config = NodeConfig::default();
+        config.p2p.node_name = "genesisval1".to_string();
+        config.node.validator_address = "synv1local".to_string();
+
+        let handshake = build_local_handshake(&config).expect("handshake should sign");
+
+        verify_handshake_pq_signature(&handshake).expect("handshake signature should verify");
+    }
+
+    #[test]
+    fn missing_aegis_pqc_handshake_signature_is_rejected() {
+        configure_canonical_genesis_path_for_tests();
+        let mut config = NodeConfig::default();
+        config.p2p.node_name = "genesisval1".to_string();
+        let mut handshake = build_local_handshake(&config).expect("handshake should sign");
+        if let NetworkMessage::Handshake {
+            aegis_pq_handshake_signature,
+            ..
+        } = &mut handshake
+        {
+            *aegis_pq_handshake_signature = None;
+        }
+
+        let err = verify_handshake_pq_signature(&handshake)
+            .expect_err("missing signature must fail closed");
+
+        assert!(err.contains("missing Aegis PQC peer handshake signature"));
+    }
+
+    #[test]
+    fn altered_aegis_pqc_handshake_signature_is_rejected() {
+        configure_canonical_genesis_path_for_tests();
+        let mut config = NodeConfig::default();
+        config.p2p.node_name = "genesisval1".to_string();
+        let mut handshake = build_local_handshake(&config).expect("handshake should sign");
+        if let NetworkMessage::Handshake {
+            aegis_pq_handshake_signature: Some(signature),
+            ..
+        } = &mut handshake
+        {
+            signature.signature_bytes[0] ^= 0x01;
+        }
+
+        let err = verify_handshake_pq_signature(&handshake)
+            .expect_err("altered signature must fail closed");
+
+        assert!(err.contains("Aegis PQC peer handshake verification failed"));
+    }
+
+    #[test]
+    fn handshake_without_testnet_network_name_is_rejected() {
+        configure_canonical_genesis_path_for_tests();
+        let mut config = NodeConfig::default();
+        config.p2p.node_name = "genesisval1".to_string();
+        let mut handshake = build_local_handshake(&config).expect("handshake should sign");
+        if let NetworkMessage::Handshake {
+            network_id_text, ..
+        } = &mut handshake
+        {
+            *network_id_text = None;
+        }
+
+        let err = verify_handshake_pq_signature(&handshake)
+            .expect_err("missing network name must fail closed");
+
+        assert!(err.contains("network_id synergy-testnet-v2"));
     }
 
     #[test]
