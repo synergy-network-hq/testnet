@@ -81,7 +81,45 @@ impl Block {
     }
 
     pub fn validate(&self) -> bool {
-        true
+        if self.block_index == 0 {
+            return self.hash
+                == canonical_genesis()
+                    .map(|genesis| genesis.hash().to_string())
+                    .unwrap_or_default()
+                && self.transactions.is_empty()
+                && self.transactions_root == compute_merkle_root(&[]);
+        }
+
+        if self.hash.is_empty()
+            || self.previous_hash.is_empty()
+            || self.validator_id.is_empty()
+            || self.transactions_root.is_empty()
+        {
+            return false;
+        }
+
+        if self.block_signature.is_empty()
+            || self.proposer_public_key.is_empty()
+            || self.block_signature_algorithm.trim().is_empty()
+        {
+            return false;
+        }
+
+        self.transactions_root == compute_merkle_root(&self.transactions)
+            && self.hash == self.recompute_hash()
+    }
+
+    pub fn recompute_hash(&self) -> String {
+        let data = format!(
+            "{:?}{}{}{}{}{}",
+            self.block_index,
+            self.previous_hash,
+            self.validator_id,
+            self.nonce,
+            self.timestamp,
+            self.transactions_root
+        );
+        blake3::hash(data.as_bytes()).to_hex().to_string()
     }
 
     pub fn header(&self) -> BlockHeader {

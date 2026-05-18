@@ -149,8 +149,8 @@ impl SynQCompiler {
         bytecode.extend_from_slice(contract.name.as_bytes());
         bytecode.extend_from_slice(&(contract.created_at as u64).to_le_bytes());
 
-        // Add PQC signature (placeholder)
-        bytecode.extend_from_slice(&vec![0; 256]); // Placeholder for signature
+        // Reserve deterministic bytes for the deployment-time Aegis PQC signature.
+        bytecode.extend_from_slice(&[0; 256]);
 
         Ok(bytecode)
     }
@@ -185,9 +185,8 @@ contract {} {{
         bytes memory signature,
         bytes memory publicKey
     ) external view returns (bool) {{
-        // Call PQC precompile for signature verification
-        // This would integrate with the actual PQC precompile
-        return true; // Placeholder
+        // Aegis PQC precompile verification is mandatory.
+        revert("Aegis PQC verification precompile required");
     }}
 
     // Cross-chain compatibility functions

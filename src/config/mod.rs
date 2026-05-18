@@ -30,6 +30,8 @@ pub struct NodeConfig {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct NetworkConfig {
     pub id: u64,
+    #[serde(default = "default_network_id")]
+    pub network_id: String,
     pub name: String,
     pub p2p_port: u16,
     pub rpc_port: u16,
@@ -113,7 +115,7 @@ fn default_status_ready_genesis_grace_secs() -> u64 {
 }
 
 fn default_allow_genesis_status_bypass() -> bool {
-    true
+    false
 }
 
 fn default_mesh_settle_secs() -> u64 {
@@ -180,6 +182,10 @@ pub struct P2PConfig {
 
 fn default_bootstrap_refresh_secs() -> u64 {
     10
+}
+
+fn default_network_id() -> String {
+    "synergy-testnet-v2".to_string()
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -272,6 +278,7 @@ impl Default for NodeConfig {
         NodeConfig {
             network: NetworkConfig {
                 id: 1264,
+                network_id: default_network_id(),
                 name: "Synergy Testnet".to_string(),
                 p2p_port: 5622,
                 rpc_port: 5640,
@@ -394,6 +401,7 @@ pub fn load_node_config(path: Option<&str>) -> Result<NodeConfig, Box<dyn Error>
 
     // Override with environment variables
     config = apply_env_overrides(config)?;
+    enforce_consensus_config_invariants(&config)?;
 
     Ok(config)
 }
@@ -434,8 +442,30 @@ pub fn load_node_config_from_template(node_type: &str) -> Result<NodeConfig, Box
 
     // Override with environment variables
     config = apply_env_overrides(config)?;
+    enforce_consensus_config_invariants(&config)?;
 
     Ok(config)
+}
+
+fn enforce_consensus_config_invariants(config: &NodeConfig) -> Result<(), Box<dyn Error>> {
+    if config.blockchain.chain_id != 1264 || config.network.id != 1264 {
+        return Err(format!(
+            "Synergy Testnet v2 requires chain_id/network id 1264, found blockchain.chain_id={} network.id={}",
+            config.blockchain.chain_id, config.network.id
+        )
+        .into());
+    }
+    if config.network.network_id != "synergy-testnet-v2" {
+        return Err(format!(
+            "Synergy Testnet v2 requires network_id synergy-testnet-v2, found {}",
+            config.network.network_id
+        )
+        .into());
+    }
+    if config.consensus.allow_genesis_status_bypass {
+        return Err("genesis status bypass is disabled for PQC Testnet consensus".into());
+    }
+    Ok(())
 }
 
 /// Lists all available node templates
@@ -639,12 +669,6 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     if let Ok(val) = env::var("SYNERGY_P2P_BOOTSTRAP_REFRESH_SECS") {
         config.p2p.bootstrap_refresh_secs = val.parse::<u64>()?.max(1);
     }
-    if let Ok(val) = env::var("SYNERGY_CONSENSUS_ALLOW_GENESIS_STATUS_BYPASS") {
-        if let Some(enabled) = parse_env_bool(&val) {
-            config.consensus.allow_genesis_status_bypass = enabled;
-        }
-    }
-
     // Logging overrides
     if let Ok(val) = env::var("SYNERGY_LOG_LEVEL") {
         config.logging.log_level = val;
@@ -770,6 +794,10 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
     if let Some(chain_id) = get_u64(raw, &["network", "chain_id"]) {
         config.network.id = chain_id;
         config.blockchain.chain_id = chain_id;
+    }
+
+    if let Some(network_id) = get_string(raw, &["network", "network_id"]) {
+        config.network.network_id = network_id;
     }
 
     if let Some(max_peers) = get_u64(raw, &["network", "max_peers"]) {

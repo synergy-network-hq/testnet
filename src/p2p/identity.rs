@@ -1,20 +1,12 @@
-use k256::{ecdsa::SigningKey, EncodedPoint};
-use sha3::{Digest, Keccak256};
+use crate::crypto::aegis_pqvm::SYNERGY_P2P_HANDSHAKE_V1;
+use crate::synergy_types::Hash;
 use std::net::IpAddr;
 
-pub fn generate_enode(ip: IpAddr, port: u16) -> String {
-    // Generate private key
-    let signing_key = SigningKey::random(rand::rngs::OsRng);
-    let verify_key = signing_key.verifying_key();
+pub fn generate_pq_peer_address(aegis_pq_public_key_bytes: &[u8], ip: IpAddr, port: u16) -> String {
+    let node_id = Hash::from_domain_bytes(SYNERGY_P2P_HANDSHAKE_V1, aegis_pq_public_key_bytes);
+    format!("pqnode://{}@{}:{}", node_id.to_hex(), ip, port)
+}
 
-    // Compress public key to get node ID
-    let pub_key_bytes = EncodedPoint::from(verify_key).as_bytes();
-    let node_id = Keccak256::digest(&pub_key_bytes[1..]); // skip 0x04 prefix
-
-    format!(
-        "enode://{}@{}:{}",
-        hex::encode(node_id),
-        ip,
-        port
-    )
+pub fn generate_enode(_ip: IpAddr, _port: u16) -> String {
+    panic!("classical enode identities are disabled; use Aegis PQC peer identity bindings")
 }

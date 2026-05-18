@@ -1,5 +1,6 @@
 [network]
 name = "synergy-testnet"
+network_id = "synergy-testnet-v2"
 chain_id = 1264
 p2p_port = 5622
 rpc_port = 5640

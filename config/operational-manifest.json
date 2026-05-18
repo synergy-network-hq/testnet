@@ -203,9 +203,9 @@
   },
   "launch_exceptions": {
     "peer_identity_key": {
-      "algorithm": "Ed25519",
-      "status": "documented-beta-exception",
-      "note": "Retained only as an explicit beta exception per the technical specification until the approved replacement strategy is delivered."
+      "algorithm": "FN-DSA-1024",
+      "status": "resolved",
+      "note": "Genesis validator peer identity bindings must use Aegis PQC through aegis-pqvm for Testnet chain 1264."
     }
   }
 }

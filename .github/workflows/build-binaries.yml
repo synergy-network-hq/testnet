@@ -49,6 +49,10 @@ jobs:
       - name: Cache Rust artifacts
         uses: Swatinem/rust-cache@v2
 
+      - name: Enforce PQC-only consensus-critical paths
+        shell: bash
+        run: scripts/testnet/check-pqc-consensus-guard.sh
+
       - name: Build release binaries
         shell: bash
         run: |

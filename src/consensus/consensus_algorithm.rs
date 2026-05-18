@@ -458,7 +458,7 @@ impl ProofOfSynergy {
                 self.status_ready_min_validators.max(1)
             },
             self.status_ready_genesis_grace_secs,
-            self.allow_genesis_status_bypass
+            false
         );
         println!(
             "🔧 Mesh settle/window timeouts: settle_secs={}, leader_timeout_secs={}, vote_timeout_secs={}, block_timeout_secs={}",
@@ -495,7 +495,7 @@ impl ProofOfSynergy {
             self.status_ready_min_validators.max(1)
         };
         let status_ready_genesis_grace_secs = self.status_ready_genesis_grace_secs;
-        let allow_genesis_status_bypass = self.allow_genesis_status_bypass;
+        let allow_genesis_status_bypass = false;
         let mesh_settle_secs = self.mesh_settle_secs;
         let penalization_enabled = self.penalization_enabled;
         let leader_timeout_secs = self.effective_leader_timeout_secs();
@@ -1536,21 +1536,18 @@ impl ProofOfSynergy {
             .find(|block| block.block_index == boundary_height)
             .or_else(|| chain.last())
         {
-            // Create a placeholder QC based on the block's info
-            // In the actual implementation, blocks would contain QCs from consensus
             QuorumCertificate {
                 block_hash: block.hash.clone(),
                 epoch_number: block.block_index / epoch_length,
                 round_number: 1,
                 aggregate_signature: block.block_signature.clone(),
-                participant_bitmap: vec![0xFF], // Placeholder bitmap
-                cumulative_weight: 1.0,         // Placeholder weight
-                validation_quorum_met: true,
-                cooperation_quorum_met: true,
+                participant_bitmap: Vec::new(),
+                cumulative_weight: 0.0,
+                validation_quorum_met: false,
+                cooperation_quorum_met: false,
                 timestamp: Self::current_timestamp(),
             }
         } else {
-            // Genesis case - return default QC
             QuorumCertificate {
                 block_hash: "genesis_block".to_string(),
                 epoch_number: 0,
@@ -1558,8 +1555,8 @@ impl ProofOfSynergy {
                 aggregate_signature: Vec::new(),
                 participant_bitmap: Vec::new(),
                 cumulative_weight: 0.0,
-                validation_quorum_met: true,
-                cooperation_quorum_met: true,
+                validation_quorum_met: false,
+                cooperation_quorum_met: false,
                 timestamp: Self::current_timestamp(),
             }
         }

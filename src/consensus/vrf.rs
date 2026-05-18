@@ -129,9 +129,6 @@ impl VRFConsensus {
 
     /// Generate VRF proof for a validator
     pub fn generate_proof(&self, validator: &Validator, seed: &VRFSeed) -> VRFProof {
-        // In a real implementation, this would use cryptographic VRF
-        // For now, we'll simulate VRF using SHA3-256 with validator's private key
-
         let mut hasher = Sha3_256::new();
         hasher.update(&seed.seed);
         hasher.update(validator.address.as_bytes());

@@ -12,6 +12,7 @@ services = []
 [network]
 id = 1264
 name = "synergy-testnet"
+network_id = "synergy-testnet-v2"
 p2p_port = 5620
 rpc_port = 5640
 ws_port = 5660

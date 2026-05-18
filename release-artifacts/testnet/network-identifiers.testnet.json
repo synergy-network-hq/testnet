@@ -208,9 +208,9 @@
     }
   },
   "cryptographic_identity": {
-    "genesis_artifact_sha256": "990f651c97311957953790cedfda6c05050c0505f2ab1f73143bc6fbd73de83d",
+    "genesis_artifact_sha256": "20c74a8821737d43901db19d8cee1bf880c7425965e78c2784d20552e2be82c0",
     "genesis_file": "genesis.testnet.json",
-    "genesis_hash": "85b26d520e1621adaa212012dae540dcb223e0a9648666b919d64cb8c4394c75",
+    "genesis_hash": "69cd6ae25399d542632ac770a3263761bac585003d2b48dac74e9902f4b5d75c",
     "genesis_hash_algorithm": "blake3-256",
     "genesis_hash_format": "lowercase_hex_without_0x",
     "genesis_hash_status": "final",
@@ -219,7 +219,7 @@
       "format": "lowercase_hex_without_0x",
       "length_bytes": 4,
       "status": "final",
-      "value": "e312fa40"
+      "value": "76350cb6"
     }
   },
   "endpoints": {

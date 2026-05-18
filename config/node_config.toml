@@ -12,6 +12,7 @@ services = []
 [network]
 id = 1264
 name = "synergy-testnet"
+network_id = "synergy-testnet-v2"
 p2p_port = 5620
 rpc_port = 5640
 ws_port = 5660
@@ -38,7 +39,7 @@ max_validators = 100
 status_ready_gate_enabled = true
 status_ready_min_validators = 3
 status_ready_genesis_grace_secs = 15
-allow_genesis_status_bypass = true
+allow_genesis_status_bypass = false
 mesh_settle_secs = 1
 leader_timeout_secs = 4
 vote_timeout_secs = 2

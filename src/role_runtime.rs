@@ -16,6 +16,7 @@ use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dao_governance::{DAOGovernance, SynergyOracle};
 use crate::consensus::dual_quorum::{EntropyBeacon, ValidatorRotation};
 use crate::consensus::synergy_score::SynergyScoreCalculator;
+use crate::crypto::aegis_pqvm::AegisPqvmSigner;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
 use crate::logging::{init_logger, LogLevel};
@@ -423,6 +424,27 @@ fn spawn_consensus_engine() -> thread::JoinHandle<()> {
         consensus.initialize();
         consensus.execute();
     })
+}
+
+fn ensure_consensus_pqc_runtime_ready(config: &NodeConfig) -> Result<(), String> {
+    if config.blockchain.chain_id != 1264 || config.network.id != 1264 {
+        return Err(format!(
+            "validator consensus requires Testnet chain_id 1264, found blockchain.chain_id={} network.id={}",
+            config.blockchain.chain_id, config.network.id
+        ));
+    }
+    if config.network.network_id != "synergy-testnet-v2" {
+        return Err(format!(
+            "validator consensus requires network_id synergy-testnet-v2, found {}",
+            config.network.network_id
+        ));
+    }
+    if config.consensus.allow_genesis_status_bypass {
+        return Err("validator consensus refuses genesis status bypass configuration".to_string());
+    }
+    AegisPqvmSigner::initialize_required()
+        .map(|_| ())
+        .map_err(|error| format!("aegis-pqvm initialization failed: {error}"))
 }
 
 fn normalize_expected_profile(
@@ -1719,6 +1741,10 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 );
                 None
             } else {
+                if let Err(error) = ensure_consensus_pqc_runtime_ready(&config) {
+                    eprintln!("Consensus startup failed closed: {error}");
+                    process::exit(1);
+                }
                 info!(
                     "main",
                     "Starting consensus engine",
@@ -1763,6 +1789,10 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                         "Validator activation observed; starting consensus engine",
                         "validator_address" => resolve_local_validator_address(&config)
                     );
+                    if let Err(error) = ensure_consensus_pqc_runtime_ready(&config) {
+                        eprintln!("Consensus activation failed closed: {error}");
+                        process::exit(1);
+                    }
                     consensus_handle = Some(spawn_consensus_engine());
                     write_role_runtime_report(
                         binary_name,
