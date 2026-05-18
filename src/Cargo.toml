@@ -72,5 +72,13 @@ name = "synergy-rpc-gateway-node"
 path = "bin/synergy-rpc-gateway-node.rs"
 
 [[bin]]
+name = "synergy-archive"
+path = "bin/synergy-archive.rs"
+
+[[bin]]
+name = "synergy-node"
+path = "bin/synergy-node.rs"
+
+[[bin]]
 name = "synergy-indexer-and-explorer-node"
 path = "bin/synergy-indexer-and-explorer-node.rs"

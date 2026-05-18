@@ -1,0 +1,8 @@
+[snapshots]
+snapshot_interval_blocks = 10000
+create_only_at_finalized_height = true
+require_valid_qc = true
+compression = "zstd"
+chunk_size_bytes = 67108864
+sign_manifests = true
+sign_catalog = true

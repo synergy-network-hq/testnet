@@ -1,0 +1,46 @@
+[network]
+chain_id = 1264
+network_id = "synergy-testnet-v2"
+role = "ARCHIVE_OBSERVER"
+
+[archive]
+data_dir = "/var/lib/synergy/archive-validator/data"
+snapshot_dir = "/var/lib/synergy/archive-validator/snapshots"
+retain_all_blocks = true
+retain_all_qcs = true
+retain_all_states = true
+verify_every_block = true
+verify_every_qc = true
+fail_closed_on_verification_error = true
+
+[snapshots]
+enabled = true
+snapshot_interval_blocks = 10000
+compression = "zstd"
+chunk_size_bytes = 67108864
+publish_catalog = true
+sign_manifests = true
+sign_catalog = true
+build_tmp_dir = "/var/lib/synergy/archive-validator/tmp/snapshot-build"
+
+[aegis_pqvm]
+required = true
+fail_closed_if_unavailable = true
+archive_peer_key_role = "ARCHIVE_PEER"
+snapshot_signing_key_role = "ARCHIVE_SNAPSHOT_SIGNER"
+
+[api]
+enabled = true
+bind = "0.0.0.0:48640"
+public_url = ""
+enable_resumable_downloads = true
+rate_limit_enabled = true
+
+[p2p]
+enabled = true
+bind = "0.0.0.0:38639"
+bootnodes = []
+
+[metrics]
+enabled = true
+bind = "127.0.0.1:9091"

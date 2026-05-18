@@ -1,0 +1,17 @@
+[Unit]
+Description=Synergy Archive Snapshot Worker
+After=synergy-archive-validator.service
+Requires=synergy-archive-validator.service
+
+[Service]
+Type=simple
+User=synergy
+Group=synergy
+ExecStart=/usr/local/bin/synergy-archive create-snapshot --latest-eligible
+Restart=always
+RestartSec=60
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
