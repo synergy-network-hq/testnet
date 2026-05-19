@@ -74,6 +74,17 @@ Source changes committed as `d13ae83` / `v12.2.13`:
   - consensus vote/proposal/block messages remain on the priority path outside the shared background queue.
 - `scripts/testnet/verify-relayer-topology.sh` now provides a read-only operator topology check without embedding credentials.
 
+## Trusted Artifact Status
+
+GitHub Actions for the public canonical `synergy-network-hq/testnet` repository are enabled again for the `v12.2.13` tag. Run `26082478522` is the trusted node artifact run for commit `d13ae83`.
+
+Current observed status:
+- macOS arm64 completed successfully and uploaded workflow and release assets.
+- Linux amd64 and Windows amd64 were still running at the last audit update.
+- No live deployment has occurred from these artifacts yet.
+
+The Node Control Panel release must use the matching public Testnet source tag and must publish installer artifacts from CI before live package rollout.
+
 ## Tests Run
 
 Passing:
@@ -89,8 +100,8 @@ Passing:
   - local artifact hash: `2633b78040e4ab7ce53090c7a9036c415b5e33fcc6fcf1c153c8664294792cbb`
   - result: passed with existing dead-code warnings.
 - GitHub Actions release artifact build for `v12.2.13`
-  - result: failed before runner startup because GitHub Actions budget prevented use.
-  - affected repos: `synergy-network-hq/testnet-beta` run `26082477573`, `synergy-network-hq/testnet` run `26082478522`.
+  - current trusted run: `synergy-network-hq/testnet` run `26082478522`.
+  - prior private/budget-gated run is historical and is not the release source for chain 1264 rollout.
 
 Notes:
 - P2P module tests must be run serially because they share the test validator key registry and canonical-lock temp state.
@@ -110,7 +121,7 @@ Before any restart, reset, redeploy, firewall change, topology change, or releas
 
 - The live chain is aligned by hash, but the deployed consensus binary still emits stale block header timestamps until the bounded timestamp fix is built and rolled out.
 - The package and live runtime are not aligned on validator hosts.
-- Trusted release artifacts for `v12.2.13` are not available yet because GitHub Actions budget blocked the tag workflow.
+- Trusted release artifacts for `v12.2.13` are in progress through the public `synergy-network-hq/testnet` workflow and must be verified before rollout.
 - Atlas does not need a chain reset for the timestamp display; it is rendering the canonical block header timestamp it receives.
 - Postgres direct SSH access to the Atlas host using the supplied `synergyvps` path failed in the current session; public Atlas API checks succeeded.
 - Full archive-validator, self-healing reconciliation, typed PoSy/DAG/execution overhaul, and non-genesis staking/onboarding enforcement remain incomplete unless separately proven by tests and live rollout evidence.
