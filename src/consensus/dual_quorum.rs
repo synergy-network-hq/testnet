@@ -1265,15 +1265,6 @@ impl DualQuorumConsensus {
                 return Ok(());
             }
 
-            if round_number > existing.latest_round_number {
-                existing.block_hash = proposed_block.hash.clone();
-                existing.proposer = proposed_block.validator_id.clone();
-                existing.latest_round_number = round_number;
-                existing.updated_at = now;
-                Self::persist_local_vote_locks_unlocked(&locks)?;
-                return Ok(());
-            }
-
             return Err(format!(
                 "already locally voted for different block at height {}: locked_hash={}, locked_proposer={}, locked_epoch={}, locked_first_round={}, locked_latest_round={}, requested_hash={}, requested_proposer={}, requested_epoch={}, requested_round={}",
                 proposed_block.block_index,
@@ -1311,9 +1302,8 @@ impl DualQuorumConsensus {
         validator_address: &str,
         epoch_number: u64,
         block_index: u64,
-        round_number: u64,
     ) -> String {
-        format!("{epoch_number}:{block_index}:{round_number}:{validator_address}")
+        format!("{epoch_number}:{block_index}:{validator_address}")
     }
 
     fn observe_vote(
@@ -1324,7 +1314,6 @@ impl DualQuorumConsensus {
             &vote.validator_address,
             vote.epoch_number,
             vote.block_index,
-            vote.round_number,
         );
 
         let mut observed_votes = OBSERVED_VOTES.lock().ok()?;
@@ -1369,10 +1358,9 @@ impl DualQuorumConsensus {
         validator_address: &str,
         epoch_number: u64,
         block_index: u64,
-        round_number: u64,
+        _round_number: u64,
     ) -> bool {
-        let key =
-            Self::vote_observation_key(validator_address, epoch_number, block_index, round_number);
+        let key = Self::vote_observation_key(validator_address, epoch_number, block_index);
         EQUIVOCATION_EVIDENCE_LOG
             .lock()
             .ok()
@@ -1425,7 +1413,6 @@ impl DualQuorumConsensus {
             &evidence.validator_address,
             evidence.epoch_number,
             evidence.block_index,
-            evidence.round_number,
         );
 
         let should_process = if let Ok(mut processed) = PROCESSED_EQUIVOCATION_EVIDENCE.lock() {
@@ -1836,7 +1823,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_conflicting_vote_in_later_round_is_allowed_for_liveness() {
+    fn validator_conflicting_vote_in_later_round_is_rejected_for_safety() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -1863,8 +1850,8 @@ mod tests {
             DualQuorumConsensus::create_vote_for_validator("validator2", &conflicting_block, 22, 2)
                 .expect("round two vote should be created");
         assert!(
-            DualQuorumConsensus::register_vote_observation(&conflicting_vote).is_none(),
-            "conflicting later-round vote should be treated as view-change liveness, not equivocation"
+            DualQuorumConsensus::register_vote_observation(&conflicting_vote).is_some(),
+            "conflicting later-round vote must be treated as same-height equivocation"
         );
 
         consensus.apply_recorded_equivocations();
@@ -1872,13 +1859,13 @@ mod tests {
         let validator = validator_manager
             .get_validator("validator2")
             .expect("validator should still exist");
-        assert_eq!(validator.status, ValidatorStatus::Active);
-        assert_eq!(validator.double_signs, 0);
-        assert_eq!(validator.equivocation_evidence_count, 0);
+        assert_eq!(validator.status, ValidatorStatus::Slashed);
+        assert_eq!(validator.double_signs, 1);
+        assert_eq!(validator.equivocation_evidence_count, 1);
     }
 
     #[test]
-    fn local_vote_intent_allows_same_height_conflict_in_higher_round() {
+    fn local_vote_intent_rejects_same_height_conflict_in_higher_round() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -1912,14 +1899,23 @@ mod tests {
             "unexpected local vote lock error: {stale_error}"
         );
 
-        DualQuorumConsensus::register_local_vote_intent("validator2", &conflicting_block, 40, 3)
-            .expect("higher-round conflicting proposal should advance the local view-change lock");
+        let higher_round_error = DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            3,
+        )
+        .expect_err("higher-round conflicting proposal must be rejected");
+        assert!(
+            higher_round_error.contains("already locally voted for different block"),
+            "unexpected local vote lock error: {higher_round_error}"
+        );
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
-            .expect("updated vote locks should load");
-        assert_eq!(locks[&key].block_hash, conflicting_block.hash);
+            .expect("unchanged vote locks should load");
+        assert_eq!(locks[&key].block_hash, block.hash);
         assert_eq!(locks[&key].first_round_number, 1);
-        assert_eq!(locks[&key].latest_round_number, 3);
+        assert_eq!(locks[&key].latest_round_number, 2);
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
@@ -2234,7 +2230,7 @@ mod tests {
         assert_eq!(validator.equivocation_evidence_count, 0);
 
         let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
-        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 30, 11, 1);
+        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 30, 11);
         assert!(
             !evidence.contains_key(&local_key),
             "local conflicting vote should not persist slashable evidence"
@@ -2277,7 +2273,7 @@ mod tests {
         assert_eq!(validator.equivocation_evidence_count, 0);
 
         let evidence = EQUIVOCATION_EVIDENCE_LOG.lock().expect("evidence log lock");
-        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 31, 12, 1);
+        let local_key = DualQuorumConsensus::vote_observation_key("validator2", 31, 12);
         assert!(
             !evidence.contains_key(&local_key),
             "idempotent replay should not persist slashable evidence"

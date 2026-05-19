@@ -17,7 +17,7 @@ use crate::sync::SyncState;
 use crate::synergy_types::{AegisPqKeyId, AegisPqKeyRole, Epoch};
 use crate::transaction::Transaction;
 use crate::validator::{
-    apply_validator_activation_transaction, is_validator_activation_transaction,
+    apply_validator_activation_transaction, is_validator_activation_transaction, ValidatorManager,
     ValidatorRegistration, VALIDATOR_MANAGER,
 };
 use crate::{debug, error, info, warn};
@@ -4634,7 +4634,7 @@ fn verify_network_commit_certificate(
     block: &Block,
     qc: Option<&QuorumCertificate>,
 ) -> Result<QuorumCertificate, String> {
-    ensure_commit_verifier_validator_registry_loaded();
+    let validator_manager = commit_verifier_validator_manager();
 
     if let Err(error) = verify_network_block(block) {
         return Err(format!("invalid Aegis PQC proposer signature: {error}"));
@@ -4661,20 +4661,39 @@ fn verify_network_commit_certificate(
     DualQuorumConsensus::verify_commit_certificate_for_block_static(
         block,
         &qc,
-        &VALIDATOR_MANAGER,
+        &validator_manager,
     )?;
     Ok(qc)
 }
 
-fn ensure_commit_verifier_validator_registry_loaded() {
-    if !VALIDATOR_MANAGER.get_active_validators().is_empty() {
-        return;
-    }
+fn commit_verifier_validator_manager() -> Arc<ValidatorManager> {
+    let validator_manager = Arc::new(ValidatorManager::new());
+    hydrate_commit_verifier_validator_manager(&validator_manager);
+    hydrate_commit_verifier_validator_manager(&VALIDATOR_MANAGER);
+    validator_manager
+}
 
-    if VALIDATOR_MANAGER
+fn hydrate_commit_verifier_validator_manager(validator_manager: &Arc<ValidatorManager>) {
+    let canonical_validator_addresses = canonical_genesis()
+        .ok()
+        .map(|genesis| {
+            genesis
+                .validators()
+                .iter()
+                .map(|validator| validator.operator_address.clone())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let required_validator_count = canonical_validator_addresses.len().max(5);
+
+    if validator_manager
         .load_registry("data/validator_registry.json")
         .is_ok()
-        && !VALIDATOR_MANAGER.get_active_validators().is_empty()
+        && commit_verifier_has_active_validators(
+            &validator_manager,
+            &canonical_validator_addresses,
+            required_validator_count,
+        )
     {
         return;
     }
@@ -4685,8 +4704,8 @@ fn ensure_commit_verifier_validator_registry_loaded() {
 
     for validator in genesis.validators() {
         let address = validator.operator_address.as_str();
-        if VALIDATOR_MANAGER.get_validator(address).is_none() {
-            let _ = VALIDATOR_MANAGER.register_validator(ValidatorRegistration {
+        if validator_manager.get_validator(address).is_none() {
+            let _ = validator_manager.register_validator(ValidatorRegistration {
                 address: validator.operator_address.clone(),
                 public_key: validator.consensus_public_key.clone(),
                 name: validator.moniker.clone(),
@@ -4695,12 +4714,33 @@ fn ensure_commit_verifier_validator_registry_loaded() {
                 registration_tx_hash: "genesis".to_string(),
             });
         }
-        let _ = VALIDATOR_MANAGER.approve_validator(address);
-        VALIDATOR_MANAGER.update_validator_stake(address, validator.stake_nwei);
-        VALIDATOR_MANAGER.update_synergy_score(address, 100.0);
+        let _ = validator_manager.approve_validator(address);
+        validator_manager.update_validator_stake(address, validator.stake_nwei);
+        validator_manager.update_synergy_score(address, 100.0);
     }
 
-    let _ = VALIDATOR_MANAGER.save_registry("data/validator_registry.json");
+    let _ = validator_manager.save_registry("data/validator_registry.json");
+}
+
+fn commit_verifier_has_active_validators(
+    validator_manager: &Arc<ValidatorManager>,
+    required_addresses: &[String],
+    required_validator_count: usize,
+) -> bool {
+    let active_validators = validator_manager.get_active_validators();
+    if active_validators.len() < required_validator_count {
+        return false;
+    }
+
+    if required_addresses.is_empty() {
+        return true;
+    }
+
+    required_addresses.iter().all(|address| {
+        active_validators
+            .iter()
+            .any(|validator| validator.address == *address)
+    })
 }
 
 fn apply_block_if_new(
