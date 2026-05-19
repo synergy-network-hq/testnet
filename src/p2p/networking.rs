@@ -1204,6 +1204,21 @@ fn disconnect_peer_entry(
     }
 }
 
+fn disconnect_peer_after_poisoned_write(
+    peer_state_cache: &PeerStateCacheArc,
+    peers: &mut PeerMap,
+    peer_key: &str,
+    reason: &str,
+) {
+    warn!(
+        "p2p",
+        "Disconnecting peer after partial/failed framed write",
+        "peer" => peer_key.to_string(),
+        "reason" => reason.to_string()
+    );
+    disconnect_peer_entry(peer_state_cache, peers, peer_key);
+}
+
 fn spawn_named_thread<F>(name: &str, task: F) -> bool
 where
     F: FnOnce() + Send + 'static,
@@ -3015,6 +3030,7 @@ fn handle_block_message(
 fn handle_get_blocks_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
     config: &NodeConfig,
     peer_address: &str,
     from_height: u64,
@@ -3100,10 +3116,12 @@ fn handle_get_blocks_message(
     };
 
     let mut peers = connected_peers.lock().unwrap();
+    let mut poison_reason = None;
     if let Some(peer) = peers.get_mut(peer_address) {
         if let Some(ref mut stream) = peer.stream {
             if let Err(e) = send_message_with_write_timeout(stream, &response, policy.write_timeout)
             {
+                let error = e.to_string();
                 warn!(
                     "p2p",
                     "Failed to send blocks",
@@ -3111,12 +3129,16 @@ fn handle_get_blocks_message(
                     "requested" => count as u64,
                     "served" => response_count as u64,
                     "max_blocks" => policy.max_blocks as u64,
-                    "error" => e.to_string()
+                    "error" => error.clone()
                 );
+                poison_reason = Some(format!("block-sync-send-failed: {error}"));
             } else {
                 peer.blocks_sent += 1;
             }
         }
+    }
+    if let Some(reason) = poison_reason {
+        disconnect_peer_after_poisoned_write(peer_state_cache, &mut peers, peer_address, &reason);
     }
 }
 
@@ -3302,6 +3324,7 @@ fn dispatch_peer_message(
             handle_get_blocks_message(
                 blockchain,
                 connected_peers,
+                peer_state_cache,
                 config,
                 peer_address,
                 from_height,
@@ -4166,6 +4189,7 @@ fn handle_messages(
                         handle_get_blocks_message(
                             &blockchain,
                             &connected_peers,
+                            &peer_state_cache,
                             &config,
                             &peer_address,
                             from_height,
@@ -5365,7 +5389,8 @@ mod tests {
         build_local_handshake, bypasses_shared_message_queue, cache_peer_state,
         canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
-        dispatch_peer_message, ensure_peer_status_allows_chain_data, handle_status_message,
+        disconnect_peer_after_poisoned_write, dispatch_peer_message,
+        ensure_peer_status_allows_chain_data, handle_status_message,
         hydrate_peer_from_cache, local_node_runs_validator_consensus, local_peer_identity,
         merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
         peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
@@ -6636,6 +6661,29 @@ mod tests {
 
         assert_eq!(policy.max_blocks, MAX_BLOCK_SYNC_RESPONSE_BLOCKS);
         assert_eq!(policy.write_timeout, Duration::from_secs(1));
+    }
+
+    #[test]
+    fn failed_block_sync_write_disconnects_peer_to_preserve_framing() {
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+        let mut peers = HashMap::new();
+        peers.insert(
+            "peer-a".to_string(),
+            test_peer_with_validator_address(Some("synv1support")),
+        );
+
+        disconnect_peer_after_poisoned_write(
+            &peer_state_cache,
+            &mut peers,
+            "peer-a",
+            "block-sync-send-failed: timed out",
+        );
+
+        assert!(!peers.contains_key("peer-a"));
+        assert!(peer_state_cache
+            .lock()
+            .unwrap()
+            .contains_key("validator:synv1support"));
     }
 
     #[test]
