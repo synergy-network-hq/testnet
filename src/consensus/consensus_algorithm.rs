@@ -1419,6 +1419,16 @@ impl ProofOfSynergy {
         UNIX_EPOCH + Duration::from_secs(timestamp)
     }
 
+    fn bounded_consensus_timestamp(
+        previous_block_timestamp_secs: u64,
+        block_time_secs: u64,
+        current_timestamp_secs: u64,
+    ) -> u64 {
+        previous_block_timestamp_secs
+            .saturating_add(block_time_secs.max(1))
+            .max(current_timestamp_secs)
+    }
+
     fn next_block_pacing_anchor(block_timestamp_secs: u64, block_time_secs: u64) -> SystemTime {
         Self::next_block_pacing_anchor_for_time(
             block_timestamp_secs,
@@ -1936,9 +1946,11 @@ impl ProofOfSynergy {
         }
 
         // Create block and attach a real FN-DSA signature over the block hash.
-        let consensus_timestamp = previous_block
-            .timestamp
-            .saturating_add(block_time_secs.max(1));
+        let consensus_timestamp = Self::bounded_consensus_timestamp(
+            previous_block.timestamp,
+            block_time_secs,
+            Self::current_timestamp(),
+        );
         let mut block = Block::new_with_timestamp(
             previous_block.block_index + 1,
             transactions,
@@ -2579,6 +2591,22 @@ mod tests {
     }
 
     #[test]
+    fn bounded_consensus_timestamp_preserves_target_cadence_when_on_time() {
+        assert_eq!(
+            ProofOfSynergy::bounded_consensus_timestamp(1_000, 2, 1_001),
+            1_002
+        );
+    }
+
+    #[test]
+    fn bounded_consensus_timestamp_catches_up_when_production_is_late() {
+        assert_eq!(
+            ProofOfSynergy::bounded_consensus_timestamp(1_000, 2, 1_030),
+            1_030
+        );
+    }
+
+    #[test]
     fn proposer_penalty_is_skipped_when_penalization_is_disabled() {
         let validator_address = "synv1proposer";
         let manager = active_validator_manager(validator_address);
@@ -2984,7 +3012,7 @@ mod tests {
         );
 
         assert_eq!(retry.hash, first.hash);
-        assert_eq!(first.timestamp, previous.timestamp + 2);
+        assert!(first.timestamp >= previous.timestamp + 2);
         assert_eq!(retry.transactions.len(), first.transactions.len());
         assert!(retry.transactions.is_empty());
 
