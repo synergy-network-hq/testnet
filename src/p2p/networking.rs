@@ -55,9 +55,9 @@ const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
 const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
 const MAX_STATUS_SYNC_BATCH: u32 = 16;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
-const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 4;
+const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 8;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
-const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 100;
+const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS: u64 = 5;
 const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS: u64 = 900;
@@ -72,6 +72,7 @@ const STALE_UNIDENTIFIED_PEER_SECS: u64 = 15;
 const STALE_VALIDATOR_STATUS_SECS: u64 = VALIDATOR_STATUS_GENESIS_GRACE_SECS + 15;
 const BACKGROUND_SYNC_POLL_MILLIS: u64 = 1000;
 const BLOCK_SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
+const BLOCK_SYNC_PROGRESS_OVERLAP: u64 = 2;
 const TESTNET_NATIVE_CAIP2: &str = "synergy:testnet";
 const TESTNET_RESERVED_EIP155: &str = "eip155:1264";
 const TESTNET_NETWORK_ID_TEXT: &str = "synergy-testnet-v2";
@@ -1021,7 +1022,8 @@ fn block_sync_request_range(
         return None;
     }
 
-    let request_start = local_height.saturating_sub(BLOCK_SYNC_RECONCILIATION_LOOKBACK);
+    let overlap = block_sync_progress_overlap(desired_new_blocks);
+    let request_start = local_height.saturating_sub(overlap);
     let target_height = remote_height.min(local_height.saturating_add(desired_new_blocks as u64));
     let request_count = target_height
         .saturating_sub(request_start)
@@ -1029,6 +1031,16 @@ fn block_sync_request_range(
         .min(u32::MAX as u64) as u32;
 
     Some((request_start, request_count.max(1)))
+}
+
+fn block_sync_progress_overlap(desired_new_blocks: u32) -> u64 {
+    if desired_new_blocks <= 1 {
+        return 0;
+    }
+
+    BLOCK_SYNC_RECONCILIATION_LOOKBACK
+        .min(BLOCK_SYNC_PROGRESS_OVERLAP)
+        .min(desired_new_blocks as u64 - 1)
 }
 
 fn handle_status_message(
@@ -6381,12 +6393,26 @@ mod tests {
         assert_eq!(block_sync_request_range(0, 12, 500), Some((0, 13)));
         assert_eq!(
             block_sync_request_range(20_657, 20_735, 500),
-            Some((20_649, 87))
+            Some((20_655, 81))
         );
         assert_eq!(
             block_sync_request_range(10_000, 20_000, 2_000),
-            Some((9_992, 2_009))
+            Some((9_998, 2_003))
         );
+    }
+
+    #[test]
+    fn block_sync_request_range_progresses_with_support_response_cap() {
+        let local_height = 3;
+        let (from_height, count) =
+            block_sync_request_range(local_height, 1_080, MAX_STATUS_SYNC_BATCH).unwrap();
+
+        assert!(from_height <= local_height);
+        assert!(
+            from_height + MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS as u64 - 1 > local_height,
+            "first throttled validator response must include at least one block above local height"
+        );
+        assert!(count >= MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS);
     }
 
     #[test]
@@ -6648,7 +6674,7 @@ mod tests {
             policy.max_blocks,
             MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS
         );
-        assert_eq!(policy.write_timeout, Duration::from_millis(100));
+        assert_eq!(policy.write_timeout, Duration::from_millis(500));
     }
 
     #[test]

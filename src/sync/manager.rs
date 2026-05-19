@@ -10,6 +10,7 @@ use crate::sync::fast_sync;
 use crate::sync::validation;
 
 const SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
+const SYNC_PROGRESS_OVERLAP: u64 = 2;
 const MAX_SYNC_BATCH_BLOCKS: u64 = 128;
 
 /// Represents where the sync engine currently is in the lifecycle.
@@ -288,7 +289,7 @@ impl SyncManager {
                 std::cmp::min(remaining, 64)
             };
             let target_height = std::cmp::min(self.network_height, sync_tip + batch_size);
-            let request_start = sync_tip.saturating_sub(SYNC_RECONCILIATION_LOOKBACK);
+            let request_start = sync_tip.saturating_sub(sync_progress_overlap(batch_size));
             let request_count = target_height
                 .saturating_sub(request_start)
                 .saturating_add(1)
@@ -418,5 +419,28 @@ impl SyncManager {
 
     pub fn get_progress_percentage(&self) -> f64 {
         self.progress.percentage()
+    }
+}
+
+fn sync_progress_overlap(batch_size: u64) -> u64 {
+    if batch_size <= 1 {
+        return 0;
+    }
+
+    SYNC_RECONCILIATION_LOOKBACK
+        .min(SYNC_PROGRESS_OVERLAP)
+        .min(batch_size - 1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sync_overlap_is_smaller_than_support_response_budget() {
+        assert_eq!(sync_progress_overlap(0), 0);
+        assert_eq!(sync_progress_overlap(1), 0);
+        assert_eq!(sync_progress_overlap(2), 1);
+        assert_eq!(sync_progress_overlap(64), SYNC_PROGRESS_OVERLAP);
     }
 }
