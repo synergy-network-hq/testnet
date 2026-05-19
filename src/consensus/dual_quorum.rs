@@ -85,6 +85,17 @@ struct LocalVoteLock {
     updated_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalLockedVote {
+    pub validator_address: String,
+    pub block_hash: String,
+    pub block_index: u64,
+    pub epoch_number: u64,
+    pub first_round_number: u64,
+    pub latest_round_number: u64,
+    pub proposer: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuorumCertificate {
     pub block_hash: String,
@@ -1243,6 +1254,28 @@ impl DualQuorumConsensus {
             .map_err(|err| format!("failed to replace local vote lock file: {err}"))
     }
 
+    pub fn local_locked_vote_for_height(
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+    ) -> Result<Option<LocalLockedVote>, String> {
+        let _guard = LOCAL_VOTE_LOCK_FILE_MUTEX
+            .lock()
+            .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
+        let locks = Self::load_local_vote_locks_unlocked()?;
+        let key = Self::local_vote_lock_key(validator_address, epoch_number, block_index);
+
+        Ok(locks.get(&key).map(|lock| LocalLockedVote {
+            validator_address: lock.validator_address.clone(),
+            block_hash: lock.block_hash.clone(),
+            block_index: lock.block_index,
+            epoch_number: lock.epoch_number,
+            first_round_number: lock.first_round_number,
+            latest_round_number: lock.latest_round_number,
+            proposer: lock.proposer.clone(),
+        }))
+    }
+
     fn register_local_vote_intent(
         validator_address: &str,
         proposed_block: &Block,
@@ -1916,6 +1949,40 @@ mod tests {
         assert_eq!(locks[&key].block_hash, block.hash);
         assert_eq!(locks[&key].first_round_number, 1);
         assert_eq!(locks[&key].latest_round_number, 2);
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn local_locked_vote_for_height_returns_persisted_same_height_lock() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = temp_vote_lock_path("local-locked-vote-read");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let block = signed_block(14, 1, "validator1");
+        DualQuorumConsensus::register_local_vote_intent("validator2", &block, 41, 3)
+            .expect("local vote intent should persist");
+
+        let locked_vote = DualQuorumConsensus::local_locked_vote_for_height("validator2", 41, 14)
+            .expect("local vote lock lookup should succeed")
+            .expect("local vote lock should exist");
+
+        assert_eq!(locked_vote.validator_address, "validator2");
+        assert_eq!(locked_vote.block_hash, block.hash);
+        assert_eq!(locked_vote.block_index, 14);
+        assert_eq!(locked_vote.epoch_number, 41);
+        assert_eq!(locked_vote.first_round_number, 3);
+        assert_eq!(locked_vote.latest_round_number, 3);
+        assert_eq!(locked_vote.proposer, "validator1");
+
+        let missing = DualQuorumConsensus::local_locked_vote_for_height("validator2", 41, 15)
+            .expect("missing local vote lock lookup should succeed");
+        assert!(missing.is_none());
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {

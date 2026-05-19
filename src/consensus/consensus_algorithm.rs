@@ -44,6 +44,7 @@ fn get_chain_path() -> String {
 }
 const VALIDATOR_REGISTRY_PATH: &str = "data/validator_registry.json";
 const VERBOSE_CONSENSUS_LOGS: bool = false;
+const POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS: u64 = 750;
 
 macro_rules! consensus_log {
     ($($arg:tt)*) => {
@@ -506,8 +507,9 @@ impl ProofOfSynergy {
                 .lock()
                 .unwrap()
                 .last()
-                .map(|block| Self::system_time_from_unix_timestamp(block.timestamp))
+                .map(|block| Self::next_block_pacing_anchor(block.timestamp, block_time_secs))
                 .unwrap_or_else(SystemTime::now);
+            let mut last_tip_observed_at = SystemTime::now();
             let mut consecutive_failures = 0;
             let mut current_epoch = chain
                 .lock()
@@ -538,8 +540,12 @@ impl ProofOfSynergy {
                         if latest_block.block_index != last_committed_height {
                             last_committed_height = latest_block.block_index;
                             last_logged_view_timeout = None;
-                            last_block_time =
-                                Self::system_time_from_unix_timestamp(latest_block.timestamp);
+                            last_tip_observed_at = SystemTime::now();
+                            last_block_time = Self::next_block_pacing_anchor_for_time(
+                                latest_block.timestamp,
+                                block_time_secs,
+                                last_tip_observed_at,
+                            );
                             drop(chain_guard);
                             drop(pool);
                             thread::sleep(Duration::from_millis(100));
@@ -739,10 +745,15 @@ impl ProofOfSynergy {
 
                         // Clone latest_block before we might need to drop the guard
                         let latest_block_clone = latest_block.clone();
-                        let view_offset = Self::deterministic_view_offset(
+                        let view_anchor_timestamp = last_tip_observed_at
+                            .duration_since(UNIX_EPOCH)
+                            .unwrap_or_default()
+                            .as_secs();
+                        let view_offset = Self::deterministic_view_offset_for_block_time(
                             latest_block_clone.block_index,
-                            latest_block_clone.timestamp,
+                            view_anchor_timestamp,
                             leader_timeout_secs,
+                            Self::current_timestamp(),
                         );
 
                         // Phase 1: Leader selection using entropy beacon and synergy scores
@@ -757,6 +768,7 @@ impl ProofOfSynergy {
                             next_block_index,
                             epoch_length,
                         );
+                        let local_validator_address = Self::resolve_local_validator_address();
                         let selected_validator = Self::select_leader_for_block(
                             &active_validators,
                             next_block_index,
@@ -765,8 +777,14 @@ impl ProofOfSynergy {
                             epoch_length,
                             view_offset,
                         );
+                        let selected_validator = Self::prefer_local_vote_lock_leader(
+                            selected_validator,
+                            &active_validators,
+                            local_validator_address.as_deref(),
+                            current_epoch,
+                            next_block_index,
+                        );
 
-                        let local_validator_address = Self::resolve_local_validator_address();
                         if local_validator_address.as_deref()
                             != Some(selected_validator.address.as_str())
                         {
@@ -888,6 +906,7 @@ impl ProofOfSynergy {
                             &latest_block_clone,
                             &selected_validator,
                             processed_transactions,
+                            block_time_secs,
                             &pqc_manager,
                         );
                         consensus_log!("Block proposal created!");
@@ -1112,8 +1131,12 @@ impl ProofOfSynergy {
                                 let pruned_transactions =
                                     prune_transaction_hashes_from_pool(&confirmed_hashes);
 
-                                last_block_time =
-                                    Self::system_time_from_unix_timestamp(new_block.timestamp);
+                                last_tip_observed_at = SystemTime::now();
+                                last_block_time = Self::next_block_pacing_anchor_for_time(
+                                    new_block.timestamp,
+                                    block_time_secs,
+                                    last_tip_observed_at,
+                                );
                                 consecutive_failures = 0;
 
                                 // Get synergy score components for detailed logging
@@ -1394,6 +1417,34 @@ impl ProofOfSynergy {
 
     fn system_time_from_unix_timestamp(timestamp: u64) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(timestamp)
+    }
+
+    fn next_block_pacing_anchor(block_timestamp_secs: u64, block_time_secs: u64) -> SystemTime {
+        Self::next_block_pacing_anchor_for_time(
+            block_timestamp_secs,
+            block_time_secs,
+            SystemTime::now(),
+        )
+    }
+
+    fn next_block_pacing_anchor_for_time(
+        block_timestamp_secs: u64,
+        block_time_secs: u64,
+        current_time: SystemTime,
+    ) -> SystemTime {
+        let block_time = Duration::from_secs(block_time_secs.max(1));
+        let block_anchor = Self::system_time_from_unix_timestamp(block_timestamp_secs);
+        let desired_next_proposal = block_anchor + block_time;
+        let earliest_safe_next_proposal =
+            current_time + Duration::from_millis(POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS);
+
+        if desired_next_proposal >= earliest_safe_next_proposal {
+            return block_anchor;
+        }
+
+        earliest_safe_next_proposal
+            .checked_sub(block_time)
+            .unwrap_or(current_time)
     }
 
     fn should_persist_consensus_chain_tip(tip_height: u64) -> bool {
@@ -1800,10 +1851,77 @@ impl ProofOfSynergy {
         }
     }
 
+    fn prefer_local_vote_lock_leader(
+        selected_validator: Validator,
+        active_validators: &[Validator],
+        local_validator_address: Option<&str>,
+        current_epoch: u64,
+        next_block_index: u64,
+    ) -> Validator {
+        let Some(local_validator_address) = local_validator_address else {
+            return selected_validator;
+        };
+
+        let locked_vote = match DualQuorumConsensus::local_locked_vote_for_height(
+            local_validator_address,
+            current_epoch,
+            next_block_index,
+        ) {
+            Ok(Some(locked_vote)) => locked_vote,
+            Ok(None) => return selected_validator,
+            Err(error) => {
+                warn!(
+                    "consensus",
+                    "Unable to inspect local same-height vote lock before leader selection",
+                    "local_validator" => local_validator_address.to_string(),
+                    "epoch" => current_epoch,
+                    "height" => next_block_index,
+                    "error" => error
+                );
+                return selected_validator;
+            }
+        };
+
+        let Some(locked_proposer) = active_validators
+            .iter()
+            .find(|validator| validator.address == locked_vote.proposer)
+            .cloned()
+        else {
+            warn!(
+                "consensus",
+                "Ignoring local same-height vote lock because its proposer is no longer active",
+                "local_validator" => local_validator_address.to_string(),
+                "locked_proposer" => locked_vote.proposer,
+                "locked_block_hash" => locked_vote.block_hash,
+                "epoch" => current_epoch,
+                "height" => next_block_index
+            );
+            return selected_validator;
+        };
+
+        if locked_proposer.address != selected_validator.address {
+            info!(
+                "consensus",
+                "Pinning leader to local same-height vote lock",
+                "local_validator" => local_validator_address.to_string(),
+                "scheduled_leader" => selected_validator.address,
+                "locked_proposer" => locked_proposer.address.clone(),
+                "locked_block_hash" => locked_vote.block_hash,
+                "locked_first_round" => locked_vote.first_round_number,
+                "locked_latest_round" => locked_vote.latest_round_number,
+                "epoch" => current_epoch,
+                "height" => next_block_index
+            );
+        }
+
+        locked_proposer
+    }
+
     fn create_block_proposal(
         previous_block: &Block,
         leader: &Validator,
         transactions: Vec<crate::transaction::Transaction>,
+        block_time_secs: u64,
         pqc_manager: &Arc<Mutex<PQCManager>>,
     ) -> Block {
         if let Some(block) = Self::load_cached_block_proposal(previous_block, leader) {
@@ -1818,12 +1936,16 @@ impl ProofOfSynergy {
         }
 
         // Create block and attach a real FN-DSA signature over the block hash.
-        let mut block = Block::new(
+        let consensus_timestamp = previous_block
+            .timestamp
+            .saturating_add(block_time_secs.max(1));
+        let mut block = Block::new_with_timestamp(
             previous_block.block_index + 1,
             transactions,
             previous_block.hash.clone(),
             leader.address.clone(),
             previous_block.nonce + 1, // Simple nonce increment
+            consensus_timestamp,
         );
 
         let (leader_public_key, leader_private_key) =
@@ -2380,6 +2502,20 @@ mod tests {
         dir
     }
 
+    fn unique_vote_lock_path(test_name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after epoch")
+            .as_nanos();
+        std::env::temp_dir()
+            .join(format!(
+                "synergy-{test_name}-{}-{nanos}",
+                std::process::id()
+            ))
+            .join("data")
+            .join("consensus_vote_locks.json")
+    }
+
     fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {
         let manager = Arc::new(ValidatorManager::new());
         let mut pqc_manager = PQCManager::new();
@@ -2412,6 +2548,34 @@ mod tests {
                 .insert(address.to_string(), manager.get_validator(address).unwrap());
         }
         manager
+    }
+
+    #[test]
+    fn next_block_pacing_anchor_preserves_normal_block_timestamp_cadence() {
+        let current_time = UNIX_EPOCH + Duration::from_millis(1_000_500);
+        let anchor = ProofOfSynergy::next_block_pacing_anchor_for_time(1_000, 2, current_time);
+
+        assert_eq!(
+            anchor
+                .duration_since(UNIX_EPOCH)
+                .expect("anchor should be after epoch")
+                .as_millis(),
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn next_block_pacing_anchor_adds_grace_after_delayed_commit() {
+        let current_time = UNIX_EPOCH + Duration::from_millis(1_003_000);
+        let anchor = ProofOfSynergy::next_block_pacing_anchor_for_time(1_000, 2, current_time);
+
+        assert_eq!(
+            anchor
+                .duration_since(UNIX_EPOCH)
+                .expect("anchor should be after epoch")
+                .as_millis(),
+            1_001_750
+        );
     }
 
     #[test]
@@ -2798,7 +2962,8 @@ mod tests {
             .public_key;
         let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
 
-        let first = ProofOfSynergy::create_block_proposal(&previous, &leader, vec![], &pqc_manager);
+        let first =
+            ProofOfSynergy::create_block_proposal(&previous, &leader, vec![], 2, &pqc_manager);
         let late_transaction = Transaction::new(
             "synw1sender".to_string(),
             "synw1receiver".to_string(),
@@ -2814,10 +2979,12 @@ mod tests {
             &previous,
             &leader,
             vec![late_transaction],
+            2,
             &pqc_manager,
         );
 
         assert_eq!(retry.hash, first.hash);
+        assert_eq!(first.timestamp, previous.timestamp + 2);
         assert_eq!(retry.transactions.len(), first.transactions.len());
         assert!(retry.transactions.is_empty());
 
@@ -2829,5 +2996,66 @@ mod tests {
 
         ProofOfSynergy::set_test_proposal_cache_dir(None);
         let _ = fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn leader_selection_prefers_local_same_height_vote_lock() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = unique_vote_lock_path("leader-lock-preference");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("vote lock test directory should be created");
+        }
+        let locks = serde_json::json!({
+            "55:810:validator-local": {
+                "validator_address": "validator-local",
+                "block_hash": "locked-block-hash",
+                "block_index": 810,
+                "epoch_number": 55,
+                "first_round_number": 1,
+                "latest_round_number": 4,
+                "proposer": "validator-locked",
+                "created_at": 1_777_426_401u64,
+                "updated_at": 1_777_426_404u64
+            }
+        });
+        fs::write(
+            &path,
+            serde_json::to_vec(&locks).expect("vote lock JSON should encode"),
+        )
+        .expect("vote lock file should be written");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let mut scheduled = Validator::new(
+            "validator-scheduled".to_string(),
+            "scheduled-pubkey".to_string(),
+            "Scheduled".to_string(),
+            1_000,
+        );
+        scheduled.status = ValidatorStatus::Active;
+        let mut locked = Validator::new(
+            "validator-locked".to_string(),
+            "locked-pubkey".to_string(),
+            "Locked".to_string(),
+            1_000,
+        );
+        locked.status = ValidatorStatus::Active;
+        let active_validators = vec![scheduled.clone(), locked.clone()];
+
+        let selected = ProofOfSynergy::prefer_local_vote_lock_leader(
+            scheduled,
+            &active_validators,
+            Some("validator-local"),
+            55,
+            810,
+        );
+
+        assert_eq!(selected.address, locked.address);
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 }

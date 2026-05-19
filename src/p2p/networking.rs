@@ -17,8 +17,9 @@ use crate::sync::SyncState;
 use crate::synergy_types::{AegisPqKeyId, AegisPqKeyRole, Epoch};
 use crate::transaction::Transaction;
 use crate::validator::{
-    apply_validator_activation_transaction, is_validator_activation_transaction, ValidatorManager,
-    ValidatorRegistration, VALIDATOR_MANAGER,
+    apply_validator_activation_transaction, consensus_membership_validators,
+    is_validator_activation_transaction, ValidatorManager, ValidatorRegistration,
+    VALIDATOR_MANAGER,
 };
 use crate::{debug, error, info, warn};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
@@ -2141,9 +2142,20 @@ impl P2PNetwork {
 
         let mut recipients = 0usize;
         let mut failed_peers = Vec::new();
+        let active_validator_addresses =
+            consensus_membership_validators(VALIDATOR_MANAGER.get_active_validators())
+                .into_iter()
+                .map(|validator| validator.address)
+                .collect::<HashSet<_>>();
+        let mut sent_validator_addresses = HashSet::new();
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
-            if peer.validator_address.is_none() {
+            let Some(validator_address) = peer.validator_address.as_deref() else {
+                continue;
+            };
+            if !active_validator_addresses.contains(validator_address)
+                || sent_validator_addresses.contains(validator_address)
+            {
                 continue;
             }
             if let Some(ref mut stream) = peer.stream {
@@ -2156,6 +2168,7 @@ impl P2PNetwork {
                     );
                     failed_peers.push(address.clone());
                 } else {
+                    sent_validator_addresses.insert(validator_address.to_string());
                     recipients += 1;
                 }
             }
