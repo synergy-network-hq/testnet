@@ -51,18 +51,18 @@ No live reset, validator restart, chain-data wipe, installer deployment, firewal
 | Node Control Panel live status | Partial | UI partial | UI tests exist in control-panel repo | Validator hosts are still installed with stale resource version `12.2.10+10af72192276`. |
 | Atlas DAG display | Partial | Atlas live but DAG empty | API/frontend tests exist | Atlas block indexing works; DAG display cannot show real topology until valid signed DAG txs are indexed. |
 | Reset tooling | Implemented but high risk | Available | Installer validation scripts exist | Any reset must be explicit chain 1264 procedure preserving configs, keys, logs, and evidence. |
-| Release packaging | Partial | Artifacts built | GitHub Actions green for OS artifacts | Publish-to-releases-repo skipped; validator hosts have runtime/package drift. |
+| Release packaging | Blocked | No v12.2.13 artifacts | v12.2.13 GitHub Actions builds did not start because an Actions budget gate prevented runner use | Validator hosts have runtime/package drift; do not deploy local ad hoc binaries without explicit emergency-artifact approval. |
 | Relayer topology | Partially enforced | Live peer tables mostly match intended relayer bridge | Manual peer audit done | Need automated topology verification script and firewall/listener audit before declaring complete. |
 | Observer behavior | Partial | Observer peers through relayers | Manual peer audit observed observer as non-genesis peer | Need tests proving observer cannot vote/propose/count toward quorum. |
 
-## Current Fixes In This Working Tree
+## Committed Fixes In v12.2.13
 
 Block timestamp / cadence diagnosis:
 - The consensus proposer previously set every new block timestamp to `previous.timestamp + block_time_secs`.
 - When real block production was delayed, header timestamps continued to show perfect 2-second cadence while drifting behind wall time.
 - Atlas, public RPC, relayers, and Postgres/API were accurately carrying this stale header timestamp. Atlas frontend was not the root cause.
 
-Source changes now made in the working tree:
+Source changes committed as `d13ae83` / `v12.2.13`:
 - `src/consensus/consensus_algorithm.rs` now computes a bounded consensus timestamp:
   - on-time production preserves target cadence,
   - delayed production catches the header timestamp up to the proposer wall-clock second,
@@ -88,6 +88,9 @@ Passing:
 - `cargo build -p synergy-testnet --release --bin synergy-testnet`
   - local artifact hash: `2633b78040e4ab7ce53090c7a9036c415b5e33fcc6fcf1c153c8664294792cbb`
   - result: passed with existing dead-code warnings.
+- GitHub Actions release artifact build for `v12.2.13`
+  - result: failed before runner startup because GitHub Actions budget prevented use.
+  - affected repos: `synergy-network-hq/testnet-beta` run `26082477573`, `synergy-network-hq/testnet` run `26082478522`.
 
 Notes:
 - P2P module tests must be run serially because they share the test validator key registry and canonical-lock temp state.
@@ -107,6 +110,7 @@ Before any restart, reset, redeploy, firewall change, topology change, or releas
 
 - The live chain is aligned by hash, but the deployed consensus binary still emits stale block header timestamps until the bounded timestamp fix is built and rolled out.
 - The package and live runtime are not aligned on validator hosts.
+- Trusted release artifacts for `v12.2.13` are not available yet because GitHub Actions budget blocked the tag workflow.
 - Atlas does not need a chain reset for the timestamp display; it is rendering the canonical block header timestamp it receives.
 - Postgres direct SSH access to the Atlas host using the supplied `synergyvps` path failed in the current session; public Atlas API checks succeeded.
 - Full archive-validator, self-healing reconciliation, typed PoSy/DAG/execution overhaul, and non-genesis staking/onboarding enforcement remain incomplete unless separately proven by tests and live rollout evidence.
