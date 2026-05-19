@@ -788,10 +788,8 @@ impl ProofOfSynergy {
                         if local_validator_address.as_deref()
                             != Some(selected_validator.address.as_str())
                         {
-                            let wait_elapsed = Duration::from_secs(
-                                Self::current_timestamp()
-                                    .saturating_sub(latest_block_clone.timestamp),
-                            );
+                            let wait_elapsed =
+                                Self::leader_wait_elapsed_since_tip_observed(last_tip_observed_at);
 
                             if wait_elapsed >= Duration::from_secs(leader_timeout_secs) {
                                 let timeout_marker = (next_block_index, view_offset);
@@ -1455,6 +1453,19 @@ impl ProofOfSynergy {
         earliest_safe_next_proposal
             .checked_sub(block_time)
             .unwrap_or(current_time)
+    }
+
+    fn leader_wait_elapsed_since_tip_observed(last_tip_observed_at: SystemTime) -> Duration {
+        Self::leader_wait_elapsed_since_tip_observed_at(last_tip_observed_at, SystemTime::now())
+    }
+
+    fn leader_wait_elapsed_since_tip_observed_at(
+        last_tip_observed_at: SystemTime,
+        current_time: SystemTime,
+    ) -> Duration {
+        current_time
+            .duration_since(last_tip_observed_at)
+            .unwrap_or_default()
     }
 
     fn should_persist_consensus_chain_tip(tip_height: u64) -> bool {
@@ -2699,6 +2710,26 @@ mod tests {
         assert_eq!(
             ProofOfSynergy::deterministic_view_offset_for_block_time(1, 4_983, 20, 5_500),
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_500)
+        );
+    }
+
+    #[test]
+    fn leader_timeout_wait_uses_tip_observation_time_not_header_timestamp() {
+        let current_time = UNIX_EPOCH + Duration::from_secs(10_000);
+        let observed_tip_at = current_time - Duration::from_millis(750);
+        let stale_header_timestamp = 9_100u64;
+
+        let elapsed = ProofOfSynergy::leader_wait_elapsed_since_tip_observed_at(
+            observed_tip_at,
+            current_time,
+        );
+
+        assert_eq!(elapsed, Duration::from_millis(750));
+        assert!(
+            current_time
+                .duration_since(UNIX_EPOCH + Duration::from_secs(stale_header_timestamp))
+                .unwrap()
+                > Duration::from_secs(800)
         );
     }
 
