@@ -1741,39 +1741,17 @@ fn handle_json_rpc(
         }
 
         "synergy_registerValidator" => {
-            if let (Some(address), Some(public_key), Some(name), Some(stake_amount)) = (
-                params.get(0).and_then(|v| v.as_str()),
-                params.get(1).and_then(|v| v.as_str()),
-                params.get(2).and_then(|v| v.as_str()),
-                params.get(3).and_then(|v| v.as_u64()),
-            ) {
-                let registration = crate::validator::ValidatorRegistration {
-                    address: address.to_string(),
-                    public_key: public_key.to_string(),
-                    name: name.to_string(),
-                    stake_amount,
-                    submitted_at: current_timestamp(),
-                    registration_tx_hash: format!("reg_{}", current_timestamp()),
-                };
-
-                match validator_manager.register_validator(registration) {
-                    Ok(result) => json!({"success": true, "message": result}),
-                    Err(error) => json!({"success": false, "error": error}),
-                }
-            } else {
-                json!({"success": false, "error": "Missing required parameters: address, public_key, name, stake_amount"})
-            }
+            json!({
+                "success": false,
+                "error": "Legacy direct validator registration is disabled on Synergy Testnet chain 1264. Submit the validator activation transaction after Aegis PQC key binding and a finalized 50,000 SNRG stake lock."
+            })
         }
 
         "synergy_approveValidator" => {
-            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
-                match validator_manager.approve_validator(address) {
-                    Ok(_) => json!({"success": true, "message": "Validator approved successfully"}),
-                    Err(error) => json!({"success": false, "error": error}),
-                }
-            } else {
-                json!("Missing address parameter")
-            }
+            json!({
+                "success": false,
+                "error": "Legacy direct validator approval is disabled on Synergy Testnet chain 1264. Activation must be finalized by the epoch-gated staking/onboarding path."
+            })
         }
 
         "synergy_getTopValidators" => {

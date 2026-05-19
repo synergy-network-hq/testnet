@@ -22,8 +22,9 @@ fn run() -> Result<(), String> {
                     "self-heal-from-archive requires --divergence-height <height>".to_string()
                 })?;
             }
-            println!("{command} requested from {archive_url} with expected_genesis_hash={expected_genesis_hash}");
-            println!("snapshot catalog, manifest, content root, state root, and QCs must verify through aegis-pqvm before state is installed");
+            return Err(format!(
+                "{command} is not yet wired to install archive state. Refusing to mutate local chain data from {archive_url} with expected_genesis_hash={expected_genesis_hash} until catalog, manifest, content root, state root, chunks, and every QC are verified through aegis-pqvm."
+            ));
         }
         _ => {
             println!("Commands:");

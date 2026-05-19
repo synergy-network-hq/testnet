@@ -248,6 +248,14 @@ mod tests {
     use super::*;
     use crate::crypto::aegis_pqvm::AegisPqvmSigner;
     use crate::synergy_types::Epoch;
+    use std::path::PathBuf;
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("crate has repository parent")
+            .to_path_buf()
+    }
 
     #[test]
     fn archive_node_cannot_vote_propose_or_count_in_qc() {
@@ -335,5 +343,71 @@ mod tests {
             &signer.verifier()
         )
         .is_err());
+    }
+
+    #[test]
+    fn archive_package_contains_required_linux_and_macos_install_assets() {
+        let root = repo_root().join("archive-validator");
+        for path in [
+            "README.md",
+            "setup-archive-validator.sh",
+            "uninstall-archive-validator.sh",
+            "verify-archive-validator-install.sh",
+            "package-archive-validator.sh",
+            ".env.example",
+            "config/archive-validator.testnet.toml",
+            "config/snapshot-policy.testnet.toml",
+            "config/archive-api.testnet.toml",
+            "config/genesis.testnet.json.template",
+            "systemd/synergy-archive-validator.service",
+            "systemd/synergy-archive-snapshot-api.service",
+            "systemd/synergy-archive-snapshot-worker.service",
+            "launchd/io.synergynetwork.archive-validator.plist",
+            "launchd/io.synergynetwork.archive-snapshot-api.plist",
+            "launchd/io.synergynetwork.archive-snapshot-worker.plist",
+            "macos/build-macos-pkg.sh",
+            "macos/preinstall",
+            "macos/postinstall",
+            "macos/uninstall-macos.sh",
+            "macos/entitlements.plist",
+            "macos/README-GATEKEEPER.md",
+            "docs/MACOS_INSTALL.md",
+            "docs/SNAPSHOT_VERIFICATION.md",
+            "bin/README.md",
+        ] {
+            assert!(
+                root.join(path).exists(),
+                "missing archive package asset: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn archive_package_scripts_fail_closed_for_artifacts_and_gatekeeper() {
+        let root = repo_root().join("archive-validator");
+        let package_script = std::fs::read_to_string(root.join("package-archive-validator.sh"))
+            .expect("package script");
+        assert!(package_script.contains("synergy-archive-validator-testnet-v2-linux-x64.zip"));
+        assert!(package_script.contains("synergy-archive-validator-testnet-v2-macos-universal.zip"));
+        assert!(package_script.contains("Refusing to package private keys"));
+        assert!(package_script.contains("snapshots"));
+        assert!(package_script.contains("evidence"));
+        assert!(!package_script.contains("synergy-archive-validator-testnet-v2.zip\""));
+
+        let macos_script =
+            std::fs::read_to_string(root.join("macos/build-macos-pkg.sh")).expect("macos script");
+        for required in [
+            "DEVELOPER_ID_APPLICATION",
+            "DEVELOPER_ID_INSTALLER",
+            "notarytool submit",
+            "stapler staple",
+            "spctl --assess",
+            "pkgutil --check-signature",
+        ] {
+            assert!(
+                macos_script.contains(required),
+                "macOS package script must require {required}"
+            );
+        }
     }
 }

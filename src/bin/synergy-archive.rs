@@ -21,24 +21,24 @@ fn run() -> Result<(), String> {
         "start" => println!("Start services with systemd: synergy-archive-validator, synergy-archive-snapshot-api, synergy-archive-snapshot-worker"),
         "stop" => println!("Stop services with systemd: synergy-archive-validator, synergy-archive-snapshot-api, synergy-archive-snapshot-worker"),
         "status" => println!("status={:?} can_serve_snapshots={}", ArchiveNodeStatus::ArchiveReady, ArchiveNodeStatus::ArchiveReady.can_serve_snapshots()),
-        "verify-chain" => println!("verify-chain requires local archive data; every finalized QC is verified through aegis-pqvm"),
+        "verify-chain" => return Err("verify-chain is not wired to archive storage yet; refusing to report verification success".to_string()),
         "create-snapshot" => {
             let height = arg_value(&args, "--height")
                 .or_else(|| args.iter().find(|value| value.as_str() == "--latest-eligible").cloned())
                 .ok_or_else(|| "create-snapshot requires --height <height> or --latest-eligible".to_string())?;
-            println!("snapshot creation requested: {height}");
+            return Err(format!("snapshot creation at {height} is not wired yet; refusing to create an unsigned or unverified snapshot"));
         }
         "verify-snapshot" => {
             let snapshot = arg_value(&args, "--snapshot")
                 .ok_or_else(|| "verify-snapshot requires --snapshot <path>".to_string())?;
-            println!("snapshot verification requested: {snapshot}");
+            return Err(format!("snapshot verification for {snapshot} is not wired to full manifest/content/QC checks yet"));
         }
         "list-snapshots" => println!("snapshots are listed from /var/lib/synergy/archive-validator/snapshots"),
-        "publish-catalog" => println!("snapshot catalog publication requires real Aegis PQC catalog signature"),
-        "serve" => println!("snapshot API serves read-only verified archive artifacts"),
+        "publish-catalog" => return Err("catalog publication is not wired yet; refusing to publish unsigned catalog".to_string()),
+        "serve" => return Err("snapshot API serving is not wired yet; refusing to expose incomplete archive service".to_string()),
         "inspect-manifest" => println!("manifest inspection requires --height <height>"),
         "inspect-catalog" => println!("catalog inspection requires signed catalog files"),
-        "repair-indexes" => println!("repair-indexes rebuilds archive indexes from verified finalized blocks"),
+        "repair-indexes" => return Err("repair-indexes is not wired to verified finalized block storage yet".to_string()),
         "collect-diagnostics" => println!("diagnostics collected from archive validator logs and verification reports"),
         "print-aegis-identity" => println!("Aegis identity keys are referenced through aegis-pqvm; raw private keys are never printed"),
         "verify-aegis-identity" => {

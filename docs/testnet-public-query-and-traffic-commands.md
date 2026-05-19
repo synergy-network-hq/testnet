@@ -1,14 +1,23 @@
 # How to query and exercise the Synergy Testnet from any machine
 
-This guide uses the portable `wallet-pqc-cli-testnet-team` bundle. The bundle contains the command helper, the available `wallet-pqc-cli` binaries, and embedded Synergy Testnet Faucet and Token Sales wallet keys, so team members do not need separate `.json` key files.
+This guide uses the portable `wallet-pqc-cli-testnet-team` bundle. The bundle contains the command helper, available `wallet-pqc-cli` binaries, and embedded Synergy Testnet Faucet and Token Sales wallet keys, so team members do not need separate `.json` key files.
 
 Do not use this embedded-key pattern for mainnet or any wallet with real value.
 
 ## Prerequisites
 
 - Python 3.
-- The `wallet-pqc-cli-testnet-team` folder or archive.
+- The `wallet-pqc-cli-testnet-team` folder, `.zip`, or `.tar.gz` archive.
 - Network access to `https://testnet-core-rpc.synergy-network.io`.
+
+Network values:
+
+- Network: Synergy Testnet
+- Chain ID: `1264`
+- RPC: `https://testnet-core-rpc.synergy-network.io`
+- Atlas API: `https://testnet-atlas.synergy-network.io/api/v1`
+
+Any `testbeta` endpoint is wrong for this package and should be treated as a critical configuration fault.
 
 Included binaries:
 
@@ -27,6 +36,7 @@ From macOS, Linux, or WSL:
 cd wallet-pqc-cli-testnet-team
 chmod +x ./synergy-testnet-tx.py ./wallet-pqc-cli-* 2>/dev/null || true
 python3 ./synergy-testnet-tx.py list-wallets
+python3 ./synergy-testnet-tx.py chain-id
 python3 ./synergy-testnet-tx.py height
 ```
 
@@ -35,19 +45,19 @@ Expected wallet aliases:
 - `faucet`
 - `token-sales`
 
-The helper defaults to the real Synergy Testnet endpoint:
+Override binary detection only when intentionally using another local build:
 
 ```bash
-https://testnet-core-rpc.synergy-network.io
-```
-
-Override the endpoint only when intentionally testing a different Testnet gateway:
-
-```bash
-SYNERGY_RPC_URL="https://testnet-core-rpc.synergy-network.io" python3 ./synergy-testnet-tx.py height
+SYNERGY_WALLET_CLI="/path/to/wallet-pqc-cli" python3 ./synergy-testnet-tx.py chain-id
 ```
 
 ## Query the live network
+
+Get the expected and RPC-reported chain ID:
+
+```bash
+python3 ./synergy-testnet-tx.py chain-id
+```
 
 Get the current block height:
 
@@ -55,10 +65,34 @@ Get the current block height:
 python3 ./synergy-testnet-tx.py height
 ```
 
-Get node status:
+Get the latest block:
+
+```bash
+python3 ./synergy-testnet-tx.py latest-block
+```
+
+Get node status and identity details:
 
 ```bash
 python3 ./synergy-testnet-tx.py status
+python3 ./synergy-testnet-tx.py node-info
+```
+
+Get network statistics, validators, and peers:
+
+```bash
+python3 ./synergy-testnet-tx.py network-stats
+python3 ./synergy-testnet-tx.py validators
+python3 ./synergy-testnet-tx.py peers
+```
+
+Query Atlas DAG state:
+
+```bash
+python3 ./synergy-testnet-tx.py atlas-dag --view status
+python3 ./synergy-testnet-tx.py atlas-dag --view frontier
+python3 ./synergy-testnet-tx.py atlas-dag --view vertices --limit 25
+python3 ./synergy-testnet-tx.py atlas-dag --view topology --limit 25
 ```
 
 Check balances:
@@ -77,10 +111,28 @@ python3 ./synergy-testnet-tx.py nonce token-sales
 python3 ./synergy-testnet-tx.py nonce synw1replacewithanytestnetwallet
 ```
 
-List the embedded testnet wallet aliases:
+Look up a transaction:
 
 ```bash
-python3 ./synergy-testnet-tx.py list-wallets
+python3 ./synergy-testnet-tx.py tx syntxn-replace-with-real-hash
+python3 ./synergy-testnet-tx.py receipt syntxn-replace-with-real-hash
+```
+
+## Fund the Faucet wallet
+
+On the reset chain, the embedded Token Sales wallet is genesis-funded. Seed Faucet before running Faucet-origin stress traffic:
+
+```bash
+python3 ./synergy-testnet-tx.py seed-faucet \
+  --amount-snrg 1000 \
+  --wait \
+  --yes
+```
+
+Verify the Faucet balance:
+
+```bash
+python3 ./synergy-testnet-tx.py balance faucet
 ```
 
 ## Send Faucet wallet tokens
@@ -133,11 +185,7 @@ python3 ./synergy-testnet-tx.py send \
 
 ## Run a one-hour Faucet and Token Sales ping-pong
 
-This sends 1 SNRG every 5 seconds for one hour, alternating directions:
-
-1. Faucet to Token Sales.
-2. Token Sales to Faucet.
-3. Repeat until the duration expires.
+This sends 1 SNRG every 5 seconds for one hour, alternating directions.
 
 ```bash
 python3 ./synergy-testnet-tx.py pingpong \
@@ -160,35 +208,92 @@ python3 ./synergy-testnet-tx.py pingpong \
   --yes
 ```
 
-## Generate multi-machine DAG traffic
+## Generate rapid-fire DAG stress traffic
 
-Run this command from several machines at the same time to generate small signed transaction bursts. Use different sender aliases on different machines when possible to avoid nonce collisions.
+Use `stress` for duration-based transaction generation. The default stress amount is `1` nWei.
+
+Short local smoke:
+
+```bash
+python3 ./synergy-testnet-tx.py stress \
+  --senders token-sales \
+  --receiver faucet \
+  --duration-seconds 10 \
+  --interval-seconds 0.5 \
+  --amount-nwei 1 \
+  --max-transactions 20 \
+  --continue-on-error \
+  --yes
+```
+
+Single-machine mixed-source run:
+
+```bash
+python3 ./synergy-testnet-tx.py stress \
+  --senders faucet token-sales \
+  --duration-seconds 300 \
+  --interval-seconds 0.25 \
+  --amount-nwei 1 \
+  --continue-on-error \
+  --yes
+```
+
+One-hour mixed-source run:
+
+```bash
+python3 ./synergy-testnet-tx.py stress \
+  --senders faucet token-sales \
+  --duration-seconds 3600 \
+  --interval-seconds 0.25 \
+  --amount-nwei 1 \
+  --continue-on-error \
+  --yes
+```
+
+Maximum-rate bounded run:
+
+```bash
+python3 ./synergy-testnet-tx.py stress \
+  --senders token-sales \
+  --receiver faucet \
+  --interval-seconds 0 \
+  --max-transactions 100 \
+  --amount-nwei 1 \
+  --continue-on-error \
+  --yes
+```
+
+## Generate multi-machine traffic
+
+Run one source wallet per machine where possible. Do not run the same sender alias concurrently from multiple machines unless you coordinate nonces.
 
 Machine A:
 
 ```bash
-python3 ./synergy-testnet-tx.py burst \
-  --senders faucet \
-  --tx-per-sender 10 \
+python3 ./synergy-testnet-tx.py stress \
+  --senders token-sales \
+  --receiver faucet \
+  --duration-seconds 600 \
+  --interval-seconds 0.25 \
   --amount-nwei 1 \
-  --interval-seconds 1 \
-  --wait \
+  --continue-on-error \
   --yes
 ```
 
 Machine B:
 
 ```bash
-python3 ./synergy-testnet-tx.py burst \
-  --senders token-sales \
-  --tx-per-sender 10 \
+python3 ./synergy-testnet-tx.py stress \
+  --senders faucet \
+  --receiver token-sales \
+  --duration-seconds 600 \
+  --interval-seconds 0.25 \
   --amount-nwei 1 \
-  --interval-seconds 1 \
-  --wait \
+  --continue-on-error \
   --yes
 ```
 
-Single-machine mixed-source test:
+Single-machine finite burst:
 
 ```bash
 python3 ./synergy-testnet-tx.py burst \
@@ -200,16 +305,23 @@ python3 ./synergy-testnet-tx.py burst \
   --yes
 ```
 
-Important: do not run the same sender alias concurrently from multiple machines unless you coordinate nonces. For clean DAG observation, run one source wallet per machine.
-
 ## Raw JSON-RPC query examples
 
-These commands also run from any machine with `curl`.
+These commands run from any machine with `curl`.
 
 Set the Testnet RPC endpoint:
 
 ```bash
 export SYNERGY_RPC_URL="https://testnet-core-rpc.synergy-network.io"
+```
+
+Check node info and chain ID:
+
+```bash
+curl --silent --show-error \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"synergy_nodeInfo","params":[],"id":1}' \
+  "$SYNERGY_RPC_URL"
 ```
 
 Check block height:
@@ -239,6 +351,33 @@ curl --silent --show-error \
   "$SYNERGY_RPC_URL"
 ```
 
+Check network stats:
+
+```bash
+curl --silent --show-error \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"synergy_getNetworkStats","params":[],"id":1}' \
+  "$SYNERGY_RPC_URL"
+```
+
+Check validators:
+
+```bash
+curl --silent --show-error \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"synergy_getValidatorActivity","params":[],"id":1}' \
+  "$SYNERGY_RPC_URL"
+```
+
+Check peers:
+
+```bash
+curl --silent --show-error \
+  -H "Content-Type: application/json" \
+  --data '{"jsonrpc":"2.0","method":"synergy_getPeerInfo","params":[],"id":1}' \
+  "$SYNERGY_RPC_URL"
+```
+
 Check a wallet balance:
 
 ```bash
@@ -259,35 +398,34 @@ curl --silent --show-error \
   "$SYNERGY_RPC_URL"
 ```
 
-Check a transaction receipt:
+## Raw Atlas DAG query examples
+
+These commands run from any machine with `curl`.
 
 ```bash
-TX_HASH="syntxn-replace-with-real-hash"
-curl --silent --show-error \
-  -H "Content-Type: application/json" \
-  --data "{\"jsonrpc\":\"2.0\",\"method\":\"synergy_getTransactionReceipt\",\"params\":[\"$TX_HASH\"],\"id\":1}" \
-  "$SYNERGY_RPC_URL"
+export SYNERGY_ATLAS_API_URL="https://testnet-atlas.synergy-network.io/api/v1"
 ```
 
-Watch block production:
+Check DAG status:
 
 ```bash
-while true; do
-  date -u +"%Y-%m-%dT%H:%M:%SZ"
-  curl --silent --show-error \
-    -H "Content-Type: application/json" \
-    --data '{"jsonrpc":"2.0","method":"synergy_getLatestBlock","params":[],"id":1}' \
-    "$SYNERGY_RPC_URL"
-  sleep 5
-done
+curl --silent --show-error "$SYNERGY_ATLAS_API_URL/dag/status"
 ```
 
-## Testnet endpoint rule
-
-All commands in this guide use:
+Check DAG frontier:
 
 ```bash
-https://testnet-core-rpc.synergy-network.io
+curl --silent --show-error "$SYNERGY_ATLAS_API_URL/dag/frontier"
 ```
 
-Do not use `testnet` endpoints for this Testnet.
+Check recent DAG vertices:
+
+```bash
+curl --silent --show-error "$SYNERGY_ATLAS_API_URL/dag/vertices?limit=25"
+```
+
+Check DAG topology:
+
+```bash
+curl --silent --show-error "$SYNERGY_ATLAS_API_URL/dag/topology?limit=25"
+```

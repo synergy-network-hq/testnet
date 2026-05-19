@@ -25,29 +25,29 @@ Trusted runtime artifacts must come from the public canonical repositories:
 Do not deploy ad hoc local binaries while the public GitHub Actions artifact path is available.
 
 Current deployed release:
-- Node runtime tag: `v12.2.18`
-- Node runtime commit: `ad96256133af76ad670ea7f5f532ada454d06f4b`
-- Node GitHub Actions run: `26103018856`
-- Control Panel tag: `v12.2.18`
-- Control Panel commit: `6d2ff941facc2d07a310dd2a3b8321223b04f276`
-- Control Panel GitHub Actions run: `26104388942`
+- Node runtime tag: `v12.2.19`
+- Node runtime commit: `c3b2585`
+- Node GitHub Actions run: `26107094704`
+- Control Panel tag: `v12.2.19`
+- Control Panel commit: `eb82d19`
+- Control Panel GitHub Actions run: `26108441314`
 
 Trusted Linux runtime checksum:
-- `828ebdf05cb52ae31f2694b19d0b2c2663c3c43e1bae31e99ded91ccd5592689`
+- `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
 
 Trusted Control Panel Linux package:
-- `synergy-node-control-panel_12.2.18_amd64.deb`
-- digest: `sha256:29f33189fdf5ebc6cc30258196ed33d82b98e4280e4b9bedd254f8ccb94f1c40`
+- `synergy-node-control-panel_12.2.19_amd64.deb`
+- digest: `sha256:5ed100c2b5d061b9aa2520806d74bf982b2f4de02214efe7e30222b3f087dcc3`
 
-Open follow-up after v12.2.18:
+Resolved follow-up after v12.2.18:
 - Later live sampling showed block cadence drifting to about 3.3 seconds over the latest 50 blocks.
 - Root cause: `data/committed_qcs.json` was rewritten and fsynced as a full QC map on every committed block. At about height 400 it had grown to 161 MB, which delayed follower block application and next-leader proposal readiness.
-- Source fix: commit future `v12.2.19` changes committed QC persistence to append-only `data/committed_qcs.jsonl`, loads both legacy JSON and JSONL for compatibility, skips duplicate QC appends, and records P2P QCs only after the block extends the local canonical tip.
-- Deployment rule: this fix must be promoted through the trusted GitHub Actions artifact path before any live install/reset.
+- v12.2.19 changed committed QC persistence to append-only `data/committed_qcs.jsonl`, loads both legacy JSON and JSONL for compatibility, skips duplicate QC appends, and records P2P QCs only after the block extends the local canonical tip.
+- v12.2.19 was promoted through the trusted GitHub Actions artifact path, then installed from release artifacts.
 
 ## Final Reset / Start Sequence Used
 
-The final v12.2.18 reset preserved validator keys, peer identity keys, configs, WireGuard state, logs, evidence, and service credentials.
+The final v12.2.19 reset preserved validator keys, peer identity keys, configs, WireGuard state, logs, evidence, and service credentials.
 
 Cleared on validator and relayer runtime workspaces:
 - `chain.json`
@@ -61,15 +61,24 @@ Cleared on validator and relayer runtime workspaces:
 
 Start sequence:
 1. Stopped relayers.
-2. Installed Control Panel `12.2.18` on all five validators.
+2. Installed Control Panel `12.2.19` on all five validators.
 3. Staged validator runtimes from installed package resources.
 4. Reset validator runtime state.
 5. Started all five genesis validators.
 6. Verified QCs and canonical locks from height 1 onward.
-7. Updated and restarted relayers with the trusted `v12.2.18` binary.
+7. Updated and restarted relayers with the trusted `v12.2.19` binary.
 8. Repointed Atlas to relayer-only local tunnels.
 9. Backed up and reset Atlas DB tables.
 10. Restarted public RPC and Atlas services.
+
+Final v12.2.19 observation evidence:
+- All five validators sampled at height 691 with hash `87a3338b82167705bd3d22cad9173c746042dac0fa4fa2d1470c7b60ab4c3b70`.
+- Public RPC sampled at height 917 with hash `cc90af52ad7a99ff01bb095f34589f152eed3733eec34ec015bf12c9e4794e57`.
+- Public RPC advanced 299 blocks in 598.025 seconds during the observation window.
+- Final short cadence sample observed 18 blocks in 34.842 seconds.
+- Atlas DB was reset and reindexed for chain 1264.
+- Atlas DAG tables/API were empty after reset because no valid post-reset signed DAG transactions had been submitted; do not inject demo DAG data.
+- Inactive pre-v12.2.19 `synergy-testbeta` service-host build directories were moved to a retired-builds archive after current-process checks proved the active services were running the v12.2.19 binary.
 
 ## Live Service Routing
 

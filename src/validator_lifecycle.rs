@@ -77,6 +77,17 @@ impl ValidatorLifecycleManager {
         verifier
             .verify_transaction_signature_checked(stake_tx)
             .map_err(|error| error.to_string())?;
+        if stake.validator_id != state.validator.validator_id
+            || stake.validator_uma_id != state.validator.validator_uma_id
+        {
+            return Err("stake record is not assigned to this validator identity".to_string());
+        }
+        if stake.stake_owner != stake_tx.signer_uma_id.0 {
+            return Err("stake owner does not match the staking transaction signer".to_string());
+        }
+        if stake.stake_status != StakeStatus::Submitted || stake.stake_verified {
+            return Err("stake submission must be pending finality and unverified".to_string());
+        }
         if stake.stake_amount_nwei < REQUIRED_VALIDATOR_STAKE_NWEI {
             state.blocking_reason = "Submitted stake is below 50,000 SNRG.".to_string();
             return Err("insufficient validator stake".to_string());
@@ -108,6 +119,14 @@ impl ValidatorLifecycleManager {
             .stake
             .as_mut()
             .ok_or_else(|| "stake record missing".to_string())?;
+        if stake.validator_id != state.validator.validator_id
+            || stake.validator_uma_id != state.validator.validator_uma_id
+        {
+            return Err("stake record is not assigned to this validator identity".to_string());
+        }
+        if stake.stake_status != StakeStatus::Submitted {
+            return Err("stake record is not a pending finalized staking transaction".to_string());
+        }
         if !verifier.verify_qc(
             finalized_qc,
             validator_set,
@@ -129,6 +148,9 @@ impl ValidatorLifecycleManager {
         if stake.stake_amount_nwei < REQUIRED_VALIDATOR_STAKE_NWEI {
             stake.stake_status = StakeStatus::Insufficient;
             return Err("stake below required minimum".to_string());
+        }
+        if stake.stake_finalized_height != finalized_qc.height {
+            return Err("stake finalized height does not match finalized QC height".to_string());
         }
         if !stake.stake_slashable {
             return Err("stake lock is not slashable under validator rules".to_string());
@@ -174,18 +196,21 @@ impl ValidatorLifecycleManager {
                 );
             }
         }
-        if matches!(
-            next_status,
-            ValidatorStatus::Ready | ValidatorStatus::PendingActivation | ValidatorStatus::Active
-        ) && state.validator.status != ValidatorStatus::StakeConfirmed
-            && state.validator.status != ValidatorStatus::Syncing
-            && state.validator.status != ValidatorStatus::SnapshotVerified
-            && state.validator.status != ValidatorStatus::Replaying
-            && state.validator.status != ValidatorStatus::Shadow
-        {
-            return Err(
-                "validator cannot skip onboarding stages after stake confirmation".to_string(),
-            );
+        let expected_next = match state.validator.status {
+            ValidatorStatus::StakeConfirmed => Some(ValidatorStatus::Syncing),
+            ValidatorStatus::Syncing => Some(ValidatorStatus::SnapshotVerified),
+            ValidatorStatus::SnapshotVerified => Some(ValidatorStatus::Replaying),
+            ValidatorStatus::Replaying => Some(ValidatorStatus::Shadow),
+            ValidatorStatus::Shadow => Some(ValidatorStatus::Ready),
+            ValidatorStatus::Ready => Some(ValidatorStatus::PendingActivation),
+            ValidatorStatus::PendingActivation => Some(ValidatorStatus::Active),
+            _ => None,
+        };
+        if expected_next.as_ref() != Some(&next_status) {
+            return Err(format!(
+                "validator cannot skip onboarding stages after stake confirmation; current={:?}, requested={:?}",
+                state.validator.status, next_status
+            ));
         }
         state.completed_steps.push(state.validator.status.clone());
         state.validator.status = next_status;
@@ -225,8 +250,9 @@ mod tests {
     use super::*;
     use crate::crypto::aegis_pqvm::AegisPqvmSigner;
     use crate::synergy_types::{
-        AegisPqKeyId, AegisPqKeyRole, AegisPqSignature, ChainId, ClusterId, Epoch, Hash, Height,
-        NetworkId, TxId, UmaId, ValidatorId,
+        AegisPqKeyId, AegisPqKeyRole, AegisPqSignature, BlockId, ChainId, ClusterAssignment,
+        ClusterId, ClusterMap, Epoch, Hash, Height, NetworkId, QuorumCertificate, Round, TxId,
+        UmaId, ValidatorId, ValidatorSet, Vote, VotePhase,
     };
 
     fn validator_state() -> (AegisPqvmSigner, ValidatorLifecycleState, AegisPqKeyId) {
@@ -303,6 +329,96 @@ mod tests {
         tx
     }
 
+    fn finalized_stake_qc(signer: &mut AegisPqvmSigner) -> (ValidatorSet, QuorumCertificate) {
+        let mut records = Vec::new();
+        let mut key_ids = Vec::new();
+        for index in 0..5 {
+            let uma = format!("qc-uma-{index}");
+            let key_id = signer
+                .generate_and_register_key(&uma, vec![AegisPqKeyRole::ConsensusVote], Epoch(0))
+                .unwrap();
+            let public = signer.public_key_record(&key_id).unwrap();
+            records.push(ValidatorRecord {
+                validator_id: ValidatorId(format!("qc-validator-{index}")),
+                validator_uma_id: UmaId(uma),
+                consensus_public_key: public.clone(),
+                peer_public_key: public.clone(),
+                operator_public_key: public,
+                voting_weight: 1,
+                status: ValidatorStatus::Active,
+                cluster_id: ClusterId(0),
+                activation_epoch: Epoch(0),
+            });
+            key_ids.push(key_id);
+        }
+        let set = ValidatorSet {
+            epoch: Epoch(0),
+            validators: records.clone(),
+        };
+        let cluster = ClusterMap {
+            epoch: Epoch(0),
+            assignments: records
+                .iter()
+                .map(|record| ClusterAssignment {
+                    cluster_id: ClusterId(0),
+                    validator_id: record.validator_id.clone(),
+                })
+                .collect(),
+        };
+        let set_hash = set.hash().unwrap();
+        let cluster_hash = cluster.hash().unwrap();
+        let block_id = BlockId::from("stake-finalized-block");
+        let votes = (0..4)
+            .map(|index| {
+                let mut vote = Vote {
+                    chain_id: ChainId::synergy_testnet_v2(),
+                    network_id: NetworkId::synergy_testnet_v2(),
+                    height: Height(1),
+                    round: Round(0),
+                    epoch: Epoch(0),
+                    cluster_id: ClusterId(0),
+                    phase: VotePhase::Commit,
+                    block_id: block_id.clone(),
+                    validator_id: records[index].validator_id.clone(),
+                    validator_uma_id: records[index].validator_uma_id.clone(),
+                    key_id: key_ids[index].clone(),
+                    active_validator_set_hash: set_hash,
+                    cluster_map_hash: cluster_hash,
+                    aegis_pq_signature: AegisPqSignature {
+                        algorithm: String::new(),
+                        signature_bytes: Vec::new(),
+                    },
+                };
+                vote.aegis_pq_signature = signer
+                    .sign_vote(&vote.signing_bytes().unwrap(), &key_ids[index])
+                    .unwrap();
+                vote
+            })
+            .collect::<Vec<_>>();
+        let qc = QuorumCertificate {
+            qc_version: 1,
+            chain_id: ChainId::synergy_testnet_v2(),
+            network_id: NetworkId::synergy_testnet_v2(),
+            height: Height(1),
+            round: Round(0),
+            epoch: Epoch(0),
+            cluster_id: ClusterId(0),
+            phase: VotePhase::Commit,
+            block_id,
+            active_validator_set_hash: set_hash,
+            cluster_map_hash: cluster_hash,
+            threshold_weight_required: 4,
+            signed_weight: 4,
+            signer_bitmap: vec![0b0000_1111],
+            aegis_pq_signatures: votes
+                .iter()
+                .map(|vote| vote.aegis_pq_signature.clone())
+                .collect(),
+            aegis_pq_key_ids: key_ids[0..4].to_vec(),
+        };
+        (set, qc)
+    }
+
     #[test]
     fn new_validator_enters_stake_required_after_key_bound() {
         let (_signer, state, _key_id) = validator_state();
@@ -362,5 +478,164 @@ mod tests {
             manager.state("validator-1").unwrap().validator.status,
             ValidatorStatus::StakeSubmitted
         );
+    }
+
+    #[test]
+    fn wrong_chain_network_and_invalid_signature_stakes_are_rejected() {
+        let (mut signer, state, key_id) = validator_state();
+        let verifier = signer.verifier();
+        let mut manager = ValidatorLifecycleManager::default();
+        manager.insert(state);
+        manager.key_bound_requires_stake("validator-1").unwrap();
+
+        let mut wrong_chain = signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
+        wrong_chain.chain_id = ChainId(1263);
+        assert!(manager
+            .submit_stake(
+                "validator-1",
+                stake_record(REQUIRED_VALIDATOR_STAKE_NWEI),
+                &wrong_chain,
+                &verifier
+            )
+            .is_err());
+
+        let mut wrong_network =
+            signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
+        wrong_network.network_id = NetworkId("synergy-testnet-beta".to_string());
+        assert!(manager
+            .submit_stake(
+                "validator-1",
+                stake_record(REQUIRED_VALIDATOR_STAKE_NWEI),
+                &wrong_network,
+                &verifier
+            )
+            .is_err());
+
+        let mut invalid_sig = signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
+        invalid_sig.aegis_pq_signature.signature_bytes[0] ^= 0x01;
+        assert!(manager
+            .submit_stake(
+                "validator-1",
+                stake_record(REQUIRED_VALIDATOR_STAKE_NWEI),
+                &invalid_sig,
+                &verifier
+            )
+            .is_err());
+    }
+
+    #[test]
+    fn confirmed_stake_gates_onboarding_order_and_all_active_permissions() {
+        let (mut signer, state, key_id) = validator_state();
+        let verifier = signer.verifier();
+        let mut manager = ValidatorLifecycleManager::default();
+        manager.insert(state);
+        manager.key_bound_requires_stake("validator-1").unwrap();
+        let tx = signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
+        manager
+            .submit_stake(
+                "validator-1",
+                stake_record(REQUIRED_VALIDATOR_STAKE_NWEI),
+                &tx,
+                &verifier,
+            )
+            .unwrap();
+
+        for status in [
+            ValidatorStatus::Ready,
+            ValidatorStatus::PendingActivation,
+            ValidatorStatus::Active,
+        ] {
+            assert!(manager
+                .advance_after_stake("validator-1", status, &ProtocolConfig::testnet_v2())
+                .is_err());
+        }
+        assert!(!manager.can_vote("validator-1"));
+        assert!(!manager.can_propose("validator-1"));
+
+        let (validator_set, qc) = finalized_stake_qc(&mut signer);
+        let verifier = signer.verifier();
+        manager
+            .confirm_stake("validator-1", &qc, &validator_set, &verifier)
+            .unwrap();
+        assert!(manager
+            .advance_after_stake(
+                "validator-1",
+                ValidatorStatus::Ready,
+                &ProtocolConfig::testnet_v2()
+            )
+            .is_err());
+        for status in [
+            ValidatorStatus::Syncing,
+            ValidatorStatus::SnapshotVerified,
+            ValidatorStatus::Replaying,
+            ValidatorStatus::Shadow,
+            ValidatorStatus::Ready,
+            ValidatorStatus::PendingActivation,
+            ValidatorStatus::Active,
+        ] {
+            manager
+                .advance_after_stake("validator-1", status, &ProtocolConfig::testnet_v2())
+                .unwrap();
+        }
+        assert!(manager.can_vote("validator-1"));
+        assert!(manager.can_propose("validator-1"));
+    }
+
+    #[test]
+    fn unlocked_withdrawn_slashed_or_mismatched_stake_records_fail_closed() {
+        let (mut signer, state, key_id) = validator_state();
+        let verifier = signer.verifier();
+        let tx = signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
+
+        for status in [
+            StakeStatus::Unlocked,
+            StakeStatus::Unlocking,
+            StakeStatus::Slashed,
+            StakeStatus::Finalized,
+        ] {
+            let mut manager = ValidatorLifecycleManager::default();
+            manager.insert(state.clone());
+            manager.key_bound_requires_stake("validator-1").unwrap();
+            let mut stake = stake_record(REQUIRED_VALIDATOR_STAKE_NWEI);
+            stake.stake_status = status;
+            assert!(manager
+                .submit_stake("validator-1", stake, &tx, &verifier)
+                .is_err());
+        }
+
+        let mut manager = ValidatorLifecycleManager::default();
+        manager.insert(state);
+        manager.key_bound_requires_stake("validator-1").unwrap();
+        let mut mismatched = stake_record(REQUIRED_VALIDATOR_STAKE_NWEI);
+        mismatched.validator_id = ValidatorId("other-validator".to_string());
+        assert!(manager
+            .submit_stake("validator-1", mismatched, &tx, &verifier)
+            .is_err());
+    }
+
+    #[test]
+    fn over_stake_is_accepted_when_testnet_protocol_allows_it() {
+        let (mut signer, state, key_id) = validator_state();
+        let verifier = signer.verifier();
+        let mut manager = ValidatorLifecycleManager::default();
+        manager.insert(state);
+        manager.key_bound_requires_stake("validator-1").unwrap();
+        let amount = REQUIRED_VALIDATOR_STAKE_NWEI + 1;
+        let tx = signed_stake_tx(&mut signer, &key_id, amount);
+        manager
+            .submit_stake("validator-1", stake_record(amount), &tx, &verifier)
+            .unwrap();
+        let (validator_set, qc) = finalized_stake_qc(&mut signer);
+        let verifier = signer.verifier();
+        manager
+            .confirm_stake("validator-1", &qc, &validator_set, &verifier)
+            .unwrap();
+        assert!(manager
+            .advance_after_stake(
+                "validator-1",
+                ValidatorStatus::Syncing,
+                &ProtocolConfig::testnet_v2()
+            )
+            .is_ok());
     }
 }

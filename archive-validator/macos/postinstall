@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+command -v aegis-pqvm >/dev/null 2>&1 || {
+  echo "aegis-pqvm is required and unavailable; archive validator install fails closed." >&2
+  exit 1
+}
+
+install -d -m 0755 /usr/local/synergy/bin
+install -d -m 0755 "/Library/Application Support/Synergy/archive-validator/config"
+install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/data"
+install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/snapshots"
+install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/tmp"
+install -d -m 0755 "/Library/Logs/Synergy/archive-validator"
+
+for plist in \
+  io.synergynetwork.archive-validator.plist \
+  io.synergynetwork.archive-snapshot-api.plist \
+  io.synergynetwork.archive-snapshot-worker.plist
+do
+  launchctl bootstrap system "/Library/LaunchDaemons/${plist}"
+  launchctl enable "system/${plist%.plist}"
+done
+
+if ! /usr/local/synergy/bin/synergy-archive status >/dev/null 2>&1; then
+  for label in \
+    io.synergynetwork.archive-snapshot-worker \
+    io.synergynetwork.archive-snapshot-api \
+    io.synergynetwork.archive-validator
+  do
+    launchctl bootout "system/${label}" >/dev/null 2>&1 || true
+  done
+  echo "archive validator post-install health check failed; services unloaded." >&2
+  exit 1
+fi

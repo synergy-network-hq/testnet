@@ -18,27 +18,26 @@ Canonical identity:
 ## Current Release Evidence
 
 - Node repository: `synergy-network-hq/testnet`
-- Node tag: `v12.2.18`
-- Node commit: `ad96256133af76ad670ea7f5f532ada454d06f4b`
-- Node GitHub Actions run: `26103018856`
+- Node tag: `v12.2.19`
+- Node commit: `c3b2585`
+- Node GitHub Actions run: `26107094704`
 - Node run status: Linux, macOS, Windows, and unified manifest succeeded.
 - Control Panel repository: `synergy-network-hq/synergy-node-control-panel`
-- Control Panel tag: `v12.2.18`
-- Control Panel commit: `6d2ff941facc2d07a310dd2a3b8321223b04f276`
-- Control Panel GitHub Actions run: `26104388942`
-- Control Panel run status: Linux, macOS, and Windows installers succeeded.
+- Control Panel tag: `v12.2.19`
+- Control Panel commit: `eb82d19`
+- Control Panel GitHub Actions run: `26108441314`
+- Control Panel run status: release workflow succeeded and published installer artifacts.
 
 Trusted node runtime checksums:
-- Linux `synergy-testnet-linux-amd64`: `828ebdf05cb52ae31f2694b19d0b2c2663c3c43e1bae31e99ded91ccd5592689`
-- macOS `synergy-testnet-macos-arm64`: `f8675d0800426feec856359f23116fb32744744c1f342e627246972eb021a5fc`
-- Windows `synergy-testnet-windows-amd64.exe`: `191bc7276f2d0b7eaca7eb6a1901142dde6b903b08c8dc64d72508d109c73ea5`
+- Linux `synergy-testnet-linux-amd64`: `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
+- macOS and Windows artifacts were built by run `26107094704`; record platform checksums from the release manifest before the next live rollout.
 
 Trusted Control Panel Linux package:
-- `synergy-node-control-panel_12.2.18_amd64.deb`
-- digest: `sha256:29f33189fdf5ebc6cc30258196ed33d82b98e4280e4b9bedd254f8ccb94f1c40`
+- `synergy-node-control-panel_12.2.19_amd64.deb`
+- digest: `sha256:5ed100c2b5d061b9aa2520806d74bf982b2f4de02214efe7e30222b3f087dcc3`
 - verified package manifest:
-  - `app_version`: `12.2.18`
-  - `workspace_resource_version`: `12.2.18+47907c98de8e`
+  - `app_version`: `12.2.19`
+  - `workspace_resource_version`: `12.2.19`
   - `chain_id`: `1264`
   - `chain_id_hex`: `0x4f0`
   - `network_id`: `synergy-testnet-v2`
@@ -47,9 +46,9 @@ Trusted Control Panel Linux package:
 ## Live Deployment Status
 
 Deployed:
-- all five genesis validators have Control Panel package `12.2.18`
-- all five genesis validator runtime binaries hash to `828ebdf05cb52ae31f2694b19d0b2c2663c3c43e1bae31e99ded91ccd5592689`
-- both relayers have runtime binary hash `828ebdf05cb52ae31f2694b19d0b2c2663c3c43e1bae31e99ded91ccd5592689`
+- all five genesis validators have Control Panel package `12.2.19`
+- all five genesis validator runtime binaries hash to `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
+- both relayers have runtime binary hash `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
 - Atlas API and indexer are using relayer-only local tunnels:
   - primary: `http://127.0.0.1:8640`
   - fallback: `http://127.0.0.1:9640`
@@ -57,12 +56,11 @@ Deployed:
 
 Post-reset evidence observed during rollout:
 - QCs and canonical locks were created from height 1 onward on validators.
-- Latest block timestamps are close to wall clock after the v12.2.18 timestamp/leader-timeout fix.
-- Validator-local post-reset cadence sample at height 187:
-  - latest timestamp delta: 4 seconds
-  - 50-block average: 2.184 seconds
-  - 120-block average: 2.076 seconds
-  - available 187-block average: 2.054 seconds
+- Latest block timestamps are close to wall clock after the v12.2.19 timestamp/QC-persistence rollout.
+- Public RPC advanced 299 blocks in 598.025 seconds during the final observation window.
+- Final short cadence sample observed 18 blocks in 34.842 seconds.
+- Simultaneous validator sample at height 691 showed all five validators on hash `87a3338b82167705bd3d22cad9173c746042dac0fa4fa2d1470c7b60ab4c3b70`.
+- Public RPC sample at height 917 showed hash `cc90af52ad7a99ff01bb095f34589f152eed3733eec34ec015bf12c9e4794e57` with current block timestamp.
 - Atlas DB was backed up and reset before reindexing.
 - Atlas API latest-block rows show block production timestamps separately from inserted/indexed time.
 - DAG status is empty because no post-reset signed DAG transactions have been indexed:
@@ -70,21 +68,19 @@ Post-reset evidence observed during rollout:
   - `transactionCount`: `0`
   - `frontierCount`: `0`
 
-Follow-up live cadence finding after support services were re-enabled:
-- Later validator-local sampling showed the latest 50 block header intervals averaging about 3.37 seconds, with 3-4 second gaps.
-- Validator logs showed followers voting promptly but applying committed blocks roughly two seconds after receiving the committed block.
-- Root cause was durable QC persistence in the legacy runtime: `data/committed_qcs.json` was rewritten and fsynced as a full map on every committed QC. At about height 400 the file had grown to 161 MB, causing follower apply latency and next-leader readiness lag.
-- Source status: the pending v12.2.19 fix changes QC persistence to append-only `data/committed_qcs.jsonl`, keeps compatibility with legacy `committed_qcs.json`, skips duplicate appends, and avoids persisting P2P QCs before a block is actually appended to the canonical tip.
-- Live deployment status of the QC persistence fix: not deployed until a trusted GitHub Actions release artifact is built, installed, and verified.
+Resolved live cadence finding:
+- v12.2.19 changed committed QC persistence to append-only `data/committed_qcs.jsonl`, kept compatibility with legacy `committed_qcs.json`, skipped duplicate appends, and avoided persisting P2P QCs before a block was appended to the canonical tip.
+- This fix was deployed from the trusted GitHub Actions release artifact, not an ad hoc local binary.
+- Bootstrap/seed deleted-inode drift was corrected during rollout by replacing retired `synergy-testbeta` process launch paths with the current Testnet runtime and moving old inactive builds to a retired-builds archive on the service host.
 
 ## Implementation Status
 
 | Area | Status | Wired into live runtime | Tests observed | Limitations / notes |
 | --- | --- | --- | --- | --- |
-| PQC enforcement through aegis-pqvm | Partially implemented | Partially | PQC-only guard passed in GitHub Actions | Full no-fallback audit across every consensus-critical path remains incomplete. |
+| PQC enforcement through aegis-pqvm | Partially implemented | Partially | PQC-only guard passed in GitHub Actions; lifecycle stake tests now use real `aegis_pqvm` signatures | Full no-fallback audit across every consensus-critical path remains incomplete. |
 | Canonical serialization | Partially implemented | Partially | Existing serialization/genesis checks run in CI | Full proof for every consensus-critical type and unordered-map exclusion remains incomplete. |
 | Transaction admission | Partially implemented | Yes for legacy RPC/P2P admission | Focused validation paths exist | Full end-to-end aegis-pqvm admission proof remains incomplete. |
-| DAG mempool | Partially implemented | Partially | DAG helper/API paths exist | Live DAG is empty after reset until valid signed DAG transactions are submitted. |
+| DAG mempool | Partially implemented | Partially | DAG helper/API paths exist | Live DAG is empty after reset until valid signed DAG transactions are submitted. The current portable wallet helper signs through the wallet PQC CLI, not the mandatory `aegis-pqvm` transaction-key path required to prove DAG ingestion end to end. |
 | Deterministic execution | Scaffold/partial | Partially | Determinism scripts/tests exist | Full repeated execution/thread-count/state-root proof remains incomplete. |
 | PoSy finalization | Implemented in legacy runtime | Yes | Live QCs and canonical locks from height 1 onward | New typed PoSy module is not the sole runtime path. |
 | QC formation and verification | Implemented in legacy runtime | Yes | Consensus/P2P tests and live finality observed | Need full invalid-context matrix across live legacy path. |
@@ -93,17 +89,17 @@ Follow-up live cadence finding after support services were re-enabled:
 | Anti-divergence detection | Partial | Partially | Unit tests exist | Automatic fleet reconciliation is not proven live. |
 | Self-quarantine | Partial | Partially | Unit tests exist | Needs end-to-end live acceptance coverage. |
 | Reconciliation | Scaffold/partial | Not fully | Limited tests | Archive-assisted self-heal is not proven live. |
-| Archive validator/snapshot sync | Scaffold/partial | Not live | Package scaffolding exists | Archive snapshot production and validator fast-sync are not proven on live TESTNET. |
-| Validator onboarding | Partial | Control Panel/runtime partial | Onboarding tests exist | Must still prove full `STAKE_REQUIRED -> STAKE_CONFIRMED -> ACTIVE` live flow. |
-| Staking requirement | Partial | Partially | Some tests/docs exist | Needs canonical finalized stake-lock verification in live onboarding flow. |
+| Archive validator/snapshot sync | Scaffold/partial | Not live | Archive package asset tests pass locally | Linux/macOS package structure now exists and fails closed for missing binary/signing/notarization inputs. Snapshot production, API serving, and validator fast-sync commands are intentionally fail-closed stubs until full verified archive storage/install logic is wired. |
+| Validator onboarding | Partial | Control Panel/runtime partial | Lifecycle order and stake-gate tests pass locally | Must still prove full `STAKE_REQUIRED -> STAKE_CONFIRMED -> ACTIVE` live flow. Legacy direct register/approve CLI and RPC shortcuts are now disabled in source. |
+| Staking requirement | Partial | Partially | Wrong chain/network/signature, under-stake, exact stake, over-stake, bad status, identity mismatch, and no-skip tests pass locally | Needs canonical finalized stake-lock verification in live onboarding flow. |
 | Node Control Panel live status | Partial | UI/package partial | UI tests exist in control-panel repo | Live hosts have current package, but full UI state-panel acceptance was not reverified visually in this rollout. |
 | Atlas DAG display | Partial | Atlas live, DAG empty | API/frontend paths exist | Empty DAG is expected until real signed DAG transactions are indexed. |
 | Reset tooling | Implemented but high risk | Available | Installer validation scripts exist | Resets must preserve keys/config/logs/evidence and use chain 1264 only. |
-| Release packaging | Implemented for v12.2.18 | Yes | Node and Control Panel release workflows succeeded | Release packaging should keep rejecting stale 1262/1263/Testnet-Beta deployable material. |
+| Release packaging | Implemented for v12.2.19 | Yes | Node and Control Panel release workflows succeeded | Release packaging should keep rejecting stale 1262/1263/Testnet-Beta deployable material. |
 | Relayer topology | Partially enforced | Live peer tables match validator-private relayer bridge | Manual peer audit done | Need continuous topology verification in CI/ops. |
 | Observer behavior | Partial | Observer not active in final sample | Manual preflight saw no observer qRPC state | Need tests proving observer cannot vote/propose/count toward quorum. |
 
-## Source Fixes Included in v12.2.18
+## Source Fixes Included in v12.2.19
 
 Timestamp/cadence:
 - The proposer no longer stamps delayed blocks as only `parent.timestamp + block_time_secs`.
@@ -118,7 +114,7 @@ Support-node catch-up:
 - Support-node block sync responses are bounded.
 - Consensus vote/proposal/QC paths remain prioritized over bulk catch-up traffic.
 
-Post-v12.2.18 QC persistence fix pending trusted release:
+QC persistence:
 - Committed QCs are no longer persisted by rewriting the full QC map every block.
 - New durable file: `data/committed_qcs.jsonl`.
 - Legacy load compatibility remains for `data/committed_qcs.json`.
@@ -143,14 +139,21 @@ Passing local checks before tag:
 - `git diff --check`
 
 Passing GitHub Actions:
-- `synergy-network-hq/testnet` run `26103018856`
-- `synergy-network-hq/synergy-node-control-panel` run `26104388942`
+- `synergy-network-hq/testnet` run `26107094704`
+- `synergy-network-hq/synergy-node-control-panel` run `26108441314`
+
+Additional local checks after this audit update:
+- `cargo test validator_lifecycle --lib`
+- `cargo test archive_validator --lib`
+- `bash -n archive-validator/package-archive-validator.sh archive-validator/setup-archive-validator.sh archive-validator/macos/build-macos-pkg.sh archive-validator/macos/preinstall archive-validator/macos/postinstall archive-validator/macos/uninstall-macos.sh`
+- `git diff --check`
 
 ## Known Limitations
 
 - Full typed-module overhaul is not complete; the live runtime still uses the legacy consensus path plus hardened guards.
 - Full Aegis PQC end-to-end proof remains incomplete for every artifact class listed in the long-form requirements.
 - Archive validator snapshot creation/verification is scaffolded but not live-proven.
+- The `synergy-archive` serve/create/verify commands and `synergy-node sync-from-archive` / `self-heal-from-archive` commands refuse to mutate or serve until the real verified storage/snapshot implementation is wired.
 - Automatic self-heal and rejoin is not live-proven.
 - Non-genesis staking/onboarding safety is partially implemented but not fully live-accepted.
 - Atlas DAG is correctly empty after reset because no signed DAG transactions have been indexed yet.

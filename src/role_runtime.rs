@@ -1781,7 +1781,7 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                             "main",
                             "Validator self-registration requires the explicit funding and activation workflow",
                             "address" => validator_address.clone(),
-                            "required_stake_snrg" => 5000u64
+                            "required_stake_snrg" => 50_000u64
                         );
                     }
                 }
@@ -2187,57 +2187,11 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
                 }
             }
 
-            if address.is_none() || key_path.is_none() {
-                eprintln!("Error: --address and --key are required");
-                process::exit(1);
-            }
-
-            let private_key_hex = fs::read_to_string(&key_path.as_ref().unwrap())
-                .map_err(|e| format!("Failed to read key file: {}", e))
-                .unwrap_or_else(|e| {
-                    eprintln!("Error: {}", e);
-                    process::exit(1);
-                });
-
-            let public_key = private_key_hex.trim().to_string();
-            let addr = address.unwrap();
-
-            let registration = ValidatorRegistration {
-                address: addr.clone(),
-                public_key,
-                name: "Control Panel Node".to_string(),
-                stake_amount: 1000,
-                submitted_at: SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs(),
-                registration_tx_hash: format!(
-                    "reg_{}",
-                    SystemTime::now()
-                        .duration_since(UNIX_EPOCH)
-                        .unwrap()
-                        .as_secs()
-                ),
-            };
-
-            let validator_manager = VALIDATOR_MANAGER.clone();
-            match validator_manager.register_validator(registration) {
-                Ok(result) => {
-                    println!("✅ {}", result);
-                    if let Err(e) = validator_manager.approve_validator(&addr) {
-                        eprintln!(
-                            "Warning: Registration succeeded but auto-approval failed: {}",
-                            e
-                        );
-                    } else {
-                        println!("✅ Validator auto-approved for testnet");
-                    }
-                }
-                Err(e) => {
-                    eprintln!("Error: {}", e);
-                    process::exit(1);
-                }
-            }
+            let _ = (address, key_path);
+            eprintln!(
+                "Error: legacy direct validator registration is disabled on Synergy Testnet chain 1264. Use the on-chain validator activation flow: bind Aegis PQC keys, submit and finalize a 50,000 SNRG stake lock, sync/replay/shadow, then activate at a finalized epoch boundary."
+            );
+            process::exit(1);
         }
         "sync" => {
             let mut config_path: Option<String> = None;
