@@ -1892,11 +1892,10 @@ impl ProofOfSynergy {
             }
         };
 
-        let Some(locked_proposer) = active_validators
+        if !active_validators
             .iter()
-            .find(|validator| validator.address == locked_vote.proposer)
-            .cloned()
-        else {
+            .any(|validator| validator.address == locked_vote.proposer)
+        {
             warn!(
                 "consensus",
                 "Ignoring local same-height vote lock because its proposer is no longer active",
@@ -1907,16 +1906,16 @@ impl ProofOfSynergy {
                 "height" => next_block_index
             );
             return selected_validator;
-        };
+        }
 
-        if locked_proposer.address != selected_validator.address {
+        if locked_vote.proposer != selected_validator.address {
             info!(
                 "consensus",
-                "Pinning leader to local same-height vote lock",
+                "Ignoring local same-height vote lock for leader selection",
                 "local_validator" => local_validator_address.to_string(),
-                "scheduled_leader" => selected_validator.address,
-                "locked_proposer" => locked_proposer.address.clone(),
-                "locked_block_hash" => locked_vote.block_hash,
+                "scheduled_leader" => selected_validator.address.clone(),
+                "locked_proposer" => locked_vote.proposer.clone(),
+                "locked_block_hash" => locked_vote.block_hash.clone(),
                 "locked_first_round" => locked_vote.first_round_number,
                 "locked_latest_round" => locked_vote.latest_round_number,
                 "epoch" => current_epoch,
@@ -1924,7 +1923,7 @@ impl ProofOfSynergy {
             );
         }
 
-        locked_proposer
+        selected_validator
     }
 
     fn create_block_proposal(
@@ -3027,7 +3026,7 @@ mod tests {
     }
 
     #[test]
-    fn leader_selection_prefers_local_same_height_vote_lock() {
+    fn leader_selection_does_not_pin_to_stale_local_same_height_vote_lock() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -3072,14 +3071,14 @@ mod tests {
         let active_validators = vec![scheduled.clone(), locked.clone()];
 
         let selected = ProofOfSynergy::prefer_local_vote_lock_leader(
-            scheduled,
+            scheduled.clone(),
             &active_validators,
             Some("validator-local"),
             55,
             810,
         );
 
-        assert_eq!(selected.address, locked.address);
+        assert_eq!(selected.address, scheduled.address);
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
