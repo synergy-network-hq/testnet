@@ -142,6 +142,7 @@ reset_local_state() {
   rm -f "$ROOT_DIR/data/validator_registry.json"
   rm -f "$ROOT_DIR/data/committed_qcs.json"
   rm -f "$ROOT_DIR/data/committed_qcs.json.tmp"
+  rm -f "$ROOT_DIR/data/committed_qcs.jsonl"
   rm -f "$ROOT_DIR/data/canonical_locks.json"
   rm -f "$ROOT_DIR/data/canonical_locks.json.tmp"
   rm -f "$ROOT_DIR/data/consensus_vote_locks.json"
@@ -154,7 +155,7 @@ reset_local_state() {
     [[ -z "$machine_id" ]] && continue
     local_data_dir="$ROOT_DIR/data/testnet15/$machine_id"
     rm -rf "$local_data_dir/chain" "$local_data_dir/logs"
-    rm -f "$local_data_dir/committed_qcs.json" "$local_data_dir/committed_qcs.json.tmp"
+    rm -f "$local_data_dir/committed_qcs.json" "$local_data_dir/committed_qcs.json.tmp" "$local_data_dir/committed_qcs.jsonl"
     rm -f "$local_data_dir/canonical_locks.json" "$local_data_dir/canonical_locks.json.tmp"
     rm -f "$local_data_dir/consensus_vote_locks.json" "$local_data_dir/consensus_vote_locks.json.tmp"
     rm -f "$local_data_dir/dag_state.json"

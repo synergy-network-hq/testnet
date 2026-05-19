@@ -39,6 +39,12 @@ Trusted Control Panel Linux package:
 - `synergy-node-control-panel_12.2.18_amd64.deb`
 - digest: `sha256:29f33189fdf5ebc6cc30258196ed33d82b98e4280e4b9bedd254f8ccb94f1c40`
 
+Open follow-up after v12.2.18:
+- Later live sampling showed block cadence drifting to about 3.3 seconds over the latest 50 blocks.
+- Root cause: `data/committed_qcs.json` was rewritten and fsynced as a full QC map on every committed block. At about height 400 it had grown to 161 MB, which delayed follower block application and next-leader proposal readiness.
+- Source fix: commit future `v12.2.19` changes committed QC persistence to append-only `data/committed_qcs.jsonl`, loads both legacy JSON and JSONL for compatibility, skips duplicate QC appends, and records P2P QCs only after the block extends the local canonical tip.
+- Deployment rule: this fix must be promoted through the trusted GitHub Actions artifact path before any live install/reset.
+
 ## Final Reset / Start Sequence Used
 
 The final v12.2.18 reset preserved validator keys, peer identity keys, configs, WireGuard state, logs, evidence, and service credentials.
@@ -46,6 +52,7 @@ The final v12.2.18 reset preserved validator keys, peer identity keys, configs, 
 Cleared on validator and relayer runtime workspaces:
 - `chain.json`
 - `committed_qcs.json`
+- `committed_qcs.jsonl`
 - `canonical_locks.json`
 - `consensus_vote_locks.json`
 - DAG and token state

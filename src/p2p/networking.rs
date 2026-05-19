@@ -4900,7 +4900,6 @@ fn apply_block_if_new(
             );
             return false;
         }
-        DualQuorumConsensus::record_committed_qc(qc.clone());
     }
 
     let mut applied_blocks = Vec::new();
@@ -5402,11 +5401,11 @@ mod tests {
         canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
         disconnect_peer_after_poisoned_write, dispatch_peer_message,
-        ensure_peer_status_allows_chain_data, handle_status_message,
-        hydrate_peer_from_cache, local_node_runs_validator_consensus, local_peer_identity,
-        merge_peer_state_from_existing, parse_bootnode_dial_address, peer_has_identifying_metadata,
-        peer_identity_key, pending_incoming_connections_from_host, preferred_connection_direction,
-        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        ensure_peer_status_allows_chain_data, handle_status_message, hydrate_peer_from_cache,
+        local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
+        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
+        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
         validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,

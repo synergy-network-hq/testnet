@@ -70,6 +70,13 @@ Post-reset evidence observed during rollout:
   - `transactionCount`: `0`
   - `frontierCount`: `0`
 
+Follow-up live cadence finding after support services were re-enabled:
+- Later validator-local sampling showed the latest 50 block header intervals averaging about 3.37 seconds, with 3-4 second gaps.
+- Validator logs showed followers voting promptly but applying committed blocks roughly two seconds after receiving the committed block.
+- Root cause was durable QC persistence in the legacy runtime: `data/committed_qcs.json` was rewritten and fsynced as a full map on every committed QC. At about height 400 the file had grown to 161 MB, causing follower apply latency and next-leader readiness lag.
+- Source status: the pending v12.2.19 fix changes QC persistence to append-only `data/committed_qcs.jsonl`, keeps compatibility with legacy `committed_qcs.json`, skips duplicate appends, and avoids persisting P2P QCs before a block is actually appended to the canonical tip.
+- Live deployment status of the QC persistence fix: not deployed until a trusted GitHub Actions release artifact is built, installed, and verified.
+
 ## Implementation Status
 
 | Area | Status | Wired into live runtime | Tests observed | Limitations / notes |
@@ -111,6 +118,13 @@ Support-node catch-up:
 - Support-node block sync responses are bounded.
 - Consensus vote/proposal/QC paths remain prioritized over bulk catch-up traffic.
 
+Post-v12.2.18 QC persistence fix pending trusted release:
+- Committed QCs are no longer persisted by rewriting the full QC map every block.
+- New durable file: `data/committed_qcs.jsonl`.
+- Legacy load compatibility remains for `data/committed_qcs.json`.
+- Reset tooling now removes both `committed_qcs.json` and `committed_qcs.jsonl`.
+- P2P block application records a QC only after the block extends the local canonical tip.
+
 Follower QC validation:
 - Follower roles hydrate canonical genesis validators before verifying reset-chain QCs.
 - Non-validator roles can validate height-1 QCs without being allowed to vote/propose/count toward quorum.
@@ -121,6 +135,9 @@ Passing local checks before tag:
 - `cargo fmt`
 - `cargo test leader --lib`
 - `cargo test block_sync --lib`
+- `cargo test committed_qc_store --lib`
+- `cargo test p2p::networking::tests --lib`
+- `cargo test consensus::dual_quorum::tests --lib`
 - `cargo check --manifest-path control-service/Cargo.toml --bin control-service --no-default-features`
 - `SKIP_BUNDLED_ASSET_GIT_CLEAN_CHECK=1 bash scripts/release/validate-bundled-assets.sh`
 - `git diff --check`

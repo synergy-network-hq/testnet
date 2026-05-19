@@ -170,7 +170,7 @@ clean_data() {
 
         rm -rf data/chain data/logs data/chain.json data/validator_registry.json
         rm -f data/token_state.json
-        rm -f data/committed_qcs.json data/committed_qcs.json.tmp
+        rm -f data/committed_qcs.json data/committed_qcs.json.tmp data/committed_qcs.jsonl
         rm -f data/canonical_locks.json data/canonical_locks.json.tmp
         rm -f data/consensus_vote_locks.json data/consensus_vote_locks.json.tmp
         rm -f data/dag_state.json
