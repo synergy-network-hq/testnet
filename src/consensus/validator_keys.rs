@@ -283,6 +283,7 @@ fn candidate_private_key_paths() -> Vec<PathBuf> {
         PathBuf::from("config/validator/consensus.private.key"),
         PathBuf::from("config/validator/consensus_private.key"),
         PathBuf::from("config/validator/private_key.txt"),
+        PathBuf::from("keys/private.key"),
     ]);
     paths
 }
@@ -402,4 +403,21 @@ pub(crate) fn register_test_validator_signing_key(
         .lock()
         .expect("test validator key cache lock")
         .insert(validator_address.to_string(), (public_key, private_key));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candidate_private_key_paths_include_workspace_key_file() {
+        let paths = candidate_private_key_paths();
+
+        assert!(
+            paths
+                .iter()
+                .any(|path| path == Path::new("keys/private.key")),
+            "validator startup must discover the control-panel workspace private key path"
+        );
+    }
 }
