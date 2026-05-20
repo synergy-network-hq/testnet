@@ -8,14 +8,14 @@ This preflight is read-only. No validator restart, reset, installer deployment, 
 
 - Node repository: `synergy-network-hq/testnet`
 - Node branch: `main`
-- Latest pushed node commit: `3d83878` (`docs: update testnet 1264 readiness truth`)
+- Latest pushed node commit: `403663e` (`docs: complete validator checksum preflight`)
 - Runtime fix commit under tag build: `22cff3e` (`fix: self quarantine on canonical lock divergence`)
 - Node tag under trusted artifact build: `v12.2.24`
 - Node GitHub Actions run: `26184477201`
-- Node run status at capture: in progress; Linux, macOS, and Windows were still building release binaries.
+- Node run status after capture refresh: `v12.2.24` succeeded and published Linux, macOS, Windows, and `latest.json` release artifacts.
 - Control Panel repository: `synergy-network-hq/synergy-node-control-panel`
-- Latest pushed Control Panel commit: `8ca74e2` (`chore: bump control panel to 12.2.24`)
-- Control Panel `v12.2.24` tag is intentionally not promoted until the node `v12.2.24` artifacts are published.
+- Latest pushed Control Panel commit: `4a866c6` (`fix: verify onboarding public sync target identity`)
+- Control Panel `v12.2.24` workflow run `26185416441` failed before installer build because `rg` was missing on the runner; the fix must be promoted under a new tag.
 
 ## Validator State
 
@@ -101,8 +101,8 @@ Atlas DAG:
 ## Mutation Plan Required Before Any Live Change
 
 Do not mutate live services until:
-1. Node `v12.2.24` trusted GitHub Actions artifacts are green and checksums are recorded.
-2. Control Panel `v12.2.24` is tagged after node artifacts exist, builds green, and bundles matching trusted runtime binaries.
+1. A synchronized node `v12.2.25` tag exists and trusted GitHub Actions artifacts are green with checksums recorded.
+2. Control Panel `v12.2.25` builds green and bundles matching trusted runtime binaries.
 3. A fresh preflight re-confirms Validator 3 status, relayer/RPC/Atlas state, and artifact checksums.
 4. A Validator 3 evidence-preserving reconciliation plan is written, including exact files to back up, exact state to clear or roll back, and a rollback artifact.
 
