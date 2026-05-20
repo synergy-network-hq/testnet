@@ -1,4 +1,5 @@
 use crate::block::Block;
+use crate::consensus::anti_divergence::current_self_quarantine_record;
 use crate::consensus::validator_keys::{
     sign_with_local_validator_key, verify_block_proposer_key_matches_validator,
     verify_signer_key_matches_validator,
@@ -176,6 +177,12 @@ impl DualQuorumConsensus {
         proposed_block: &Block,
         minimum_round_number: u64,
     ) -> Result<QuorumCertificate, String> {
+        if let Some(record) = current_self_quarantine_record() {
+            return Err(format!(
+                "validator is self-quarantined at divergence height {} and cannot propose, vote, or aggregate QCs: {}",
+                record.divergence_height.0, record.reason
+            ));
+        }
         let block_hash = proposed_block.hash.clone();
         let epoch_number = self.current_epoch;
         let local_validator_address = self

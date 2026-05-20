@@ -8,6 +8,12 @@ use crate::synergy_types::{
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -419,6 +425,120 @@ pub struct ValidatorQuarantineManager {
     pub peer_quarantine: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SelfQuarantineRecord {
+    pub status: QuarantineStatus,
+    pub reason: String,
+    pub divergence_height: Height,
+    pub local_locked_block_hash: Option<String>,
+    pub conflicting_block_hash: String,
+    pub observed_at_unix_secs: u64,
+}
+
+impl SelfQuarantineRecord {
+    pub fn canonical_lock_conflict(
+        height: u64,
+        local_locked_block_hash: Option<String>,
+        conflicting_block_hash: String,
+        reason: String,
+    ) -> Self {
+        Self {
+            status: QuarantineStatus::SelfQuarantinedDivergence,
+            reason,
+            divergence_height: Height(height),
+            local_locked_block_hash,
+            conflicting_block_hash,
+            observed_at_unix_secs: current_unix_secs(),
+        }
+    }
+}
+
+pub fn record_self_quarantine_for_canonical_lock_conflict(
+    height: u64,
+    local_locked_block_hash: Option<String>,
+    conflicting_block_hash: &str,
+    reason: &str,
+) -> Result<SelfQuarantineRecord, String> {
+    let record = SelfQuarantineRecord::canonical_lock_conflict(
+        height,
+        local_locked_block_hash,
+        conflicting_block_hash.to_string(),
+        reason.to_string(),
+    );
+    write_self_quarantine_record(&self_quarantine_path(), &record)?;
+    Ok(record)
+}
+
+pub fn current_self_quarantine_record() -> Option<SelfQuarantineRecord> {
+    read_self_quarantine_record(&self_quarantine_path())
+        .ok()
+        .flatten()
+}
+
+pub fn validator_is_self_quarantined() -> bool {
+    current_self_quarantine_record()
+        .map(|record| record.status == QuarantineStatus::SelfQuarantinedDivergence)
+        .unwrap_or(false)
+}
+
+fn self_quarantine_path() -> PathBuf {
+    #[cfg(test)]
+    {
+        if let Ok(path) = std::env::var("SYNERGY_SELF_QUARANTINE_FILE") {
+            let trimmed = path.trim();
+            if !trimmed.is_empty() {
+                return PathBuf::from(trimmed);
+            }
+        }
+    }
+    crate::utils::resolve_data_path("data/validator_quarantine.json")
+}
+
+fn write_self_quarantine_record(path: &Path, record: &SelfQuarantineRecord) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create quarantine directory: {error}"))?;
+    }
+    let tmp_path = path.with_extension("json.tmp");
+    let bytes = serde_json::to_vec_pretty(record)
+        .map_err(|error| format!("failed to encode self-quarantine record: {error}"))?;
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(true).write(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    let mut file = options
+        .open(&tmp_path)
+        .map_err(|error| format!("failed to open self-quarantine temp file: {error}"))?;
+    file.write_all(&bytes)
+        .map_err(|error| format!("failed to write self-quarantine temp file: {error}"))?;
+    file.sync_all()
+        .map_err(|error| format!("failed to sync self-quarantine temp file: {error}"))?;
+    drop(file);
+    fs::rename(&tmp_path, path)
+        .map_err(|error| format!("failed to replace self-quarantine record: {error}"))
+}
+
+fn read_self_quarantine_record(path: &Path) -> Result<Option<SelfQuarantineRecord>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = fs::read(path)
+        .map_err(|error| format!("failed to read self-quarantine record: {error}"))?;
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("failed to parse self-quarantine record: {error}"))
+}
+
+fn current_unix_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0)
+}
+
 impl ValidatorQuarantineManager {
     pub fn self_quarantine(&mut self, reason: impl Into<String>) {
         self.self_status = QuarantineStatus::SelfQuarantinedDivergence;
@@ -728,6 +848,31 @@ mod tests {
         reconciliation.rebuild_indexes();
         reconciliation.run_rejoin_readiness_checks();
         assert_eq!(reconciliation.status, QuarantineStatus::ReadyToRejoin);
+    }
+
+    #[test]
+    fn self_quarantine_record_persists_canonical_lock_conflict_evidence() {
+        let path = std::env::temp_dir().join(format!(
+            "synergy-self-quarantine-test-{}-{}.json",
+            std::process::id(),
+            current_unix_secs()
+        ));
+        let record = SelfQuarantineRecord::canonical_lock_conflict(
+            11_668,
+            Some("local-lock".to_string()),
+            "peer-conflict".to_string(),
+            "canonical lock conflict".to_string(),
+        );
+        write_self_quarantine_record(&path, &record).unwrap();
+        let loaded = read_self_quarantine_record(&path).unwrap().unwrap();
+        assert_eq!(loaded.status, QuarantineStatus::SelfQuarantinedDivergence);
+        assert_eq!(loaded.divergence_height, Height(11_668));
+        assert_eq!(
+            loaded.local_locked_block_hash.as_deref(),
+            Some("local-lock")
+        );
+        assert_eq!(loaded.conflicting_block_hash, "peer-conflict");
+        let _ = fs::remove_file(path);
     }
 
     #[test]

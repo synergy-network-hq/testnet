@@ -1,8 +1,11 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
+use crate::consensus::anti_divergence::{
+    current_self_quarantine_record, record_self_quarantine_for_canonical_lock_conflict,
+};
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
-    verify_legacy_canonical_lock, write_legacy_canonical_lock,
+    legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
 };
 use crate::crypto::aegis_pqvm::{
     AegisPqvmKeyRegistry, AegisPqvmSigner, AegisPqvmVerifier, SYNERGY_P2P_HANDSHAKE_V1,
@@ -2742,6 +2745,19 @@ fn handle_vote_request_message(
         );
         return;
     }
+    if let Some(record) = current_self_quarantine_record() {
+        warn!(
+            "p2p",
+            "Self-quarantined validator refusing vote request",
+            "peer" => peer_address.to_string(),
+            "height" => block_data.block_index,
+            "epoch" => epoch_number,
+            "round" => round_number,
+            "quarantine_height" => record.divergence_height.0,
+            "reason" => record.reason
+        );
+        return;
+    }
 
     let mut local_tip = vote_request_local_tip(blockchain);
     if validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data).is_err() {
@@ -4871,6 +4887,38 @@ fn commit_verifier_has_active_validators(
     })
 }
 
+fn record_self_quarantine_from_canonical_lock_conflict(block: &Block, error: &str) {
+    let local_locked_hash = legacy_canonical_commit_record(block.block_index)
+        .ok()
+        .flatten()
+        .map(|record| record.block_hash);
+    match record_self_quarantine_for_canonical_lock_conflict(
+        block.block_index,
+        local_locked_hash,
+        &block.hash,
+        error,
+    ) {
+        Ok(record) => {
+            error!(
+                "p2p",
+                "Validator self-quarantined after local canonical lock conflict",
+                "height" => record.divergence_height.0,
+                "conflicting_hash" => record.conflicting_block_hash,
+                "reason" => record.reason
+            );
+        }
+        Err(write_error) => {
+            error!(
+                "p2p",
+                "Failed to persist self-quarantine after canonical lock conflict",
+                "height" => block.block_index,
+                "hash" => block.hash.clone(),
+                "error" => write_error
+            );
+        }
+    }
+}
+
 fn apply_block_if_new(
     blockchain: &BlockchainArc,
     block: Block,
@@ -4891,6 +4939,7 @@ fn apply_block_if_new(
     };
     if block.block_index > 0 {
         if let Err(error) = verify_legacy_canonical_lock(&block) {
+            record_self_quarantine_from_canonical_lock_conflict(&block, &error);
             warn!(
                 "p2p",
                 "Rejecting block that conflicts with canonical block lock",
@@ -4941,6 +4990,7 @@ fn apply_block_if_new(
 
             if next_block.block_index > 0 {
                 if let Err(error) = write_legacy_canonical_lock(&next_block, &next_qc) {
+                    record_self_quarantine_from_canonical_lock_conflict(&next_block, &error);
                     warn!(
                         "p2p",
                         "Rejecting block because canonical lock could not be written",
@@ -5068,6 +5118,7 @@ fn apply_block_batch(
         }
         if block.block_index > 0 {
             if let Err(error) = verify_legacy_canonical_lock(block) {
+                record_self_quarantine_from_canonical_lock_conflict(block, &error);
                 warn!(
                     "p2p",
                     "Rejecting block batch that conflicts with canonical block lock",
@@ -5142,6 +5193,7 @@ fn apply_block_batch(
             if block.block_index > 0 {
                 if let Some(qc) = qc_by_hash.get(&block.hash) {
                     if let Err(error) = write_legacy_canonical_lock(&block, qc) {
+                        record_self_quarantine_from_canonical_lock_conflict(&block, &error);
                         warn!(
                             "p2p",
                             "Rejecting block batch because canonical lock could not be written",
