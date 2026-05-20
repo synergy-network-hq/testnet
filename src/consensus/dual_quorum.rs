@@ -1596,8 +1596,13 @@ impl DualQuorumConsensus {
         validator_address: &str,
         minimum_round_number: u64,
     ) -> u64 {
-        let _ = (epoch_number, validator_address);
-        let round_number = minimum_round_number.max(1);
+        let persisted_lock_floor =
+            Self::local_locked_vote_for_height(validator_address, epoch_number, block_index)
+                .ok()
+                .flatten()
+                .map(|lock| lock.latest_round_number.saturating_add(1))
+                .unwrap_or(1);
+        let round_number = minimum_round_number.max(persisted_lock_floor).max(1);
         self.current_round_by_height
             .insert(block_index, round_number);
         round_number
@@ -2139,7 +2144,7 @@ mod tests {
     }
 
     #[test]
-    fn round_allocation_uses_view_selected_round_without_local_drift() {
+    fn round_allocation_resumes_above_persisted_lock_after_restart() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -2155,21 +2160,28 @@ mod tests {
             5,
         );
 
+        let path = temp_vote_lock_path("round-allocation-resume");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
         let remote_leader_block = signed_block(14, 1, "validator1");
-        let prior_local_vote = DualQuorumConsensus::create_vote_for_validator(
+        DualQuorumConsensus::register_local_vote_intent(
             "validator2",
             &remote_leader_block,
             41,
-            2,
+            41,
         )
-        .expect("prior local vote should be created");
-        assert!(DualQuorumConsensus::register_local_vote_attempt(&prior_local_vote).is_none());
+        .expect("prior local vote intent should be persisted");
 
         assert_eq!(
             consensus.allocate_round_number(14, 41, "validator2", 2),
-            2,
-            "round allocation must use the view-selected round instead of drifting past it"
+            42,
+            "round allocation must resume above a persisted same-height vote lock after restart"
         );
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]
