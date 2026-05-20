@@ -19,11 +19,12 @@ Canonical identity:
 
 - Node repository: `synergy-network-hq/testnet`
 - Last deployed fully observed release: `v12.2.19`
-- Latest node source commit on `testnet/main`: `2f7b832` (`docs: refresh testnet release readiness state`)
+- Latest node source commit on `testnet/main`: `b019c61` (`fix: wire aegis pqvm transaction submission path`)
 - Latest node source tag with green trusted artifacts: `v12.2.25`
 - Node GitHub Actions run for `v12.2.25`: `26185757460`
 - Node run status at this audit update: succeeded for Linux, macOS, Windows, and `latest.json` publication.
-- Previous node source commit `c6090c0` added a local `aegis-pqvm` transaction-key DAG CLI proof. It is not a live Atlas DAG ingestion proof.
+- Previous node source commit `c6090c0` added a local `aegis-pqvm` transaction-key DAG CLI proof.
+- Node source commit `b019c61` wires the generated `aegis-pqvm` transaction envelope into a public RPC method, `synergy_submitAegisTransaction`, and validates the legacy carrier transaction through the typed Aegis transaction-key path. This is source-only until a new trusted artifact is tagged, built, and deployed.
 - Control Panel repository: `synergy-network-hq/synergy-node-control-panel`
 - Last deployed fully observed Control Panel release: `v12.2.19`
 - Latest Control Panel source commit on `main`: `342deb9` (`fix: install release validation tools`)
@@ -54,8 +55,8 @@ Last verified Control Panel Linux package:
 ## Live Deployment Status
 
 Current read-only preflight evidence gathered on 2026-05-20:
-- Validators 1, 2, 4, and 5 are advancing, but not sampled at the exact same height/hash.
-- Validator 3 is divergent/stuck at height `11668` on hash `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2`.
+- Validators 1, 2, 4, and 5 were advancing, but not sampled at the exact same height/hash before mutation.
+- Validator 3 was divergent/stuck at height `11668` on hash `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2`.
 - Validator 3 logs show canonical lock conflict evidence at height `11668`: the local canonical lock binds `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2` and rejects conflicting block `b8871be5fcb4f3b8069ecfd23287ed9ab1e0c747684c2edeaaf7e52214c0f915`.
 - Validator 3 continues refusing vote requests for later heights because proposals do not extend local tip `11668`. This is live divergence and must not be described as stable.
 - Public RPC peer table sampled with two peers, `relay1` and `relay2`, which matches the relayer-only public RPC topology requirement for that sample.
@@ -74,6 +75,15 @@ Current read-only preflight evidence gathered on 2026-05-20:
   - `transactionCount`: `0`
   - `frontierCount`: `0`
   - This is still expected only because no live post-reset real signed DAG transactions have been submitted and indexed.
+
+Evidence-preserving live repair work performed after preflight:
+- Validator 3 divergence evidence was backed up on-host at `/home/rob/.synergy/backups/v3-divergence-pre-v12.2.25-20260520T201929Z`.
+- Validator 3 was upgraded to the trusted Control Panel `12.2.25` package and trusted node runtime checksum `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`, then restarted from a clean local chain-following state while preserving keys, configs, logs, and evidence.
+- While Validator 3 was rebuilding, Validator 1 encountered a same-height canonical conflict at height `13781`. Validator 1 had canonical lock block `e5b3540999f5ee8aa29e8aecc3bda503216fe6218eb47cb5a001fd7a11cb51be`, while Validators 2/4/5 and public RPC agreed on block `a1c25fb8821e43fbd3be3718032c527b9b9e67b375b4d62ecf59e00f84cd83a1`.
+- Validator 1 divergence evidence was backed up on-host at `/home/justin/.synergy/backups/v1-divergence-13781-pre-v12.2.25-20260520T203850Z`.
+- Validator 1 was upgraded to Control Panel `12.2.25` and trusted node runtime checksum `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`. Only height `13781+` divergent consensus artifacts and volatile proposal/vote caches were removed after backup; persisted canonical chain data through height `13780` was retained.
+- Post-repair same-height sample at height `13905` showed Validator 1, Validator 2, Validator 4, Validator 5, and public RPC all on hash `00a555dee612ca8b568bff4b23ce4b9ed0b7738717b4409033615845389c34de`.
+- Validator 3 remained in genesis catch-up during this audit update and must not be counted as fully reconciled until it reaches the current canonical head and matches the validator quorum by height/hash.
 
 Deployed status from the previous accepted rollout remains useful historical context but is no longer current-health proof:
 - v12.2.19 produced QCs and canonical locks from height 1 onward after reset.
@@ -106,7 +116,7 @@ Resolved live cadence finding:
 | PQC enforcement through aegis-pqvm | Partially implemented | Partially | PQC-only guard passed in GitHub Actions; lifecycle stake tests now use real `aegis_pqvm` signatures; local `aegis_tx_tool` tests prove transaction-key signing/verification through `aegis-pqvm` | Full no-fallback audit across every consensus-critical path remains incomplete. Live transaction RPC/Atlas DAG admission proof remains incomplete. |
 | Canonical serialization | Partially implemented | Partially | Existing serialization/genesis checks run in CI | Full proof for every consensus-critical type and unordered-map exclusion remains incomplete. |
 | Transaction admission | Partially implemented | Yes for legacy RPC/P2P admission | Focused validation paths exist | Full end-to-end aegis-pqvm admission proof remains incomplete. |
-| DAG mempool | Partially implemented | Partially | `cargo test -p synergy-testnet aegis_tx_tool -- --nocapture` passed; `synergy-node dag submit-test-fixture --real-aegis-pqvm` locally created independent, sequence-dependent, explicit-dependency, and conflict transactions with `wallet_cli_used=false` and `demo_data_used=false` | Live DAG is still empty after reset. The local helper proves real `aegis-pqvm` transaction-key signing/admission into local DAG state only; typed live transaction RPC submission and Atlas indexing remain unwired/unproven. |
+| DAG mempool | Partially implemented | Partially | `cargo test -p synergy-testnet aegis_tx_tool -- --nocapture` passed; `cargo test -p synergy-testnet dag_mempool -- --nocapture` passed; `synergy-node dag submit-test-fixture --real-aegis-pqvm` locally created independent, sequence-dependent, explicit-dependency, and conflict transactions with `wallet_cli_used=false` and `demo_data_used=false` | Live DAG is still empty after reset. Commit `b019c61` wires the source RPC path for real Aegis envelopes, but it is not yet in a tagged trusted artifact or deployed live. Atlas DAG indexing through this path remains unproven. |
 | Deterministic execution | Scaffold/partial | Partially | Determinism scripts/tests exist | Full repeated execution/thread-count/state-root proof remains incomplete. |
 | PoSy finalization | Implemented in legacy runtime | Yes | Live QCs and canonical locks from height 1 onward | New typed PoSy module is not the sole runtime path. |
 | QC formation and verification | Implemented in legacy runtime | Yes | Consensus/P2P tests and live finality observed | Need full invalid-context matrix across live legacy path. |
@@ -121,7 +131,7 @@ Resolved live cadence finding:
 | Node Control Panel live status | Partial | UI/package partial | UI tests exist in control-panel repo | Live hosts have current package, but full UI state-panel acceptance was not reverified visually in this rollout. |
 | Atlas DAG display | Partial | Atlas live, DAG empty | API/frontend paths exist | Empty DAG is expected until real signed DAG transactions are indexed. |
 | Reset tooling | Implemented but high risk | Available | Installer validation scripts exist | Resets must preserve keys/config/logs/evidence and use chain 1264 only. |
-| Release packaging | Implemented for v12.2.25 artifacts | Not deployed live | Node `v12.2.25` run `26185757460` and Control Panel `v12.2.25` run `26186714962` succeeded. | Live deployment still requires fresh preflight and evidence-preserving mutation plan. |
+| Release packaging | Implemented for v12.2.25 artifacts | Partially deployed live | Node `v12.2.25` run `26185757460` and Control Panel `v12.2.25` run `26186714962` succeeded. Validators 1 and 3 have been upgraded to the trusted `v12.2.25` runtime after evidence-preserving repair. Validators 2, 4, and 5 remain on the older runtime until Validator 3 catches up or a new safe rolling plan exists. | Package drift is not fully eliminated. Commit `b019c61` requires a new trusted artifact before deployment. |
 | Relayer topology | Partially enforced | Live peer tables match validator-private relayer bridge | Manual peer audit done | Need continuous topology verification in CI/ops. |
 | Observer behavior | Partial | Observer not active in final sample | Manual preflight saw no observer qRPC state | Need tests proving observer cannot vote/propose/count toward quorum. |
 
@@ -199,15 +209,21 @@ Passing local checks for the pending `v12.2.25` source:
 - Control Panel: `bash -n scripts/release/validate-bundled-assets.sh`
 - Control Panel: `cargo check --manifest-path control-service/Cargo.toml --bin control-service --no-default-features`
 
+Passing local checks for source commit `b019c61`:
+- `cargo fmt`
+- `cargo test -p synergy-testnet aegis_tx_tool -- --nocapture`
+- `cargo test -p synergy-testnet dag_mempool -- --nocapture`
+
 ## Known Limitations
 
 - Full typed-module overhaul is not complete; the live runtime still uses the legacy consensus path plus hardened guards.
 - Full Aegis PQC end-to-end proof remains incomplete for every artifact class listed in the long-form requirements.
-- The new `aegis-pqvm` DAG transaction helper is not yet a live end-to-end DAG proof because typed live RPC submission and Atlas DAG indexing are still not wired through this path.
+- The new `aegis-pqvm` DAG transaction helper and `synergy_submitAegisTransaction` source path are not yet a live end-to-end DAG proof because commit `b019c61` still needs a trusted artifact, live deployment, real transaction submission, finality, and Atlas DB/API/frontend evidence.
 - Archive validator snapshot creation/verification is scaffolded but not live-proven.
 - The `synergy-archive` serve/create/verify commands and `synergy-node sync-from-archive` / `self-heal-from-archive` commands refuse to mutate or serve until the real verified storage/snapshot implementation is wired.
 - Automatic self-heal and rejoin is not live-proven.
-- Validator 3 is currently live-divergent/stuck at height `11668`; four validators continue advancing, but the fleet is not healthy.
+- Validator 3 is no longer left on the divergent local lock, but it is still rebuilding from genesis and must catch up to the canonical head before the fleet can be called healthy.
+- Validator 1 experienced a same-height conflict at height `13781` during Validator 3 catch-up. Evidence was preserved and the node was repaired back to canonical height `13780`; the old-runtime conflict mechanism remains a critical incident requiring regression hardening and final verification.
 - Current public RPC block interval samples are around 3 seconds, so the 2 second cadence target is not yet satisfied.
 - Non-genesis staking/onboarding safety is partially implemented but not fully live-accepted.
 - Atlas DAG is correctly empty after reset because no signed DAG transactions have been indexed yet.

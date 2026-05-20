@@ -31,13 +31,14 @@ Current deployed release and pending source:
 - Control Panel tag: `v12.2.19`
 - Control Panel commit: `eb82d19`
 - Control Panel GitHub Actions run: `26108441314`
-- Latest node source commit: `2f7b832` (`docs: refresh testnet release readiness state`)
+- Latest node source commit: `b019c61` (`fix: wire aegis pqvm transaction submission path`)
 - Latest green node tag: `v12.2.25`
 - Latest green node GitHub Actions run: `26185757460`
 - Latest Control Panel source commit: `342deb9` (`fix: install release validation tools`)
 - Control Panel `v12.2.24` workflow run `26185416441` failed before installer build because bundled-asset validation expected `rg` on runners.
 - Latest green Control Panel tag: `v12.2.25`
 - Latest green Control Panel GitHub Actions run: `26186714962`
+- Source newer than `v12.2.25`: `b019c61` adds `synergy_submitAegisTransaction` and Aegis envelope validation for typed transaction-key DAG submission. Do not deploy this change until a new trusted release artifact exists.
 
 Trusted Linux runtime checksum:
 - Node `v12.2.25` Linux `synergy-testnet`: `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`
@@ -50,9 +51,28 @@ Latest read-only live preflight note:
 - Do not claim fleet stability until Validator 3 is reconciled with evidence preserved and cadence is remeasured.
 - Do not deploy from local binaries. Use synchronized trusted node and Control Panel `v12.2.25` release artifacts only, after fresh preflight and mutation plan.
 
-Trusted Control Panel Linux package:
-- `synergy-node-control-panel_12.2.19_amd64.deb`
-- digest: `sha256:5ed100c2b5d061b9aa2520806d74bf982b2f4de02214efe7e30222b3f087dcc3`
+## 2026-05-20 Evidence-Preserving Repair Notes
+
+Validator 3 repair:
+- Pre-repair state: Validator 3 was stuck/divergent at height `11668` on hash `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2`.
+- Evidence backup: `/home/rob/.synergy/backups/v3-divergence-pre-v12.2.25-20260520T201929Z`.
+- Action: installed trusted Control Panel `12.2.25`, verified `.deb` checksum `03e49542343ff82f77307a8262465f14cb83010613b7c6b946c4b565469cd7b8`, replaced the workspace runtime with trusted node checksum `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`, cleared only local chain-following state, and restarted from genesis.
+- Preserved: validator keys, configs, logs, evidence, and operator identity material.
+- Current status at this note: Validator 3 is rebuilding and not yet caught up.
+
+Validator 1 same-height conflict repair:
+- During Validator 3 catch-up, Validator 1 accepted a conflicting canonical lock at height `13781`.
+- Validator 1 conflicting block: `e5b3540999f5ee8aa29e8aecc3bda503216fe6218eb47cb5a001fd7a11cb51be`.
+- Canonical block agreed by Validators 2/4/5 and public RPC: `a1c25fb8821e43fbd3be3718032c527b9b9e67b375b4d62ecf59e00f84cd83a1`.
+- Shared parent at height `13780`: `5cb9fb7718ffc2175358bfb7ca87b572b277a5f3f70384d71a35f1d8efc7d3f4`.
+- Evidence backup: `/home/justin/.synergy/backups/v1-divergence-13781-pre-v12.2.25-20260520T203850Z`.
+- Action: installed trusted Control Panel `12.2.25`, verified `.deb` checksum `03e49542343ff82f77307a8262465f14cb83010613b7c6b946c4b565469cd7b8`, replaced the workspace runtime with trusted node checksum `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`, removed only Validator 1 height `13781+` canonical/QC conflict artifacts and volatile proposal/vote caches after backup, and restarted from persisted canonical height `13780`.
+- Post-repair proof: height `13905` returned the same hash `00a555dee612ca8b568bff4b23ce4b9ed0b7738717b4409033615845389c34de` on Validator 1, Validator 2, Validator 4, Validator 5, and public RPC.
+- Safety note: because Validator 3 is still rebuilding, do not restart or roll the remaining Validators 2/4/5 unless a new preflight proves enough quorum margin or the planned action accepts a temporary finality pause.
+
+Trusted Control Panel Linux package for current repair work:
+- `synergy-node-control-panel_12.2.25_amd64.deb`
+- digest: `sha256:03e49542343ff82f77307a8262465f14cb83010613b7c6b946c4b565469cd7b8`
 
 Resolved follow-up after v12.2.18:
 - Later live sampling showed block cadence drifting to about 3.3 seconds over the latest 50 blocks.
