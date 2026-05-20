@@ -65,6 +65,8 @@ jobs:
             --bin synergy-address-engine \
             --bin wallet-pqc-cli \
             --bin synergy-rpc-gateway-node \
+            --bin synergy-archive \
+            --bin synergy-node \
             --bin synergy-indexer-and-explorer-node
 
       - name: Package binaries
@@ -102,6 +104,8 @@ jobs:
               "synergy-address-engine",
               "wallet-pqc-cli",
               "synergy-rpc-gateway-node",
+              "synergy-archive",
+              "synergy-node",
               "synergy-indexer-and-explorer-node",
           ]
 
@@ -138,6 +142,15 @@ jobs:
           manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
           print(f"manifest_path={manifest_path}")
           PY
+
+          if [[ "${MATRIX_LABEL}" == "linux-amd64" ]]; then
+            install -m 0755 "target/release/synergy-archive${MATRIX_SUFFIX}" archive-validator/bin/synergy-archive
+            ./archive-validator/package-archive-validator.sh --linux
+            cp archive-validator/synergy-archive-validator-testnet-v2-linux-x64.zip dist/
+            cp archive-validator/synergy-archive-validator-testnet-v2.zip dist/
+            cp archive-validator/dist/SHA256SUMS.linux dist/SHA256SUMS.archive-validator-linux
+            cp archive-validator/dist/SHA256SUMS dist/SHA256SUMS.archive-validator
+          fi
 
       - name: Upload workflow artifact
         continue-on-error: true

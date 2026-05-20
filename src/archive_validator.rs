@@ -389,10 +389,10 @@ mod tests {
             .expect("package script");
         assert!(package_script.contains("synergy-archive-validator-testnet-v2-linux-x64.zip"));
         assert!(package_script.contains("synergy-archive-validator-testnet-v2-macos-universal.zip"));
+        assert!(package_script.contains("synergy-archive-validator-testnet-v2.zip"));
         assert!(package_script.contains("Refusing to package private keys"));
         assert!(package_script.contains("snapshots"));
         assert!(package_script.contains("evidence"));
-        assert!(!package_script.contains("synergy-archive-validator-testnet-v2.zip\""));
 
         let macos_script =
             std::fs::read_to_string(root.join("macos/build-macos-pkg.sh")).expect("macos script");
