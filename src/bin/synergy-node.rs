@@ -266,6 +266,8 @@ fn diagnose_sync_target(
     let chain_id_result = rpc_call(rpc_url, "synergy_getChainId", serde_json::json!([]));
     let node_info_result = rpc_call(rpc_url, "synergy_nodeInfo", serde_json::json!([]));
     let latest_block_result = rpc_call(rpc_url, "synergy_getLatestBlock", serde_json::json!([]));
+    let genesis_block_result =
+        rpc_call(rpc_url, "synergy_getBlockByNumber", serde_json::json!([0]));
     let height_result = rpc_call(rpc_url, "synergy_blockNumber", serde_json::json!([]))
         .or_else(|_| rpc_call(rpc_url, "synergy_getBlockNumber", serde_json::json!([])));
 
@@ -285,7 +287,7 @@ fn diagnose_sync_target(
                 })
                 .and_then(|value| parse_u64ish(&value))
         });
-    let network_id = node_info_result
+    let reported_network_id = node_info_result
         .as_ref()
         .ok()
         .and_then(|value| {
@@ -321,26 +323,31 @@ fn diagnose_sync_target(
         .ok()
         .and_then(|value| value.get("hash").and_then(serde_json::Value::as_str))
         .map(str::to_string);
-    let genesis_hash = latest_block_result
+    let genesis_hash = genesis_block_result
         .as_ref()
         .ok()
-        .and_then(|value| {
-            value
-                .get("genesis_hash")
-                .or_else(|| value.get("genesisHash"))
-                .and_then(serde_json::Value::as_str)
-        })
-        .map(str::to_string);
+        .and_then(block_hash_from_value)
+        .or_else(|| {
+            latest_block_result
+                .as_ref()
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("genesis_hash")
+                        .or_else(|| value.get("genesisHash"))
+                        .and_then(serde_json::Value::as_str)
+                })
+                .map(str::to_string)
+        });
     let genesis_verified = match (expected_genesis_hash, genesis_hash.as_deref()) {
         (Some(expected), Some(actual)) => actual.eq_ignore_ascii_case(expected),
         (Some(_), None) => false,
-        (None, _) => true,
+        (None, Some(_)) => true,
+        (None, None) => false,
     };
+    let canonical_network_id = genesis_verified.then(|| "synergy-testnet-v2".to_string());
     let usable = chain_id == Some(1264)
-        && network_id
-            .as_deref()
-            .map(|value| value.contains("1264") || value.contains("synergy-testnet-v2"))
-            .unwrap_or(false)
+        && canonical_network_id.as_deref() == Some("synergy-testnet-v2")
         && latest_height.is_some()
         && genesis_verified;
 
@@ -348,7 +355,8 @@ fn diagnose_sync_target(
         "source": "rpc",
         "source_url": rpc_url,
         "chain_id": chain_id,
-        "network_id": network_id,
+        "network_id": canonical_network_id,
+        "reported_network_id": reported_network_id,
         "genesis_hash": genesis_hash,
         "expected_genesis_hash": expected_genesis_hash,
         "genesis_verified": genesis_verified,
@@ -363,6 +371,7 @@ fn diagnose_sync_target(
         "errors": {
             "chain_id": chain_id_result.err(),
             "node_info": node_info_result.err(),
+            "genesis_block": genesis_block_result.err(),
             "latest_block": latest_block_result.err(),
             "height": height_result.err()
         }
@@ -398,6 +407,15 @@ fn rpc_call(
         .get("result")
         .cloned()
         .ok_or_else(|| format!("{method} response did not include result"))
+}
+
+fn block_hash_from_value(value: &serde_json::Value) -> Option<String> {
+    value
+        .get("hash")
+        .or_else(|| value.get("block_hash"))
+        .or_else(|| value.get("blockHash"))
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
 }
 
 fn parse_u64ish(value: &serde_json::Value) -> Option<u64> {
