@@ -2164,13 +2164,8 @@ mod tests {
         DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
 
         let remote_leader_block = signed_block(14, 1, "validator1");
-        DualQuorumConsensus::register_local_vote_intent(
-            "validator2",
-            &remote_leader_block,
-            41,
-            41,
-        )
-        .expect("prior local vote intent should be persisted");
+        DualQuorumConsensus::register_local_vote_intent("validator2", &remote_leader_block, 41, 41)
+            .expect("prior local vote intent should be persisted");
 
         assert_eq!(
             consensus.allocate_round_number(14, 41, "validator2", 2),

@@ -5,6 +5,7 @@ use crate::synergy_types::{
     CanonicalSerialize, Epoch, Hash, Height, Transaction, TxDependency, TxDependencyType, TxId,
     TxNode, TxNodeStatus,
 };
+use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +14,7 @@ pub struct BlockSelectionLimits {
     pub max_gas: u64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct DagAdmissionResult {
     pub tx_id: TxId,
     pub ready: bool,

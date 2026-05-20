@@ -1,4 +1,5 @@
 pub mod address;
+pub mod aegis_tx_tool;
 pub mod archive_validator;
 pub mod block;
 pub mod broadcast;

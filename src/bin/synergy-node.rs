@@ -1,3 +1,6 @@
+use synergy_testnet::aegis_tx_tool::{
+    build_fixture_report, sign_with_new_aegis_transaction_key, AegisTxBuildOptions,
+};
 use synergy_testnet::synergy_types::{ChainId, NetworkId};
 
 fn main() {
@@ -11,6 +14,8 @@ fn run() -> Result<(), String> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let command = args.first().map(String::as_str).unwrap_or("help");
     match command {
+        "tx" => run_tx_command(&args)?,
+        "dag" => run_dag_command(&args)?,
         "diagnose-sync-target" => {
             require_testnet_args(&args)?;
             let rpc_url = arg_value(&args, "--rpc-url")
@@ -36,12 +41,182 @@ fn run() -> Result<(), String> {
         }
         _ => {
             println!("Commands:");
+            println!("  synergy-node tx create-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
+            println!("  synergy-node tx sign-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
+            println!("  synergy-node tx submit-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
+            println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node diagnose-sync-target --rpc-url <url> --chain-id 1264 --network-id synergy-testnet-v2 [--expected-genesis-hash <hash>]");
             println!("  synergy-node sync-from-archive --archive-url <url> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
             println!("  synergy-node self-heal-from-archive --archive-url <url> --divergence-height <height> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
         }
     }
     Ok(())
+}
+
+fn run_tx_command(args: &[String]) -> Result<(), String> {
+    require_testnet_args(args)?;
+    let subcommand = args.get(1).map(String::as_str).unwrap_or("help");
+    match subcommand {
+        "create-aegis" | "sign-aegis" => {
+            let report = sign_with_new_aegis_transaction_key(tx_options_from_args(args)?)?;
+            let mut output = signed_tx_summary(subcommand, &report);
+            if args.iter().any(|arg| arg == "--include-signed-transaction") {
+                output["signed_transaction"] = serde_json::to_value(&report.transaction)
+                    .map_err(|error| format!("failed to serialize signed transaction: {error}"))?;
+                output["canonical_tx_bytes_hex"] =
+                    serde_json::Value::String(report.canonical_tx_bytes_hex);
+            }
+            print_json(output)?;
+        }
+        "submit-aegis" => {
+            let report = sign_with_new_aegis_transaction_key(tx_options_from_args(args)?)?;
+            let mut output = signed_tx_summary(subcommand, &report);
+            output["atlas_ingestion_status"] = serde_json::Value::String(
+                "not_attempted: typed Aegis DAG transaction RPC is not wired; refusing to fabricate Atlas data"
+                    .to_string(),
+            );
+            output["live_submission_status"] =
+                serde_json::Value::String("blocked_until_typed_aegis_dag_rpc_exists".to_string());
+            print_json(output)?;
+        }
+        _ => {
+            println!("Commands:");
+            println!("  synergy-node tx create-aegis --chain-id 1264 --network-id synergy-testnet-v2 [--sender <uma>] [--receiver <uma>] [--nonce <n>] [--amount-nwei <n>] [--gas-limit <n>] [--max-fee-nwei <n>] [--ttl-height <h>] [--read <key>] [--write <key>] [--dependency <tx_id>] [--payload <text>]");
+            println!("  synergy-node tx sign-aegis --chain-id 1264 --network-id synergy-testnet-v2 [same options]");
+            println!("  synergy-node tx submit-aegis --chain-id 1264 --network-id synergy-testnet-v2 [same options]");
+        }
+    }
+    Ok(())
+}
+
+fn run_dag_command(args: &[String]) -> Result<(), String> {
+    require_testnet_args(args)?;
+    let subcommand = args.get(1).map(String::as_str).unwrap_or("help");
+    match subcommand {
+        "submit-test-fixture" => {
+            if !args.iter().any(|arg| arg == "--real-aegis-pqvm") {
+                return Err(
+                    "dag submit-test-fixture requires --real-aegis-pqvm; wallet CLI and demo data paths are refused"
+                        .to_string(),
+                );
+            }
+            let report = build_fixture_report()?;
+            print_json(serde_json::json!({
+                "command": subcommand,
+                "aegis_pqvm_path": "synergy_testnet::crypto::aegis_pqvm::AegisPqvmSigner",
+                "wallet_cli_used": false,
+                "demo_data_used": false,
+                "chain_id": report.chain_id,
+                "network_id": report.network_id,
+                "key_id": report.key_id,
+                "key_role": report.key_role,
+                "transactions": report.transactions.iter().map(|tx| {
+                    serde_json::json!({
+                        "tx_id": tx.tx_id,
+                        "key_id": tx.key_id,
+                        "key_role": tx.key_role,
+                        "signature_verification_result": tx.signature_verification_result,
+                        "dag_node_id": tx.dag_node_id,
+                        "admission_result": tx.admission_result,
+                        "signature_bytes_len": tx.transaction.aegis_pq_signature.signature_bytes.len(),
+                    })
+                }).collect::<Vec<_>>(),
+                "ready_frontier": report.ready_frontier,
+                "selected_ancestor_closed_set": report.selected_ancestor_closed_set,
+                "tx_order_root": report.tx_order_root,
+                "dag_frontier_root": report.dag_frontier_root,
+                "atlas_ingestion_status": report.atlas_ingestion_status,
+            }))?;
+        }
+        _ => {
+            println!("Commands:");
+            println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2");
+        }
+    }
+    Ok(())
+}
+
+fn signed_tx_summary(
+    command: &str,
+    report: &synergy_testnet::aegis_tx_tool::AegisSignedTxReport,
+) -> serde_json::Value {
+    serde_json::json!({
+        "command": command,
+        "aegis_pqvm_path": "synergy_testnet::crypto::aegis_pqvm::AegisPqvmSigner",
+        "wallet_cli_used": false,
+        "tx_id": report.tx_id,
+        "key_id": report.key_id,
+        "key_role": report.key_role,
+        "signature_verification_result": report.signature_verification_result,
+        "dag_node_id": report.dag_node_id,
+        "admission_result": report.admission_result,
+        "signature_bytes_len": report.transaction.aegis_pq_signature.signature_bytes.len(),
+        "chain_id": report.transaction.chain_id.0,
+        "network_id": report.transaction.network_id.0,
+    })
+}
+
+fn print_json(value: serde_json::Value) -> Result<(), String> {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&value)
+            .map_err(|error| format!("failed to serialize JSON report: {error}"))?
+    );
+    Ok(())
+}
+
+fn tx_options_from_args(args: &[String]) -> Result<AegisTxBuildOptions, String> {
+    let mut options = AegisTxBuildOptions::default();
+    if let Some(sender) = arg_value(args, "--sender") {
+        options.sender = sender.clone();
+        options.signer_uma_id = sender;
+    }
+    if let Some(signer_uma_id) = arg_value(args, "--signer-uma-id") {
+        options.signer_uma_id = signer_uma_id;
+    }
+    if let Some(receiver) = arg_value(args, "--receiver") {
+        options.receiver = receiver;
+    }
+    if let Some(nonce) = arg_value(args, "--nonce") {
+        options.nonce = nonce
+            .parse::<u64>()
+            .map_err(|error| format!("invalid --nonce: {error}"))?;
+    }
+    if let Some(amount) = arg_value(args, "--amount-nwei") {
+        options.amount_nwei = amount
+            .parse::<u128>()
+            .map_err(|error| format!("invalid --amount-nwei: {error}"))?;
+    }
+    if let Some(gas_limit) = arg_value(args, "--gas-limit") {
+        options.gas_limit = gas_limit
+            .parse::<u64>()
+            .map_err(|error| format!("invalid --gas-limit: {error}"))?;
+    }
+    if let Some(max_fee) = arg_value(args, "--max-fee-nwei") {
+        options.max_fee_nwei = max_fee
+            .parse::<u128>()
+            .map_err(|error| format!("invalid --max-fee-nwei: {error}"))?;
+    }
+    if let Some(ttl) = arg_value(args, "--ttl-height") {
+        options.ttl_height = ttl
+            .parse::<u64>()
+            .map_err(|error| format!("invalid --ttl-height: {error}"))?;
+    }
+    if let Some(epoch) = arg_value(args, "--epoch") {
+        options.epoch = epoch
+            .parse::<u64>()
+            .map_err(|error| format!("invalid --epoch: {error}"))?;
+    }
+    if let Some(payload) = arg_value(args, "--payload") {
+        options.payload = payload.into_bytes();
+    }
+    options.read_set_hint = arg_values(args, "--read");
+    let writes = arg_values(args, "--write");
+    if !writes.is_empty() {
+        options.write_set_hint = writes;
+    }
+    options.explicit_dependencies = arg_values(args, "--dependency");
+    Ok(options)
 }
 
 fn diagnose_sync_target(
@@ -213,4 +388,11 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
+}
+
+fn arg_values(args: &[String], name: &str) -> Vec<String> {
+    args.windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+        .collect()
 }
