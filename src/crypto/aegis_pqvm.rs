@@ -201,6 +201,22 @@ impl AegisPqvmKeyRegistry {
         key_id
     }
 
+    pub fn register_public_key_with_lifecycle(
+        &mut self,
+        public_key: PQCPublicKey,
+        lifecycle_record: AegisPqKeyLifecycleRecord,
+    ) -> Result<AegisPqKeyId, AegisPqvmError> {
+        let key_id = AegisPqKeyId(public_key.key_id.clone());
+        if key_id != lifecycle_record.key_id {
+            return Err(AegisPqvmError(
+                "Aegis public key id does not match lifecycle record".to_string(),
+            ));
+        }
+        self.public_keys.insert(key_id.clone(), public_key);
+        self.lifecycle.add_record(lifecycle_record);
+        Ok(key_id)
+    }
+
     pub fn public_key(&self, key_id: &AegisPqKeyId) -> Option<&PQCPublicKey> {
         self.public_keys.get(key_id)
     }
@@ -479,6 +495,41 @@ impl AegisPqvmVerifier {
             registry: AegisPqvmKeyRegistry::default(),
             initialized: false,
         }
+    }
+
+    pub fn initialize_required_for_public_key(
+        public_key: AegisPqPublicKey,
+        lifecycle_record: AegisPqKeyLifecycleRecord,
+    ) -> Result<Self, AegisPqvmError> {
+        if public_key.key_id != lifecycle_record.key_id {
+            return Err(AegisPqvmError(
+                "Aegis public key id does not match lifecycle record".to_string(),
+            ));
+        }
+        let pqc_public_key = PQCPublicKey {
+            algorithm: parse_algorithm(&public_key.algorithm)?,
+            key_data: public_key.key_bytes,
+            key_id: public_key.key_id.0.clone(),
+            created_at: 0,
+        };
+        let mut registry = AegisPqvmKeyRegistry::default();
+        registry.register_public_key_with_lifecycle(pqc_public_key, lifecycle_record)?;
+        Self::initialize_required(registry)
+    }
+
+    pub fn public_key_record(
+        &self,
+        key_id: &AegisPqKeyId,
+    ) -> Result<AegisPqPublicKey, AegisPqvmError> {
+        let key = self
+            .registry
+            .public_key(key_id)
+            .ok_or_else(|| AegisPqvmError(format!("missing public key {}", key_id.0)))?;
+        Ok(AegisPqPublicKey {
+            key_id: key_id.clone(),
+            algorithm: algorithm_name(&key.algorithm).to_string(),
+            key_bytes: key.key_data.clone(),
+        })
     }
 
     pub fn verify_transaction_signature(&self, tx: &crate::synergy_types::Transaction) -> bool {

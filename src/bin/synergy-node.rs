@@ -71,12 +71,18 @@ fn run_tx_command(args: &[String]) -> Result<(), String> {
         "submit-aegis" => {
             let report = sign_with_new_aegis_transaction_key(tx_options_from_args(args)?)?;
             let mut output = signed_tx_summary(subcommand, &report);
-            output["atlas_ingestion_status"] = serde_json::Value::String(
-                "not_attempted: typed Aegis DAG transaction RPC is not wired; refusing to fabricate Atlas data"
-                    .to_string(),
-            );
-            output["live_submission_status"] =
-                serde_json::Value::String("blocked_until_typed_aegis_dag_rpc_exists".to_string());
+            if let Some(rpc_url) = arg_value(args, "--rpc-url") {
+                let response = submit_aegis_transaction(&rpc_url, &report.submission_envelope)?;
+                output["live_submission_status"] =
+                    serde_json::Value::String("submitted_to_rpc".to_string());
+                output["rpc_url"] = serde_json::Value::String(rpc_url);
+                output["rpc_response"] = response;
+            } else {
+                output["live_submission_status"] = serde_json::Value::String(
+                    "not_attempted: pass --rpc-url to submit through synergy_submitAegisTransaction"
+                        .to_string(),
+                );
+            }
             print_json(output)?;
         }
         _ => {
@@ -153,6 +159,11 @@ fn signed_tx_summary(
         "signature_bytes_len": report.transaction.aegis_pq_signature.signature_bytes.len(),
         "chain_id": report.transaction.chain_id.0,
         "network_id": report.transaction.network_id.0,
+        "sender": report.transaction.sender_uma_or_account,
+        "receiver": report.transaction.receiver_uma_or_account,
+        "aegis_public_key": report.public_key,
+        "key_lifecycle_record": report.lifecycle_record,
+        "rpc_transaction": report.rpc_transaction,
     })
 }
 
@@ -163,6 +174,35 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
             .map_err(|error| format!("failed to serialize JSON report: {error}"))?
     );
     Ok(())
+}
+
+fn submit_aegis_transaction(
+    rpc_url: &str,
+    envelope: &synergy_testnet::aegis_tx_tool::AegisTxSubmissionEnvelope,
+) -> Result<serde_json::Value, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|error| format!("failed to initialize RPC client: {error}"))?;
+    let request = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "synergy_submitAegisTransaction",
+        "params": [envelope],
+    });
+    let response = client
+        .post(rpc_url)
+        .json(&request)
+        .send()
+        .map_err(|error| format!("failed to submit Aegis transaction to {rpc_url}: {error}"))?;
+    let status = response.status();
+    let value = response
+        .json::<serde_json::Value>()
+        .map_err(|error| format!("failed to parse RPC response: {error}"))?;
+    if !status.is_success() {
+        return Err(format!("RPC returned HTTP {status}: {value}"));
+    }
+    Ok(value)
 }
 
 fn tx_options_from_args(args: &[String]) -> Result<AegisTxBuildOptions, String> {

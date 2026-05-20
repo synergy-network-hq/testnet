@@ -2227,10 +2227,21 @@ impl ProofOfSynergy {
             }
         }
 
-        // 1. Verify transaction signature. Missing sender public keys fail closed:
-        // consensus cannot admit unsigned or unverifiable transactions.
-        let public_key = Self::get_transaction_public_key(&tx.sender);
-        if let Some(public_key) = public_key {
+        // 1. Verify transaction signature. Aegis DAG carrier transactions verify
+        // through the typed Aegis PQVM transaction-key path; legacy wallet
+        // transactions require an on-node public key.
+        if crate::aegis_tx_tool::is_legacy_aegis_carrier_transaction(tx) {
+            if let Err(error) = crate::aegis_tx_tool::validate_legacy_aegis_carrier_transaction(tx)
+            {
+                warn!(
+                    "consensus",
+                    "Rejecting Aegis PQVM transaction carrier",
+                    "tx_hash" => tx.hash(),
+                    "error" => error
+                );
+                return false;
+            }
+        } else if let Some(public_key) = Self::get_transaction_public_key(&tx.sender) {
             let pqc = pqc_manager.lock().unwrap();
             // Use raw_hash() for signature verification (without prefix)
             let message_bytes = match hex::decode(tx.raw_hash()) {

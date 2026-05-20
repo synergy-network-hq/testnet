@@ -15,6 +15,7 @@ use crate::genesis::canonical_genesis;
 use crate::role_profiles::{resolve_configured_role, AuthorityPlane, RoleProfile};
 use crate::sxcp;
 use crate::sync::{SyncManager, SyncState};
+use crate::synergy_types::CanonicalSerialize;
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
 use crate::validator::{
@@ -1179,6 +1180,65 @@ fn handle_json_rpc(
                 }
             } else {
                 json!("Missing transaction data")
+            }
+        }
+
+        "synergy_submitAegisTransaction" => {
+            if let Some(envelope_value) = params.get(0) {
+                match serde_json::from_value::<crate::aegis_tx_tool::AegisTxSubmissionEnvelope>(
+                    envelope_value.clone(),
+                ) {
+                    Ok(envelope) => {
+                        match crate::aegis_tx_tool::legacy_transaction_from_aegis_envelope(
+                            &envelope,
+                        ) {
+                            Ok(transaction) => {
+                                if transaction.chain_id != current_chain_id() {
+                                    return json!({
+                                        "error": format!(
+                                            "Aegis transaction chainId {} does not match local chain {}",
+                                            transaction.chain_id,
+                                            current_chain_id()
+                                        )
+                                    });
+                                }
+                                let tx_id = match envelope.transaction.canonical_bytes() {
+                                Ok(bytes) => crate::crypto::aegis_pqvm::AegisPqvmDomainSeparatedHash::hash_transaction(
+                                    crate::crypto::aegis_pqvm::SYNERGY_TX_V1,
+                                    envelope.transaction.chain_id,
+                                    &envelope.transaction.network_id,
+                                    &bytes,
+                                )
+                                .0,
+                                Err(error) => return json!({"error": format!("Aegis transaction canonicalization failed: {error}")}),
+                            };
+                                let tx_hash = transaction.hash();
+                                {
+                                    let mut pool = tx_pool.lock().unwrap();
+                                    pool.push(transaction.clone());
+                                }
+                                if let Some(p2p) = crate::p2p::get_p2p_network() {
+                                    p2p.broadcast_transaction(&transaction);
+                                }
+                                json!({
+                                    "success": true,
+                                    "tx_id": tx_id,
+                                    "tx_hash": tx_hash,
+                                    "mempool_status": "queued",
+                                    "aegis_pqvm_verification": "verified",
+                                    "wallet_cli_used": false,
+                                    "message": "Aegis PQVM transaction submitted"
+                                })
+                            }
+                            Err(error) => json!({"error": error}),
+                        }
+                    }
+                    Err(error) => {
+                        json!({"error": format!("Invalid Aegis transaction envelope: {error}")})
+                    }
+                }
+            } else {
+                json!("Missing Aegis transaction envelope")
             }
         }
 
@@ -3831,6 +3891,7 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_status" => Some(RpcMethodExposure::PublicRead),
         "synergy_simulateTransaction"
         | "synergy_sendTransaction"
+        | "synergy_submitAegisTransaction"
         | "synergy_call"
         | "synergy_estimateGas"
         | "synergy_createApproval"
