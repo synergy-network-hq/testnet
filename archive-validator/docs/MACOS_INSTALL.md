@@ -23,3 +23,18 @@ sudo /usr/local/synergy/share/archive-validator/uninstall-macos.sh
 ```
 
 Data deletion requires the explicit `--purge-data` flag.
+
+## Temporary Testnet Archive Testing Workaround
+
+If the signed and notarized macOS `.pkg` is not available yet, authorized Synergy Testnet archive-validator testing may use the portable zip after checksum verification. Do not disable Gatekeeper globally and do not run `spctl --master-disable`.
+
+```bash
+shasum -a 256 synergy-archive-validator-testnet-v2.zip
+xattr -d com.apple.quarantine synergy-archive-validator-testnet-v2.zip 2>/dev/null || true
+unzip synergy-archive-validator-testnet-v2.zip
+xattr -dr com.apple.quarantine ./archive-validator
+cd archive-validator
+sudo ./setup-archive-validator.sh
+```
+
+This is a temporary operator workaround only. The release-grade macOS path remains a signed, notarized, and stapled installer package.

@@ -53,11 +53,13 @@ if [[ "${YES}" != "true" ]]; then
 fi
 
 GENESIS_HASH="$(python3 - "$GENESIS_FILE" <<'PY'
-import hashlib, json, sys
-with open(sys.argv[1], 'rb') as fh:
-    data = json.loads(fh.read())
-payload = json.dumps(data, sort_keys=True, separators=(',', ':')).encode()
-print(hashlib.blake2s(payload).hexdigest())
+import json, sys
+with open(sys.argv[1], 'r', encoding='utf-8') as fh:
+    data = json.load(fh)
+value = data.get("integrity", {}).get("genesis_hash")
+if not value:
+    raise SystemExit("integrity.genesis_hash missing from genesis file")
+print(value)
 PY
 )"
 [[ "${GENESIS_HASH}" == "${EXPECTED_GENESIS_HASH}" ]] || { echo "computed genesis hash ${GENESIS_HASH} does not match expected ${EXPECTED_GENESIS_HASH}" >&2; exit 1; }

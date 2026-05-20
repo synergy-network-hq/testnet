@@ -35,6 +35,8 @@ node-control-panel/
 *.dylib
 *.dll
 *.exe
+archive-validator/dist/
+archive-validator/synergy-archive-validator-testnet-v2*.zip
 
 # Temporary files
 *.log

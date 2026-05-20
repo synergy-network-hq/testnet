@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DIST_DIR="${ROOT_DIR}/dist"
+GENERIC_ARTIFACT="${ROOT_DIR}/synergy-archive-validator-testnet-v2.zip"
 LINUX_ARTIFACT="${ROOT_DIR}/synergy-archive-validator-testnet-v2-linux-x64.zip"
 MACOS_ARTIFACT="${ROOT_DIR}/synergy-archive-validator-testnet-v2-macos-universal.zip"
 TARGET="linux"
@@ -35,7 +36,7 @@ fi
 mkdir -p "${DIST_DIR}"
 
 package_linux() {
-  rm -f "${LINUX_ARTIFACT}"
+  rm -f "${LINUX_ARTIFACT}" "${GENERIC_ARTIFACT}"
   cd "${ROOT_DIR}/.."
   zip -r "${LINUX_ARTIFACT}" archive-validator \
     -x 'archive-validator/synergy-archive-validator-testnet-v2-*.zip' \
@@ -49,8 +50,11 @@ package_linux() {
     -x 'archive-validator/**/snapshots/**' \
     -x 'archive-validator/**/logs/**' \
     -x 'archive-validator/**/evidence/**'
+  cp "${LINUX_ARTIFACT}" "${GENERIC_ARTIFACT}"
   (cd "${ROOT_DIR}" && shasum -a 256 "$(basename "${LINUX_ARTIFACT}")" > "${DIST_DIR}/SHA256SUMS.linux")
+  (cd "${ROOT_DIR}" && shasum -a 256 "$(basename "${GENERIC_ARTIFACT}")" > "${DIST_DIR}/SHA256SUMS")
   echo "Created ${LINUX_ARTIFACT}"
+  echo "Created ${GENERIC_ARTIFACT}"
 }
 
 package_macos() {
