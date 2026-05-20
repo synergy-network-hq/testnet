@@ -21,10 +21,10 @@ This preflight is read-only. No validator restart, reset, installer deployment, 
 
 | Validator | Latest height | Hash | Parent hash | Block timestamp | Host time | Delta | Runtime checksum / note |
 | --- | ---: | --- | --- | ---: | ---: | ---: | --- |
-| Validator 1 | 12543 | `5cbf7a3ead399d04972d5f4eb9b844d35bafa4d5ea6f0e9f1bf686095912ae4e` | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | 1779305065 | 1779305069 | 4s | qRPC healthy; process sampler matched the Control Panel agent first, so node runtime checksum must be re-sampled with a stricter process filter. |
+| Validator 1 | 12543 | `5cbf7a3ead399d04972d5f4eb9b844d35bafa4d5ea6f0e9f1bf686095912ae4e` | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | 1779305065 | 1779305069 | 4s | `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc` |
 | Validator 2 | 12543 | `5cbf7a3ead399d04972d5f4eb9b844d35bafa4d5ea6f0e9f1bf686095912ae4e` | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | 1779305065 | 1779305068 | 3s | `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc` |
 | Validator 3 | 11668 | `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2` | `3238715aed3dcadee39a2279dc3e524d9d6f28a080557bbf45f51457b616036b` | 1779302405 | 1779305070 | 2665s | `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc`; divergent/stuck. |
-| Validator 4 | 12542 | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | `9aa5e5dfb0ba21ef3d319743870cbedc28c4a495ec733d67a999ab5a47fcf4a8` | 1779305063 | 1779305066 | 3s | qRPC healthy; process sampler matched the Control Panel agent first, so node runtime checksum must be re-sampled with a stricter process filter. |
+| Validator 4 | 12542 | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | `9aa5e5dfb0ba21ef3d319743870cbedc28c4a495ec733d67a999ab5a47fcf4a8` | 1779305063 | 1779305066 | 3s | `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc` |
 | Validator 5 | 12543 | `5cbf7a3ead399d04972d5f4eb9b844d35bafa4d5ea6f0e9f1bf686095912ae4e` | `447dd79d730a665566fc476530d85558436add84f2c80e64720ff51e9840a3ea` | 1779305065 | 1779305069 | 4s | `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc` |
 
 Validator 3 divergence evidence:
