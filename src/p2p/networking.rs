@@ -4919,6 +4919,21 @@ fn record_self_quarantine_from_canonical_lock_conflict(block: &Block, error: &st
     }
 }
 
+fn record_peer_canonical_lock_conflict(block: &Block, error: &str) {
+    let local_locked_hash = legacy_canonical_commit_record(block.block_index)
+        .ok()
+        .flatten()
+        .map(|record| record.block_hash);
+    warn!(
+        "p2p",
+        "Rejected peer block that conflicts with local canonical lock",
+        "height" => block.block_index,
+        "local_locked_hash" => local_locked_hash.unwrap_or_else(|| "unknown".to_string()),
+        "conflicting_hash" => block.hash.clone(),
+        "error" => error.to_string()
+    );
+}
+
 fn apply_block_if_new(
     blockchain: &BlockchainArc,
     block: Block,
@@ -4939,7 +4954,7 @@ fn apply_block_if_new(
     };
     if block.block_index > 0 {
         if let Err(error) = verify_legacy_canonical_lock(&block) {
-            record_self_quarantine_from_canonical_lock_conflict(&block, &error);
+            record_peer_canonical_lock_conflict(&block, &error);
             warn!(
                 "p2p",
                 "Rejecting block that conflicts with canonical block lock",
@@ -5118,7 +5133,7 @@ fn apply_block_batch(
         }
         if block.block_index > 0 {
             if let Err(error) = verify_legacy_canonical_lock(block) {
-                record_self_quarantine_from_canonical_lock_conflict(block, &error);
+                record_peer_canonical_lock_conflict(block, &error);
                 warn!(
                     "p2p",
                     "Rejecting block batch that conflicts with canonical block lock",
@@ -5472,10 +5487,15 @@ mod tests {
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
     use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate, Vote};
-    use crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests;
     use crate::consensus::validator_keys::{
         consensus_algorithm_label, load_local_validator_keypair,
         register_test_validator_signing_key,
+    };
+    use crate::consensus::{
+        anti_divergence::current_self_quarantine_record,
+        legacy_canonical_lock::{
+            clear_legacy_canonical_locks_for_tests, write_legacy_canonical_lock,
+        },
     };
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
@@ -6661,6 +6681,57 @@ mod tests {
 
         assert!(!apply_block_if_new(&blockchain, unsigned_block, None));
         assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 0);
+    }
+
+    #[test]
+    fn peer_canonical_lock_conflict_does_not_self_quarantine_local_node() {
+        clear_legacy_canonical_locks_for_tests();
+
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let canonical_block = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let conflicting_peer_block = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            2,
+            104,
+        );
+        let canonical_qc = test_quorum_certificate(&canonical_block);
+        write_legacy_canonical_lock(&canonical_block, &canonical_qc)
+            .expect("test canonical lock should be written");
+
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        chain.add_block(canonical_block);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        assert!(!apply_block_if_new(
+            &blockchain,
+            conflicting_peer_block.clone(),
+            Some(test_quorum_certificate(&conflicting_peer_block))
+        ));
+        assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 1);
+        assert!(
+            current_self_quarantine_record().is_none(),
+            "rejecting a peer block that conflicts with a local canonical lock must not self-quarantine the local node"
+        );
+
+        clear_legacy_canonical_locks_for_tests();
     }
 
     #[test]

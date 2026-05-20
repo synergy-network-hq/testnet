@@ -490,8 +490,25 @@ fn self_quarantine_path() -> PathBuf {
                 return PathBuf::from(trimmed);
             }
         }
+        if let Some(test_name) = std::thread::current().name() {
+            let sanitized = test_name
+                .chars()
+                .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+                .collect::<String>();
+            return std::env::temp_dir().join(format!(
+                "synergy-test-validator-quarantine-{}-{sanitized}.json",
+                std::process::id()
+            ));
+        }
+        return std::env::temp_dir().join(format!(
+            "synergy-test-validator-quarantine-{}.json",
+            std::process::id()
+        ));
     }
-    crate::utils::resolve_data_path("data/validator_quarantine.json")
+    #[cfg(not(test))]
+    {
+        crate::utils::resolve_data_path("data/validator_quarantine.json")
+    }
 }
 
 fn write_self_quarantine_record(path: &Path, record: &SelfQuarantineRecord) -> Result<(), String> {
