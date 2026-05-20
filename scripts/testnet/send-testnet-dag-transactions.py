@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Send signed Synergy Testnet transactions for DAG observation.
+"""Retired wallet-CLI DAG sender.
 
-This script is intentionally client-side only: it reads explicit test key
-files, signs transactions locally with wallet-pqc-cli, and submits them through
-the public synergy_sendTransaction RPC method.
+This file is kept only as an operator breadcrumb for older load-test notes.
+It must not be used to prove Synergy Testnet DAG ingestion because it signs
+through wallet-pqc-cli instead of the mandatory aegis-pqvm transaction-key
+path. Use `synergy-node dag submit-test-fixture --real-aegis-pqvm` or
+`synergy-node tx submit-aegis --rpc-url <url>` instead.
 """
 
 from __future__ import annotations
@@ -292,6 +294,15 @@ def parse_args() -> argparse.Namespace:
 
 
 def main() -> int:
+    print(
+        "scripts/testnet/send-testnet-dag-transactions.py is retired: "
+        "wallet-pqc-cli DAG traffic is not accepted as Testnet DAG proof. "
+        "Use synergy-node dag submit-test-fixture --real-aegis-pqvm or "
+        "synergy-node tx submit-aegis --rpc-url <url>.",
+        file=sys.stderr,
+    )
+    return 2
+
     args = parse_args()
     if args.amount_snrg is not None:
         args.amount_nwei = None
