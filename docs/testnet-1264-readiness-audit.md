@@ -19,30 +19,33 @@ Canonical identity:
 
 - Node repository: `synergy-network-hq/testnet`
 - Last deployed fully observed release: `v12.2.19`
-- Latest node source commit on `testnet/main`: `403663e` (`docs: complete validator checksum preflight`)
-- Latest node source tag with green trusted artifacts: `v12.2.24`
-- Node GitHub Actions run for `v12.2.24`: `26184477201`
+- Latest node source commit on `testnet/main`: `2f7b832` (`docs: refresh testnet release readiness state`)
+- Latest node source tag with green trusted artifacts: `v12.2.25`
+- Node GitHub Actions run for `v12.2.25`: `26185757460`
 - Node run status at this audit update: succeeded for Linux, macOS, Windows, and `latest.json` publication.
-- Next synchronized release target: `v12.2.25`, to give the Control Panel a matching node tag after the `v12.2.24` Control Panel workflow failed before installer build.
 - Previous node source commit `c6090c0` added a local `aegis-pqvm` transaction-key DAG CLI proof. It is not a live Atlas DAG ingestion proof.
 - Control Panel repository: `synergy-network-hq/synergy-node-control-panel`
 - Last deployed fully observed Control Panel release: `v12.2.19`
-- Latest Control Panel source commit on `main`: `4a866c6` (`fix: verify onboarding public sync target identity`)
+- Latest Control Panel source commit on `main`: `342deb9` (`fix: install release validation tools`)
 - Control Panel `v12.2.22` release run `26183645638` failed in bundled asset validation because the workflow checked out the canonical node repo into `testnet-source/` while the validator script only looked for `../config/genesis.json`.
 - The validation script now prefers `testnet-source/config/genesis.json` and falls back to `../config/genesis.json`.
-- Control Panel `v12.2.24` workflow run `26185416441` failed before installer build because the runner did not have `rg` for bundled-asset validation. The fix is being promoted as the next patch tag instead of force-moving `v12.2.24`.
+- Control Panel `v12.2.24` workflow run `26185416441` failed before installer build because the runner did not have `rg` for bundled-asset validation.
+- Control Panel `v12.2.25` workflow run `26186714962` succeeded for Linux, macOS, and Windows installers after adding explicit release validation tool installation.
 
 Trusted deployed node runtime checksums:
 - Earlier deployed Linux `v12.2.19` runtime: `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
 - Latest live validator samples currently hash to `1325ef8f36d51ec6d01a166b22710c3fba170af3e3d691aa990bf4d788f289fc`; this must be tied back to its trusted release manifest before any final rollout claim.
-- `v12.2.24` trusted node checksums were published in `latest.json`; Linux `synergy-testnet` checksum is `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`.
+- `v12.2.25` trusted node checksums were published in `latest.json`:
+  - Linux `synergy-testnet`: `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`
+  - macOS `synergy-testnet`: `a9032478dacce5bd89ef4d72b3ceb063074820e53154df231581667decce6824`
+  - Windows `synergy-testnet`: `04fd8891cee7d81b42f55bee7fdea3ec3449d96193adc7d80c7918021399218d`
 
 Last verified Control Panel Linux package:
-- `synergy-node-control-panel_12.2.19_amd64.deb`
-- digest: `sha256:5ed100c2b5d061b9aa2520806d74bf982b2f4de02214efe7e30222b3f087dcc3`
+- `synergy-node-control-panel_12.2.25_amd64.deb`
+- digest: `sha256:03e49542343ff82f77307a8262465f14cb83010613b7c6b946c4b565469cd7b8`
 - verified package manifest:
-  - `app_version`: `12.2.19`
-  - `workspace_resource_version`: `12.2.19`
+  - `app_version`: `12.2.25`
+  - `workspace_resource_version`: `12.2.25`
   - `chain_id`: `1264`
   - `chain_id_hex`: `0x4f0`
   - `network_id`: `synergy-testnet-v2`
@@ -118,7 +121,7 @@ Resolved live cadence finding:
 | Node Control Panel live status | Partial | UI/package partial | UI tests exist in control-panel repo | Live hosts have current package, but full UI state-panel acceptance was not reverified visually in this rollout. |
 | Atlas DAG display | Partial | Atlas live, DAG empty | API/frontend paths exist | Empty DAG is expected until real signed DAG transactions are indexed. |
 | Reset tooling | Implemented but high risk | Available | Installer validation scripts exist | Resets must preserve keys/config/logs/evidence and use chain 1264 only. |
-| Release packaging | Implemented for v12.2.19; v12.2.25 pending | Yes for deployed v12.2.19 | Node `v12.2.24` GitHub Actions run `26184477201` succeeded. Control Panel `v12.2.24` failed before installer build due missing `rg` on runners. | Do not deploy the next release until synchronized node and Control Panel workflows both publish matching trusted artifacts. |
+| Release packaging | Implemented for v12.2.25 artifacts | Not deployed live | Node `v12.2.25` run `26185757460` and Control Panel `v12.2.25` run `26186714962` succeeded. | Live deployment still requires fresh preflight and evidence-preserving mutation plan. |
 | Relayer topology | Partially enforced | Live peer tables match validator-private relayer bridge | Manual peer audit done | Need continuous topology verification in CI/ops. |
 | Observer behavior | Partial | Observer not active in final sample | Manual preflight saw no observer qRPC state | Need tests proving observer cannot vote/propose/count toward quorum. |
 

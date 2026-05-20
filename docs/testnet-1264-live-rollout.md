@@ -31,23 +31,24 @@ Current deployed release and pending source:
 - Control Panel tag: `v12.2.19`
 - Control Panel commit: `eb82d19`
 - Control Panel GitHub Actions run: `26108441314`
-- Latest node source commit: `403663e` (`docs: complete validator checksum preflight`)
-- Latest green node tag: `v12.2.24`
-- Latest green node GitHub Actions run: `26184477201`
-- Next synchronized node tag target: `v12.2.25`
-- Latest Control Panel source commit: `4a866c6` (`fix: verify onboarding public sync target identity`)
+- Latest node source commit: `2f7b832` (`docs: refresh testnet release readiness state`)
+- Latest green node tag: `v12.2.25`
+- Latest green node GitHub Actions run: `26185757460`
+- Latest Control Panel source commit: `342deb9` (`fix: install release validation tools`)
 - Control Panel `v12.2.24` workflow run `26185416441` failed before installer build because bundled-asset validation expected `rg` on runners.
-- Pending Control Panel tag: `v12.2.25` after the release workflow fix is committed and a matching node `v12.2.25` tag exists.
+- Latest green Control Panel tag: `v12.2.25`
+- Latest green Control Panel GitHub Actions run: `26186714962`
 
 Trusted Linux runtime checksum:
-- `f4d155867e179510c0fab90d33b6d74b64b650a7d2f978a734e80f7c77a25d7c`
+- Node `v12.2.25` Linux `synergy-testnet`: `bc74a3ae1a480c5dae351ebed2707c5c34b3bf9046f0b60ea68900bd2caf467a`
+- Control Panel `v12.2.25` Linux `.deb`: `03e49542343ff82f77307a8262465f14cb83010613b7c6b946c4b565469cd7b8`
 
 Latest read-only live preflight note:
 - Validators 1, 2, 4, and 5 continue advancing.
 - Validator 3 is stuck/divergent at height `11668` with canonical lock hash `5b3bed3ac4377db5451fdc68366f31b14103fb867a4d8b756a29472435f444a2` and rejects a conflicting block hash `b8871be5fcb4f3b8069ecfd23287ed9ab1e0c747684c2edeaaf7e52214c0f915`.
 - Public RPC latest 50/120/300 block interval averages sampled around 3 seconds, not the 2 second target.
 - Do not claim fleet stability until Validator 3 is reconciled with evidence preserved and cadence is remeasured.
-- Do not deploy the pending source fix from local binaries; wait for synchronized trusted node and Control Panel release artifacts.
+- Do not deploy from local binaries. Use synchronized trusted node and Control Panel `v12.2.25` release artifacts only, after fresh preflight and mutation plan.
 
 Trusted Control Panel Linux package:
 - `synergy-node-control-panel_12.2.19_amd64.deb`
