@@ -1,8 +1,6 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
-use crate::consensus::anti_divergence::{
-    current_self_quarantine_record, record_self_quarantine_for_canonical_lock_conflict,
-};
+use crate::consensus::anti_divergence::current_self_quarantine_record;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
     legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
@@ -4887,38 +4885,6 @@ fn commit_verifier_has_active_validators(
     })
 }
 
-fn record_self_quarantine_from_canonical_lock_conflict(block: &Block, error: &str) {
-    let local_locked_hash = legacy_canonical_commit_record(block.block_index)
-        .ok()
-        .flatten()
-        .map(|record| record.block_hash);
-    match record_self_quarantine_for_canonical_lock_conflict(
-        block.block_index,
-        local_locked_hash,
-        &block.hash,
-        error,
-    ) {
-        Ok(record) => {
-            error!(
-                "p2p",
-                "Validator self-quarantined after local canonical lock conflict",
-                "height" => record.divergence_height.0,
-                "conflicting_hash" => record.conflicting_block_hash,
-                "reason" => record.reason
-            );
-        }
-        Err(write_error) => {
-            error!(
-                "p2p",
-                "Failed to persist self-quarantine after canonical lock conflict",
-                "height" => block.block_index,
-                "hash" => block.hash.clone(),
-                "error" => write_error
-            );
-        }
-    }
-}
-
 fn record_peer_canonical_lock_conflict(block: &Block, error: &str) {
     let local_locked_hash = legacy_canonical_commit_record(block.block_index)
         .ok()
@@ -5013,7 +4979,7 @@ fn apply_block_if_new(
 
             if next_block.block_index > 0 {
                 if let Err(error) = write_legacy_canonical_lock(&next_block, &next_qc) {
-                    record_self_quarantine_from_canonical_lock_conflict(&next_block, &error);
+                    record_canonical_lock_conflict_from_peer(blockchain, &next_block, &error);
                     warn!(
                         "p2p",
                         "Rejecting block because canonical lock could not be written",
@@ -5216,7 +5182,7 @@ fn apply_block_batch(
             if block.block_index > 0 {
                 if let Some(qc) = qc_by_hash.get(&block.hash) {
                     if let Err(error) = write_legacy_canonical_lock(&block, qc) {
-                        record_self_quarantine_from_canonical_lock_conflict(&block, &error);
+                        record_canonical_lock_conflict_from_peer(blockchain, &block, &error);
                         warn!(
                             "p2p",
                             "Rejecting block batch because canonical lock could not be written",
@@ -5473,9 +5439,9 @@ mod tests {
         apply_block_batch, apply_block_if_new, background_poll_interval,
         best_connected_validator_height, block_sync_request_range, block_sync_response_policy,
         build_local_handshake, bypasses_shared_message_queue, cache_peer_state,
-        canonical_genesis_hash, collect_known_peer_addresses, connected_validator_participants,
-        current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
-        disconnect_peer_after_poisoned_write, dispatch_peer_message,
+        cache_pending_block, canonical_genesis_hash, collect_known_peer_addresses,
+        connected_validator_participants, current_bootstrap_refresh_interval, current_timestamp,
+        dial_with_timeout, disconnect_peer_after_poisoned_write, dispatch_peer_message,
         ensure_peer_status_allows_chain_data, handle_status_message, hydrate_peer_from_cache,
         local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
@@ -6800,6 +6766,76 @@ mod tests {
             "peer-supplied canonical lock conflicts must be rejected and recorded as peer evidence, not local self-quarantine"
         );
 
+        clear_legacy_canonical_locks_for_tests();
+    }
+
+    #[test]
+    fn pending_peer_canonical_lock_conflict_after_tip_apply_does_not_self_quarantine() {
+        clear_legacy_canonical_locks_for_tests();
+        PENDING_BLOCKS.lock().unwrap().clear();
+
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let block_one = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let local_locked_block_two = signed_block(
+            2,
+            Vec::new(),
+            block_one.hash.clone(),
+            "synv1leader".to_string(),
+            2,
+            104,
+        );
+        let conflicting_peer_block_two = signed_block(
+            2,
+            Vec::new(),
+            block_one.hash.clone(),
+            "synv1leader".to_string(),
+            3,
+            106,
+        );
+        write_legacy_canonical_lock(
+            &local_locked_block_two,
+            &test_quorum_certificate(&local_locked_block_two),
+        )
+        .expect("test canonical lock should be written");
+        cache_pending_block(
+            conflicting_peer_block_two.clone(),
+            test_quorum_certificate(&conflicting_peer_block_two),
+        );
+
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        let block_one_qc = test_quorum_certificate(&block_one);
+        assert!(apply_block_if_new(
+            &blockchain,
+            block_one,
+            Some(block_one_qc)
+        ));
+        let chain = blockchain.lock().unwrap();
+        assert_eq!(chain.last().unwrap().block_index, 1);
+        assert_eq!(
+            current_self_quarantine_record(),
+            None,
+            "pending peer block conflicts discovered after applying the parent must be rejected as peer evidence without local self-quarantine"
+        );
+        drop(chain);
+
+        PENDING_BLOCKS.lock().unwrap().clear();
         clear_legacy_canonical_locks_for_tests();
     }
 
