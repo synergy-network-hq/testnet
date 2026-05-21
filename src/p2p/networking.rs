@@ -4934,6 +4934,34 @@ fn record_peer_canonical_lock_conflict(block: &Block, error: &str) {
     );
 }
 
+fn record_canonical_lock_conflict_from_peer(
+    blockchain: &BlockchainArc,
+    block: &Block,
+    error: &str,
+) {
+    let local_tip_height = blockchain
+        .lock()
+        .ok()
+        .and_then(|chain| chain.last().map(|tip| tip.block_index));
+
+    if local_tip_height
+        .map(|height| height <= block.block_index)
+        .unwrap_or(true)
+    {
+        record_self_quarantine_from_canonical_lock_conflict(block, error);
+        warn!(
+            "p2p",
+            "Self-quarantining because a valid peer block conflicts with the local canonical lock at or above the local tip",
+            "height" => block.block_index,
+            "hash" => block.hash.clone(),
+            "local_tip_height" => local_tip_height.unwrap_or(0),
+            "error" => error.to_string()
+        );
+    } else {
+        record_peer_canonical_lock_conflict(block, error);
+    }
+}
+
 fn apply_block_if_new(
     blockchain: &BlockchainArc,
     block: Block,
@@ -4954,7 +4982,7 @@ fn apply_block_if_new(
     };
     if block.block_index > 0 {
         if let Err(error) = verify_legacy_canonical_lock(&block) {
-            record_peer_canonical_lock_conflict(&block, &error);
+            record_canonical_lock_conflict_from_peer(blockchain, &block, &error);
             warn!(
                 "p2p",
                 "Rejecting block that conflicts with canonical block lock",
@@ -5133,7 +5161,7 @@ fn apply_block_batch(
         }
         if block.block_index > 0 {
             if let Err(error) = verify_legacy_canonical_lock(block) {
-                record_peer_canonical_lock_conflict(block, &error);
+                record_canonical_lock_conflict_from_peer(blockchain, block, &error);
                 warn!(
                     "p2p",
                     "Rejecting block batch that conflicts with canonical block lock",
@@ -6711,6 +6739,14 @@ mod tests {
             2,
             104,
         );
+        let next_canonical_block = signed_block(
+            2,
+            Vec::new(),
+            canonical_block.hash.clone(),
+            "synv1leader".to_string(),
+            3,
+            106,
+        );
         let canonical_qc = test_quorum_certificate(&canonical_block);
         write_legacy_canonical_lock(&canonical_block, &canonical_qc)
             .expect("test canonical lock should be written");
@@ -6718,6 +6754,58 @@ mod tests {
         let mut chain = BlockChain::new();
         chain.add_block(genesis);
         chain.add_block(canonical_block);
+        chain.add_block(next_canonical_block);
+        let blockchain = Arc::new(Mutex::new(chain));
+
+        assert!(!apply_block_if_new(
+            &blockchain,
+            conflicting_peer_block.clone(),
+            Some(test_quorum_certificate(&conflicting_peer_block))
+        ));
+        assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 2);
+        assert!(
+            current_self_quarantine_record().is_none(),
+            "rejecting a historical peer block that conflicts with a local canonical lock must not self-quarantine a node that is already past that height"
+        );
+
+        clear_legacy_canonical_locks_for_tests();
+    }
+
+    #[test]
+    fn peer_canonical_lock_conflict_at_local_tip_self_quarantines_local_node() {
+        clear_legacy_canonical_locks_for_tests();
+
+        let genesis = Block::new_with_timestamp(
+            0,
+            Vec::new(),
+            "genesis".to_string(),
+            "synv1leader".to_string(),
+            0,
+            100,
+        );
+        let local_locked_block = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            1,
+            102,
+        );
+        let conflicting_peer_block = signed_block(
+            1,
+            Vec::new(),
+            genesis.hash.clone(),
+            "synv1leader".to_string(),
+            2,
+            104,
+        );
+        let local_qc = test_quorum_certificate(&local_locked_block);
+        write_legacy_canonical_lock(&local_locked_block, &local_qc)
+            .expect("test canonical lock should be written");
+
+        let mut chain = BlockChain::new();
+        chain.add_block(genesis);
+        chain.add_block(local_locked_block);
         let blockchain = Arc::new(Mutex::new(chain));
 
         assert!(!apply_block_if_new(
@@ -6726,9 +6814,12 @@ mod tests {
             Some(test_quorum_certificate(&conflicting_peer_block))
         ));
         assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 1);
-        assert!(
-            current_self_quarantine_record().is_none(),
-            "rejecting a peer block that conflicts with a local canonical lock must not self-quarantine the local node"
+        let quarantine = current_self_quarantine_record()
+            .expect("a conflicting valid peer block at the local tip must self-quarantine");
+        assert_eq!(quarantine.divergence_height.0, 1);
+        assert_eq!(
+            quarantine.conflicting_block_hash,
+            conflicting_peer_block.hash
         );
 
         clear_legacy_canonical_locks_for_tests();
