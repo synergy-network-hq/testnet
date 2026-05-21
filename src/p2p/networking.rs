@@ -4935,31 +4935,11 @@ fn record_peer_canonical_lock_conflict(block: &Block, error: &str) {
 }
 
 fn record_canonical_lock_conflict_from_peer(
-    blockchain: &BlockchainArc,
+    _blockchain: &BlockchainArc,
     block: &Block,
     error: &str,
 ) {
-    let local_tip_height = blockchain
-        .lock()
-        .ok()
-        .and_then(|chain| chain.last().map(|tip| tip.block_index));
-
-    if local_tip_height
-        .map(|height| height <= block.block_index)
-        .unwrap_or(true)
-    {
-        record_self_quarantine_from_canonical_lock_conflict(block, error);
-        warn!(
-            "p2p",
-            "Self-quarantining because a valid peer block conflicts with the local canonical lock at or above the local tip",
-            "height" => block.block_index,
-            "hash" => block.hash.clone(),
-            "local_tip_height" => local_tip_height.unwrap_or(0),
-            "error" => error.to_string()
-        );
-    } else {
-        record_peer_canonical_lock_conflict(block, error);
-    }
+    record_peer_canonical_lock_conflict(block, error);
 }
 
 fn apply_block_if_new(
@@ -6772,7 +6752,7 @@ mod tests {
     }
 
     #[test]
-    fn peer_canonical_lock_conflict_at_local_tip_self_quarantines_local_node() {
+    fn peer_canonical_lock_conflict_at_local_tip_does_not_self_quarantine_local_node() {
         clear_legacy_canonical_locks_for_tests();
 
         let genesis = Block::new_with_timestamp(
@@ -6814,12 +6794,10 @@ mod tests {
             Some(test_quorum_certificate(&conflicting_peer_block))
         ));
         assert_eq!(blockchain.lock().unwrap().last().unwrap().block_index, 1);
-        let quarantine = current_self_quarantine_record()
-            .expect("a conflicting valid peer block at the local tip must self-quarantine");
-        assert_eq!(quarantine.divergence_height.0, 1);
         assert_eq!(
-            quarantine.conflicting_block_hash,
-            conflicting_peer_block.hash
+            current_self_quarantine_record(),
+            None,
+            "peer-supplied canonical lock conflicts must be rejected and recorded as peer evidence, not local self-quarantine"
         );
 
         clear_legacy_canonical_locks_for_tests();
