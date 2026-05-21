@@ -1,4 +1,5 @@
 use crate::block::{Block, BlockChain};
+use crate::synergy_types::CanonicalSerialize;
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -272,6 +273,76 @@ impl DagState {
             .unwrap_or_else(|| json!(null))
     }
 
+    pub fn transaction_status_json(&self, tx_id_or_hash: &str) -> Value {
+        if let Some(vertex_hash) = self.transaction_index.get(tx_id_or_hash) {
+            return self
+                .vertices
+                .get(vertex_hash)
+                .map(|vertex| {
+                    json!({
+                        "found": true,
+                        "tx_id_or_hash": tx_id_or_hash,
+                        "tx_hash": tx_id_or_hash,
+                        "vertex_hash": vertex.hash,
+                        "status": vertex.status,
+                        "block_hash": vertex.block_hash,
+                        "block_number": vertex.block_number,
+                    })
+                })
+                .unwrap_or_else(|| {
+                    json!({
+                        "found": false,
+                        "tx_id_or_hash": tx_id_or_hash,
+                        "reason": "transaction index points to a missing DAG vertex"
+                    })
+                });
+        }
+
+        for vertex in self.vertices.values() {
+            for transaction in &vertex.transactions {
+                let Some(data) = transaction.data.as_deref() else {
+                    continue;
+                };
+                if !crate::aegis_tx_tool::is_legacy_aegis_carrier_transaction(transaction) {
+                    continue;
+                }
+                let Ok(envelope) = crate::aegis_tx_tool::decode_aegis_carrier_data(data) else {
+                    continue;
+                };
+                let Ok(bytes) = envelope.transaction.canonical_bytes() else {
+                    continue;
+                };
+                let typed_tx_id =
+                    crate::crypto::aegis_pqvm::AegisPqvmDomainSeparatedHash::hash_transaction(
+                        crate::crypto::aegis_pqvm::SYNERGY_TX_V1,
+                        envelope.transaction.chain_id,
+                        &envelope.transaction.network_id,
+                        &bytes,
+                    )
+                    .0;
+                if typed_tx_id == tx_id_or_hash {
+                    return json!({
+                        "found": true,
+                        "tx_id_or_hash": tx_id_or_hash,
+                        "tx_id": typed_tx_id,
+                        "tx_hash": transaction.hash(),
+                        "vertex_hash": vertex.hash,
+                        "status": vertex.status,
+                        "block_hash": vertex.block_hash,
+                        "block_number": vertex.block_number,
+                        "aegis_pqvm_verification": "carrier_present",
+                    });
+                }
+            }
+        }
+
+        json!({
+            "found": false,
+            "tx_id_or_hash": tx_id_or_hash,
+            "reason": "transaction is not present in the committed DAG state"
+        })
+    }
+
     pub fn topology_json(&self, limit: usize) -> Value {
         let vertices = self.visible_vertices(limit, None);
         let visible_hashes = vertices
@@ -446,6 +517,19 @@ pub fn vertex_json(hash: &str) -> Value {
         .lock()
         .map(|dag| dag.vertex_json(hash))
         .unwrap_or_else(|_| json!(null))
+}
+
+pub fn transaction_status_json(tx_id_or_hash: &str) -> Value {
+    DAG_STATE
+        .lock()
+        .map(|dag| dag.transaction_status_json(tx_id_or_hash))
+        .unwrap_or_else(|_| {
+            json!({
+                "found": false,
+                "tx_id_or_hash": tx_id_or_hash,
+                "reason": "dag state lock unavailable"
+            })
+        })
 }
 
 pub fn topology_json(limit: usize) -> Value {

@@ -72,7 +72,11 @@ fn run_tx_command(args: &[String]) -> Result<(), String> {
             let report = sign_with_new_aegis_transaction_key(tx_options_from_args(args)?)?;
             let mut output = signed_tx_summary(subcommand, &report);
             if let Some(rpc_url) = arg_value(args, "--rpc-url") {
-                let response = submit_aegis_transaction(&rpc_url, &report.submission_envelope)?;
+                let response = submit_aegis_transaction(
+                    &rpc_url,
+                    "synergy_submitAegisDagTransaction",
+                    &report.submission_envelope,
+                )?;
                 output["live_submission_status"] =
                     serde_json::Value::String("submitted_to_rpc".to_string());
                 output["rpc_url"] = serde_json::Value::String(rpc_url);
@@ -107,6 +111,22 @@ fn run_dag_command(args: &[String]) -> Result<(), String> {
                 );
             }
             let report = build_fixture_report()?;
+            let rpc_url = arg_value(args, "--rpc-url");
+            let rpc_submissions = if let Some(rpc_url) = rpc_url.as_deref() {
+                report
+                    .transactions
+                    .iter()
+                    .map(|tx| {
+                        submit_aegis_transaction(
+                            rpc_url,
+                            "synergy_submitAegisDagTransaction",
+                            &tx.submission_envelope,
+                        )
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            } else {
+                Vec::new()
+            };
             print_json(serde_json::json!({
                 "command": subcommand,
                 "aegis_pqvm_path": "synergy_testnet::crypto::aegis_pqvm::AegisPqvmSigner",
@@ -131,12 +151,15 @@ fn run_dag_command(args: &[String]) -> Result<(), String> {
                 "selected_ancestor_closed_set": report.selected_ancestor_closed_set,
                 "tx_order_root": report.tx_order_root,
                 "dag_frontier_root": report.dag_frontier_root,
-                "atlas_ingestion_status": report.atlas_ingestion_status,
+                "live_submission_status": if rpc_url.is_some() { "submitted_to_rpc" } else { "not_attempted: pass --rpc-url to submit through synergy_submitAegisDagTransaction" },
+                "rpc_url": rpc_url,
+                "rpc_submissions": rpc_submissions,
+                "atlas_ingestion_status": if rpc_submissions.is_empty() { report.atlas_ingestion_status } else { "submitted_to_rpc: verify finalized block inclusion and Atlas DAG API from canonical chain data".to_string() },
             }))?;
         }
         _ => {
             println!("Commands:");
-            println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2 [--rpc-url <url>]");
         }
     }
     Ok(())
@@ -178,6 +201,7 @@ fn print_json(value: serde_json::Value) -> Result<(), String> {
 
 fn submit_aegis_transaction(
     rpc_url: &str,
+    method: &str,
     envelope: &synergy_testnet::aegis_tx_tool::AegisTxSubmissionEnvelope,
 ) -> Result<serde_json::Value, String> {
     let client = reqwest::blocking::Client::builder()
@@ -187,7 +211,7 @@ fn submit_aegis_transaction(
     let request = serde_json::json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "method": "synergy_submitAegisTransaction",
+        "method": method,
         "params": [envelope],
     });
     let response = client

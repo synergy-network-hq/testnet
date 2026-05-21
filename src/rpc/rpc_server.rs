@@ -1030,6 +1030,69 @@ fn execute_rpc_method(
     }
 }
 
+fn submit_aegis_transaction_envelope(
+    envelope_value: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+) -> Value {
+    match serde_json::from_value::<crate::aegis_tx_tool::AegisTxSubmissionEnvelope>(
+        envelope_value.clone(),
+    ) {
+        Ok(envelope) => {
+            match crate::aegis_tx_tool::legacy_transaction_from_aegis_envelope(&envelope) {
+                Ok(transaction) => {
+                    if transaction.chain_id != current_chain_id() {
+                        return json!({
+                            "error": format!(
+                                "Aegis transaction chainId {} does not match local chain {}",
+                                transaction.chain_id,
+                                current_chain_id()
+                            )
+                        });
+                    }
+                    let tx_id = match envelope.transaction.canonical_bytes() {
+                        Ok(bytes) => crate::crypto::aegis_pqvm::AegisPqvmDomainSeparatedHash::hash_transaction(
+                            crate::crypto::aegis_pqvm::SYNERGY_TX_V1,
+                            envelope.transaction.chain_id,
+                            &envelope.transaction.network_id,
+                            &bytes,
+                        )
+                        .0,
+                        Err(error) => {
+                            return json!({
+                                "error": format!(
+                                    "Aegis transaction canonicalization failed: {error}"
+                                )
+                            });
+                        }
+                    };
+                    let tx_hash = transaction.hash();
+                    {
+                        let mut pool = tx_pool.lock().unwrap();
+                        pool.push(transaction.clone());
+                    }
+                    if let Some(p2p) = crate::p2p::get_p2p_network() {
+                        p2p.broadcast_transaction(&transaction);
+                    }
+                    json!({
+                        "success": true,
+                        "tx_id": tx_id,
+                        "tx_hash": tx_hash,
+                        "dag_node_id": tx_id,
+                        "mempool_status": "queued",
+                        "dag_admission_status": "queued_for_proposal_dag",
+                        "dependency_status": "verified_or_ancestor_pending",
+                        "aegis_pqvm_verification": "verified",
+                        "wallet_cli_used": false,
+                        "message": "Aegis PQVM DAG transaction submitted"
+                    })
+                }
+                Err(error) => json!({"error": error}),
+            }
+        }
+        Err(error) => json!({"error": format!("Invalid Aegis transaction envelope: {error}")}),
+    }
+}
+
 fn handle_json_rpc(
     method: &str,
     params: Value,
@@ -1102,11 +1165,19 @@ fn handle_json_rpc(
             crate::dag::vertices_json(limit, status)
         }
 
-        "synergy_getDagVertex" => {
+        "synergy_getDagVertex" | "synergy_getDagNode" => {
             if let Some(hash) = params.get(0).and_then(|value| value.as_str()) {
                 crate::dag::vertex_json(hash)
             } else {
                 json!("Missing DAG vertex hash")
+            }
+        }
+
+        "synergy_getDagTransactionStatus" => {
+            if let Some(tx_id_or_hash) = params.get(0).and_then(|value| value.as_str()) {
+                crate::dag::transaction_status_json(tx_id_or_hash)
+            } else {
+                json!("Missing DAG transaction id or hash")
             }
         }
 
@@ -1183,62 +1254,32 @@ fn handle_json_rpc(
             }
         }
 
-        "synergy_submitAegisTransaction" => {
+        "synergy_submitAegisTransaction" | "synergy_submitAegisDagTransaction" => {
             if let Some(envelope_value) = params.get(0) {
-                match serde_json::from_value::<crate::aegis_tx_tool::AegisTxSubmissionEnvelope>(
-                    envelope_value.clone(),
-                ) {
-                    Ok(envelope) => {
-                        match crate::aegis_tx_tool::legacy_transaction_from_aegis_envelope(
-                            &envelope,
-                        ) {
-                            Ok(transaction) => {
-                                if transaction.chain_id != current_chain_id() {
-                                    return json!({
-                                        "error": format!(
-                                            "Aegis transaction chainId {} does not match local chain {}",
-                                            transaction.chain_id,
-                                            current_chain_id()
-                                        )
-                                    });
-                                }
-                                let tx_id = match envelope.transaction.canonical_bytes() {
-                                Ok(bytes) => crate::crypto::aegis_pqvm::AegisPqvmDomainSeparatedHash::hash_transaction(
-                                    crate::crypto::aegis_pqvm::SYNERGY_TX_V1,
-                                    envelope.transaction.chain_id,
-                                    &envelope.transaction.network_id,
-                                    &bytes,
-                                )
-                                .0,
-                                Err(error) => return json!({"error": format!("Aegis transaction canonicalization failed: {error}")}),
-                            };
-                                let tx_hash = transaction.hash();
-                                {
-                                    let mut pool = tx_pool.lock().unwrap();
-                                    pool.push(transaction.clone());
-                                }
-                                if let Some(p2p) = crate::p2p::get_p2p_network() {
-                                    p2p.broadcast_transaction(&transaction);
-                                }
-                                json!({
-                                    "success": true,
-                                    "tx_id": tx_id,
-                                    "tx_hash": tx_hash,
-                                    "mempool_status": "queued",
-                                    "aegis_pqvm_verification": "verified",
-                                    "wallet_cli_used": false,
-                                    "message": "Aegis PQVM transaction submitted"
-                                })
-                            }
-                            Err(error) => json!({"error": error}),
-                        }
-                    }
-                    Err(error) => {
-                        json!({"error": format!("Invalid Aegis transaction envelope: {error}")})
-                    }
-                }
+                submit_aegis_transaction_envelope(envelope_value, tx_pool)
             } else {
                 json!("Missing Aegis transaction envelope")
+            }
+        }
+
+        "synergy_submitAegisDagTransactionBatch" => {
+            if let Some(envelopes) = params.get(0).and_then(|value| value.as_array()) {
+                let results = envelopes
+                    .iter()
+                    .map(|envelope_value| {
+                        submit_aegis_transaction_envelope(envelope_value, tx_pool)
+                    })
+                    .collect::<Vec<_>>();
+                let success = results
+                    .iter()
+                    .all(|result| result.get("success").and_then(Value::as_bool) == Some(true));
+                json!({
+                    "success": success,
+                    "wallet_cli_used": false,
+                    "results": results,
+                })
+            } else {
+                json!("Missing Aegis transaction envelope batch")
             }
         }
 
@@ -3836,6 +3877,8 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getDagFrontier"
         | "synergy_getDagVertices"
         | "synergy_getDagVertex"
+        | "synergy_getDagNode"
+        | "synergy_getDagTransactionStatus"
         | "synergy_getDagTopology"
         | "synergy_getValidatorStats"
         | "synergy_getTokenStats"
@@ -3892,6 +3935,8 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         "synergy_simulateTransaction"
         | "synergy_sendTransaction"
         | "synergy_submitAegisTransaction"
+        | "synergy_submitAegisDagTransaction"
+        | "synergy_submitAegisDagTransactionBatch"
         | "synergy_call"
         | "synergy_estimateGas"
         | "synergy_createApproval"
