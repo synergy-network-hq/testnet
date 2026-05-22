@@ -73,6 +73,14 @@ pub fn legacy_canonical_commit_record(
     Ok(load_legacy_canonical_locks()?.get(&height).cloned())
 }
 
+pub fn latest_legacy_canonical_commit_record() -> Result<Option<LegacyCanonicalCommitRecord>, String>
+{
+    Ok(load_legacy_canonical_locks()?
+        .iter()
+        .next_back()
+        .map(|(_, record)| record.clone()))
+}
+
 fn load_legacy_canonical_locks() -> Result<BTreeMap<u64, LegacyCanonicalCommitRecord>, String> {
     let path = legacy_canonical_lock_path();
     if !path.exists() {

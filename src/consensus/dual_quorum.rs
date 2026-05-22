@@ -1,5 +1,8 @@
 use crate::block::Block;
 use crate::consensus::anti_divergence::current_self_quarantine_record;
+use crate::consensus::legacy_canonical_lock::{
+    latest_legacy_canonical_commit_record, legacy_canonical_commit_record,
+};
 use crate::consensus::validator_keys::{
     sign_with_local_validator_key, verify_block_proposer_key_matches_validator,
     verify_signer_key_matches_validator,
@@ -74,6 +77,15 @@ pub struct VoteEquivocationEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+struct SupersededLocalVoteLock {
+    block_hash: String,
+    first_round_number: u64,
+    latest_round_number: u64,
+    proposer: String,
+    superseded_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct LocalVoteLock {
     validator_address: String,
     block_hash: String,
@@ -84,6 +96,8 @@ struct LocalVoteLock {
     proposer: String,
     created_at: u64,
     updated_at: u64,
+    #[serde(default)]
+    superseded: Vec<SupersededLocalVoteLock>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1231,8 +1245,14 @@ impl DualQuorumConsensus {
         )
     }
 
-    fn local_vote_lock_key(validator_address: &str, epoch_number: u64, block_index: u64) -> String {
-        format!("{epoch_number}:{block_index}:{validator_address}")
+    fn scoped_local_vote_lock_key(
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+        round_number: u64,
+        block_hash: &str,
+    ) -> String {
+        format!("{epoch_number}:{block_index}:{round_number}:{block_hash}:{validator_address}")
     }
 
     fn local_vote_lock_path() -> PathBuf {
@@ -1311,9 +1331,16 @@ impl DualQuorumConsensus {
             .lock()
             .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
         let locks = Self::load_local_vote_locks_unlocked()?;
-        let key = Self::local_vote_lock_key(validator_address, epoch_number, block_index);
+        let latest_lock = locks
+            .values()
+            .filter(|lock| {
+                lock.validator_address == validator_address
+                    && lock.epoch_number == epoch_number
+                    && lock.block_index == block_index
+            })
+            .max_by_key(|lock| (lock.latest_round_number, lock.updated_at));
 
-        Ok(locks.get(&key).map(|lock| LocalLockedVote {
+        Ok(latest_lock.map(|lock| LocalLockedVote {
             validator_address: lock.validator_address.clone(),
             block_hash: lock.block_hash.clone(),
             block_index: lock.block_index,
@@ -1322,6 +1349,44 @@ impl DualQuorumConsensus {
             latest_round_number: lock.latest_round_number,
             proposer: lock.proposer.clone(),
         }))
+    }
+
+    fn validate_same_height_vote_supersede(
+        proposed_block: &Block,
+        round_number: u64,
+        latest_conflicting_round: u64,
+    ) -> Result<(), String> {
+        if round_number <= latest_conflicting_round {
+            return Err(format!(
+                "same-height vote supersede requires a higher consensus round: requested_round={round_number}, latest_conflicting_round={latest_conflicting_round}"
+            ));
+        }
+
+        if let Some(existing) = legacy_canonical_commit_record(proposed_block.block_index)? {
+            return Err(format!(
+                "height {} is already finalized by canonical lock {}; refusing transient vote supersede for {}",
+                proposed_block.block_index, existing.block_hash, proposed_block.hash
+            ));
+        }
+
+        let latest_lock = latest_legacy_canonical_commit_record()?.ok_or_else(|| {
+            "same-height vote supersede requires a durable finalized canonical parent lock"
+                .to_string()
+        })?;
+        if proposed_block.block_index != latest_lock.height + 1 {
+            return Err(format!(
+                "same-height vote supersede target height {} must be the direct child of finalized canonical height {}",
+                proposed_block.block_index, latest_lock.height
+            ));
+        }
+        if proposed_block.previous_hash != latest_lock.block_hash {
+            return Err(format!(
+                "same-height vote supersede proposal does not extend latest canonical lock: expected_parent={}, proposed_parent={}",
+                latest_lock.block_hash, proposed_block.previous_hash
+            ));
+        }
+
+        Ok(())
     }
 
     fn register_local_vote_intent(
@@ -1334,49 +1399,101 @@ impl DualQuorumConsensus {
             .lock()
             .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
         let mut locks = Self::load_local_vote_locks_unlocked()?;
-        let key =
-            Self::local_vote_lock_key(validator_address, epoch_number, proposed_block.block_index);
         let now = Self::current_timestamp();
 
-        if let Some(existing) = locks.get_mut(&key) {
-            if existing.block_hash == proposed_block.hash {
+        let matching_keys = locks
+            .iter()
+            .filter_map(|(key, lock)| {
+                if lock.validator_address == validator_address
+                    && lock.epoch_number == epoch_number
+                    && lock.block_index == proposed_block.block_index
+                {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+
+        if let Some(existing_key) = matching_keys.iter().find(|key| {
+            locks
+                .get(*key)
+                .map(|lock| lock.block_hash == proposed_block.hash)
+                .unwrap_or(false)
+        }) {
+            if let Some(existing) = locks.get_mut(existing_key) {
                 existing.latest_round_number = existing.latest_round_number.max(round_number);
                 existing.updated_at = now;
                 Self::persist_local_vote_locks_unlocked(&locks)?;
                 return Ok(());
             }
+        }
 
-            if round_number > existing.latest_round_number {
-                warn!(
-                    "consensus",
-                    "Rejecting conflicting same-height vote without durable view-change proof",
-                    "validator" => validator_address.to_string(),
-                    "height" => proposed_block.block_index,
-                    "epoch" => epoch_number,
-                    "previous_hash" => existing.block_hash.clone(),
-                    "previous_proposer" => existing.proposer.clone(),
-                    "previous_first_round" => existing.first_round_number,
-                    "previous_latest_round" => existing.latest_round_number,
-                    "new_hash" => proposed_block.hash.clone(),
-                    "new_proposer" => proposed_block.validator_id.clone(),
-                    "new_round" => round_number
-                );
+        if !matching_keys.is_empty() {
+            let latest_conflicting = matching_keys
+                .iter()
+                .filter_map(|key| locks.get(key))
+                .max_by_key(|lock| (lock.latest_round_number, lock.updated_at))
+                .cloned()
+                .ok_or_else(|| "failed to load matching local vote lock".to_string())?;
+
+            if round_number <= latest_conflicting.latest_round_number {
+                return Err(format!(
+                    "already locally voted for different block at height {} in this or a later round: locked_hash={}, locked_proposer={}, locked_epoch={}, locked_first_round={}, locked_latest_round={}, requested_hash={}, requested_proposer={}, requested_epoch={}, requested_round={}",
+                    proposed_block.block_index,
+                    latest_conflicting.block_hash,
+                    latest_conflicting.proposer,
+                    latest_conflicting.epoch_number,
+                    latest_conflicting.first_round_number,
+                    latest_conflicting.latest_round_number,
+                    proposed_block.hash,
+                    proposed_block.validator_id,
+                    epoch_number,
+                    round_number
+                ));
             }
 
-            return Err(format!(
-                "already locally voted for different block at height {} and no durable view-change proof permits superseding it: locked_hash={}, locked_proposer={}, locked_epoch={}, locked_first_round={}, locked_latest_round={}, requested_hash={}, requested_proposer={}, requested_epoch={}, requested_round={}",
-                proposed_block.block_index,
-                existing.block_hash,
-                existing.proposer,
-                existing.epoch_number,
-                existing.first_round_number,
-                existing.latest_round_number,
-                proposed_block.hash,
-                proposed_block.validator_id,
-                epoch_number,
-                round_number
-            ));
+            Self::validate_same_height_vote_supersede(
+                proposed_block,
+                round_number,
+                latest_conflicting.latest_round_number,
+            )?;
+
+            warn!(
+                "consensus",
+                "Advancing local same-height transient vote lock after higher-round view change",
+                "validator" => validator_address.to_string(),
+                "height" => proposed_block.block_index,
+                "epoch" => epoch_number,
+                "previous_hash" => latest_conflicting.block_hash.clone(),
+                "previous_proposer" => latest_conflicting.proposer.clone(),
+                "previous_first_round" => latest_conflicting.first_round_number,
+                "previous_latest_round" => latest_conflicting.latest_round_number,
+                "new_hash" => proposed_block.hash.clone(),
+                "new_proposer" => proposed_block.validator_id.clone(),
+                "new_round" => round_number
+            );
         }
+
+        let key = Self::scoped_local_vote_lock_key(
+            validator_address,
+            epoch_number,
+            proposed_block.block_index,
+            round_number,
+            &proposed_block.hash,
+        );
+        let superseded = matching_keys
+            .iter()
+            .filter_map(|key| locks.get(key))
+            .filter(|lock| lock.block_hash != proposed_block.hash)
+            .map(|lock| SupersededLocalVoteLock {
+                block_hash: lock.block_hash.clone(),
+                first_round_number: lock.first_round_number,
+                latest_round_number: lock.latest_round_number,
+                proposer: lock.proposer.clone(),
+                superseded_at: now,
+            })
+            .collect();
 
         locks.insert(
             key,
@@ -1390,6 +1507,7 @@ impl DualQuorumConsensus {
                 proposer: proposed_block.validator_id.clone(),
                 created_at: now,
                 updated_at: now,
+                superseded,
             },
         );
 
@@ -1960,9 +2078,10 @@ mod tests {
     }
 
     #[test]
-    fn local_vote_intent_rejects_same_height_conflict_even_in_higher_round_without_view_change() {
+    fn local_vote_intent_rejects_same_height_conflict_without_canonical_parent() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
 
         let path = temp_vote_lock_path("local-vote-intent");
         DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
@@ -1975,12 +2094,12 @@ mod tests {
         DualQuorumConsensus::register_local_vote_intent("validator2", &block, 40, 2)
             .expect("same block hash may be repeated in a later round");
 
-        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
-            .expect("persisted vote locks should load");
-        let key = DualQuorumConsensus::local_vote_lock_key("validator2", 40, 13);
-        assert_eq!(locks[&key].block_hash, block.hash);
-        assert_eq!(locks[&key].first_round_number, 1);
-        assert_eq!(locks[&key].latest_round_number, 2);
+        let locked = DualQuorumConsensus::local_locked_vote_for_height("validator2", 40, 13)
+            .expect("local vote lock lookup should succeed")
+            .expect("local vote lock should exist");
+        assert_eq!(locked.block_hash, block.hash);
+        assert_eq!(locked.first_round_number, 1);
+        assert_eq!(locked.latest_round_number, 2);
 
         let same_round_error = DualQuorumConsensus::register_local_vote_intent(
             "validator2",
@@ -2002,18 +2121,128 @@ mod tests {
         )
         .expect_err("higher-round conflicting local vote intent needs durable view-change proof");
         assert!(
-            higher_round_error.contains("no durable view-change proof"),
+            higher_round_error.contains("durable finalized canonical parent lock"),
             "unexpected higher-round local vote lock error: {higher_round_error}"
         );
 
-        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
-            .expect("vote locks should remain on the original same-height block");
-        assert_eq!(locks[&key].block_hash, block.hash);
-        assert_eq!(locks[&key].first_round_number, 1);
-        assert_eq!(locks[&key].latest_round_number, 2);
-        assert_eq!(locks[&key].proposer, "validator1");
+        let locked = DualQuorumConsensus::local_locked_vote_for_height("validator2", 40, 13)
+            .expect("local vote lock lookup should succeed")
+            .expect("vote lock should remain on the original same-height block");
+        assert_eq!(locked.block_hash, block.hash);
+        assert_eq!(locked.first_round_number, 1);
+        assert_eq!(locked.latest_round_number, 2);
+        assert_eq!(locked.proposer, "validator1");
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn same_height_higher_round_unfinalized_vote_allowed_after_view_change() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let path = temp_vote_lock_path("local-vote-intent-view-change");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let parent = signed_block(12, 1, "validator0");
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &parent,
+            &test_qc(&parent.hash),
+        )
+        .expect("canonical parent lock should be written");
+
+        let mut block = signed_block(13, 1, "validator1");
+        block.previous_hash = parent.hash.clone();
+        let mut conflicting_block = signed_block(13, 2, "validator3");
+        conflicting_block.previous_hash = parent.hash.clone();
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &block, 40, 1)
+            .expect("first local vote intent should persist");
+        let same_round_error = DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            1,
+        )
+        .expect_err("same-round conflicting vote remains unsafe");
+        assert!(
+            same_round_error.contains("already locally voted for different block"),
+            "unexpected same-round error: {same_round_error}"
+        );
+
+        DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            2,
+        )
+        .expect("higher-round proposal extending the canonical parent may supersede an unfinalized vote");
+
+        let locked = DualQuorumConsensus::local_locked_vote_for_height("validator2", 40, 13)
+            .expect("local vote lock lookup should succeed")
+            .expect("latest local vote lock should exist");
+        assert_eq!(locked.block_hash, conflicting_block.hash);
+        assert_eq!(locked.first_round_number, 2);
+        assert_eq!(locked.latest_round_number, 2);
+
+        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
+            .expect("persisted vote locks should load");
+        assert!(
+            locks.values().any(|lock| lock.block_hash == block.hash),
+            "original unfinalized vote lock should remain as evidence"
+        );
+        let superseding = locks
+            .values()
+            .find(|lock| lock.block_hash == conflicting_block.hash)
+            .expect("superseding lock should be persisted");
+        assert_eq!(superseding.superseded.len(), 1);
+        assert_eq!(superseding.superseded[0].block_hash, block.hash);
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn finalized_canonical_lock_same_height_conflict_rejected_for_vote_supersede() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let path = temp_vote_lock_path("local-vote-intent-finalized-conflict");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let finalized = signed_block(13, 1, "validator1");
+        let conflicting_block = signed_block(13, 2, "validator3");
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &finalized,
+            &test_qc(&finalized.hash),
+        )
+        .expect("finalized canonical lock should be written");
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &finalized, 40, 1)
+            .expect("first local vote intent should persist");
+        let err = DualQuorumConsensus::register_local_vote_intent(
+            "validator2",
+            &conflicting_block,
+            40,
+            2,
+        )
+        .expect_err("finalized same-height canonical conflict must be rejected");
+        assert!(
+            err.contains("already finalized by canonical lock"),
+            "unexpected finalized conflict error: {err}"
+        );
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
             let _ = fs::remove_dir_all(root);
         }
