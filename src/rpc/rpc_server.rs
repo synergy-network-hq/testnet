@@ -1104,6 +1104,25 @@ fn handle_json_rpc(
 ) -> Value {
     match method {
         // Blockchain queries
+        "synergy_chainId" | "synergy_networkId" | "synergy_genesisHash" => {
+            chain_identity_json()
+        }
+
+        "synergy_protocolVersion" => {
+            json!({
+                "protocol_version": current_protocol_version(),
+                "identity": chain_identity_json(),
+            })
+        }
+
+        "synergy_syncing" => sync_status_json(chain),
+
+        "synergy_getHealth" => node_health_json(chain),
+
+        "synergy_getReadiness" => node_readiness_json(chain),
+
+        "synergy_getPeers" => peer_info_json(),
+
         "synergy_blockNumber" => {
             let chain = chain.lock().unwrap();
             json!(chain.last().map_or(0, |b| b.block_index))
@@ -1154,6 +1173,59 @@ fn handle_json_rpc(
             }
         }
 
+        "synergy_getFinalizedHead" => latest_finalized_head_json(chain),
+
+        "synergy_getCanonicalLock" => latest_canonical_lock_json(),
+
+        "synergy_getCommittedQC" => latest_committed_qc_json(),
+
+        "synergy_getValidatorSet" => {
+            let chain = chain.lock().unwrap();
+            json!(network_validator_snapshot(&chain, validator_manager))
+        }
+
+        "synergy_getProtocolConfig" => protocol_config_json(),
+
+        "synergy_getAegisStatus" => aegis_status_json(),
+
+        "synergy_getAegisCapabilities" => aegis_capabilities_json(),
+
+        "synergy_getAegisKeyStatus" => aegis_fail_closed_json(
+            "synergy_getAegisKeyStatus",
+            "Aegis key status requires a key lifecycle record; public RPC does not expose private key material",
+        ),
+
+        "synergy_verifyAegisSignature" => aegis_fail_closed_json(
+            "synergy_verifyAegisSignature",
+            "Use a typed Aegis artifact verifier; raw signature verification without lifecycle context is rejected",
+        ),
+
+        "synergy_verifyAegisTransaction" => {
+            if let Some(envelope_value) = params.get(0) {
+                verify_aegis_transaction_envelope(envelope_value)
+            } else {
+                aegis_fail_closed_json(
+                    "synergy_verifyAegisTransaction",
+                    "Missing Aegis transaction envelope",
+                )
+            }
+        }
+
+        "synergy_verifyAegisQC" => aegis_fail_closed_json(
+            "synergy_verifyAegisQC",
+            "QC verification requires a typed quorum certificate and validator-set context",
+        ),
+
+        "synergy_verifyAegisSnapshotManifest" => aegis_fail_closed_json(
+            "synergy_verifyAegisSnapshotManifest",
+            "Snapshot manifest verification requires the signed archive manifest payload",
+        ),
+
+        "synergy_verifyAegisSnapshotCatalog" => aegis_fail_closed_json(
+            "synergy_verifyAegisSnapshotCatalog",
+            "Snapshot catalog verification requires the signed archive catalog payload",
+        ),
+
         // DAG transaction graph methods
         "synergy_getDagStatus" => crate::dag::status_json(),
 
@@ -1185,6 +1257,15 @@ fn handle_json_rpc(
             let limit = dag_rpc_limit(&params, 100, 1_000);
             crate::dag::topology_json(limit)
         }
+
+        "synergy_getDagGraph" => {
+            let limit = dag_rpc_limit(&params, 100, 1_000);
+            crate::dag::topology_json(limit)
+        }
+
+        "synergy_getDagDependencies" => dag_dependencies_json(&params),
+
+        "synergy_getDagTxOrderRoot" => dag_tx_order_root_json(&params),
 
         // Transaction methods
         "synergy_sendTransaction" => {
@@ -1282,6 +1363,33 @@ fn handle_json_rpc(
                 json!("Missing Aegis transaction envelope batch")
             }
         }
+
+        "synergy_submitAegisTransactionBatch" => {
+            if let Some(envelopes) = params.get(0).and_then(|value| value.as_array()) {
+                let results = envelopes
+                    .iter()
+                    .map(|envelope_value| {
+                        submit_aegis_transaction_envelope(envelope_value, tx_pool)
+                    })
+                    .collect::<Vec<_>>();
+                let success = results
+                    .iter()
+                    .all(|result| result.get("success").and_then(Value::as_bool) == Some(true));
+                json!({
+                    "success": success,
+                    "wallet_cli_used": false,
+                    "results": results,
+                })
+            } else {
+                json!("Missing Aegis transaction envelope batch")
+            }
+        }
+
+        "synergy_getTransaction" | "synergy_getPendingTransaction" => {
+            transaction_lookup_json(&params, tx_pool, chain)
+        }
+
+        "synergy_getTransactionStatus" => transaction_status_json(&params, tx_pool, chain),
 
         "synergy_getTransactionPool" => {
             let pool = tx_pool.lock().unwrap();
@@ -2668,6 +2776,33 @@ fn handle_json_rpc(
             }
         }
 
+        "synergy_getAccount" => {
+            if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
+                let balance = TOKEN_MANAGER.get_balance(address, "SNRG");
+                let nonce = get_account_nonce(&params, tx_pool, chain).unwrap_or_else(|error| {
+                    json!({
+                        "error": error.message,
+                        "code": error.code,
+                    })
+                });
+                json!({
+                    "address": address,
+                    "balance_nwei": balance,
+                    "nonce": nonce,
+                    "chain": chain_identity_json(),
+                })
+            } else {
+                json!({"error": "Missing address parameter"})
+            }
+        }
+
+        "synergy_getNonce" => get_account_nonce(&params, tx_pool, chain).unwrap_or_else(|error| {
+            json!({
+                "error": error.message,
+                "code": error.code,
+            })
+        }),
+
         // 4. synergy_gasPrice
         // Get the current gas price.
         "synergy_gasPrice" => {
@@ -2765,6 +2900,32 @@ fn handle_json_rpc(
                 json!({"error": "Missing transaction object parameter"})
             }
         }
+
+        "synergy_estimateFee" => estimate_fee_json(&params, chain),
+
+        "synergy_getFeeSchedule" => fee_schedule_json(chain),
+
+        "synergy_getFeeCollector" => fee_collector_json(),
+
+        "synergy_getReceipt" => transaction_receipt_json(&params, chain),
+
+        "synergy_getTransactionFees" => transaction_fees_json(&params, chain),
+
+        "synergy_getFeeCollectorBalance" => {
+            let collector = crate::token::FEE_COLLECTOR_ADDRESS;
+            json!({
+                "fee_collector": collector,
+                "balance_nwei": TOKEN_MANAGER.get_balance(collector, "SNRG"),
+                "chain": chain_identity_json(),
+            })
+        }
+
+        "synergy_getFeeCollectorDeposits" => json!({
+            "fee_collector": crate::token::FEE_COLLECTOR_ADDRESS,
+            "deposits": [],
+            "indexing_status": "not_available_in_runtime_rpc",
+            "chain": chain_identity_json(),
+        }),
 
         // 7. synergy_getLogs
         // Get event logs matching filters.
@@ -3852,6 +4013,27 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_unsubscribe"
         | "synergy_getAccountNonce"
         | "synergy_getAccountAuthNonce"
+        | "synergy_chainId"
+        | "synergy_networkId"
+        | "synergy_genesisHash"
+        | "synergy_protocolVersion"
+        | "synergy_syncing"
+        | "synergy_getHealth"
+        | "synergy_getReadiness"
+        | "synergy_getPeers"
+        | "synergy_getFinalizedHead"
+        | "synergy_getCanonicalLock"
+        | "synergy_getCommittedQC"
+        | "synergy_getValidatorSet"
+        | "synergy_getProtocolConfig"
+        | "synergy_getAegisStatus"
+        | "synergy_getAegisCapabilities"
+        | "synergy_getAegisKeyStatus"
+        | "synergy_verifyAegisSignature"
+        | "synergy_verifyAegisTransaction"
+        | "synergy_verifyAegisQC"
+        | "synergy_verifyAegisSnapshotManifest"
+        | "synergy_verifyAegisSnapshotCatalog"
         | "synergy_blockNumber"
         | "synergy_getBlockNumber"
         | "synergy_getBlockByNumber"
@@ -3880,6 +4062,9 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getDagNode"
         | "synergy_getDagTransactionStatus"
         | "synergy_getDagTopology"
+        | "synergy_getDagGraph"
+        | "synergy_getDagDependencies"
+        | "synergy_getDagTxOrderRoot"
         | "synergy_getValidatorStats"
         | "synergy_getTokenStats"
         | "synergy_getAllBalances"
@@ -3891,8 +4076,20 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getSynergyScoreBreakdown"
         | "synergy_getPeerInfo"
         | "synergy_getTransactionReceipt"
+        | "synergy_getTransaction"
+        | "synergy_getTransactionStatus"
+        | "synergy_getPendingTransaction"
+        | "synergy_getReceipt"
         | "synergy_getTransactionCount"
         | "synergy_getBalance"
+        | "synergy_getAccount"
+        | "synergy_getNonce"
+        | "synergy_estimateFee"
+        | "synergy_getFeeSchedule"
+        | "synergy_getFeeCollector"
+        | "synergy_getTransactionFees"
+        | "synergy_getFeeCollectorBalance"
+        | "synergy_getFeeCollectorDeposits"
         | "synergy_gasPrice"
         | "synergy_getLogs"
         | "synergy_getCode"
@@ -3935,6 +4132,7 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         "synergy_simulateTransaction"
         | "synergy_sendTransaction"
         | "synergy_submitAegisTransaction"
+        | "synergy_submitAegisTransactionBatch"
         | "synergy_submitAegisDagTransaction"
         | "synergy_submitAegisDagTransactionBatch"
         | "synergy_call"
@@ -4129,6 +4327,574 @@ fn current_chain_id() -> u64 {
         .ok()
         .map(|cfg| cfg.blockchain.chain_id)
         .unwrap_or(1264)
+}
+
+fn current_network_id() -> String {
+    crate::config::load_node_config(None)
+        .ok()
+        .map(|cfg| cfg.network.network_id)
+        .filter(|id| !id.is_empty())
+        .unwrap_or_else(|| "synergy-testnet-v2".to_string())
+}
+
+fn current_chain_name() -> String {
+    crate::config::load_node_config(None)
+        .ok()
+        .map(|cfg| cfg.network.name)
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "Synergy Testnet".to_string())
+}
+
+fn current_genesis_hash() -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.hash().to_string())
+        .unwrap_or_else(|_| {
+            "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789".to_string()
+        })
+}
+
+fn current_protocol_version() -> String {
+    canonical_genesis()
+        .map(|genesis| genesis.protocol_version().to_string())
+        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
+}
+
+fn chain_identity_json() -> Value {
+    let chain_id = current_chain_id();
+    json!({
+        "name": current_chain_name(),
+        "chain_id": chain_id,
+        "chain_id_hex": format!("0x{chain_id:x}"),
+        "network_id": current_network_id(),
+        "genesis_hash": current_genesis_hash(),
+    })
+}
+
+fn protocol_config_json() -> Value {
+    json!({
+        "chain": chain_identity_json(),
+        "protocol_version": current_protocol_version(),
+        "package_version": env!("CARGO_PKG_VERSION"),
+        "genesis_validators": 5,
+        "validator_quorum": {
+            "required": 4,
+            "total": 5,
+        },
+        "target_block_cadence_seconds": 2,
+        "cluster_count": 1,
+        "cluster_id": 0,
+    })
+}
+
+fn sync_status_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let current_block = chain.lock().unwrap().last().map_or(0, |b| b.block_index);
+    if let Ok(manager) = SYNC_MANAGER.lock() {
+        let state = manager.get_state();
+        let syncing = !matches!(state, SyncState::Synced | SyncState::Idle);
+        json!({
+            "syncing": syncing,
+            "current_block": current_block,
+            "highest_block": manager.get_network_height(),
+            "starting_block": manager.get_sync_start_height(),
+            "sync_percentage": manager.get_progress_percentage(),
+            "state": format!("{:?}", state),
+            "chain": chain_identity_json(),
+        })
+    } else {
+        json!({"error": "Sync manager unavailable", "fail_closed": true})
+    }
+}
+
+fn peer_info_json() -> Value {
+    let peer_count = crate::p2p::get_p2p_network()
+        .map(|p2p| p2p.get_peer_count() as u64)
+        .unwrap_or(0);
+    json!({
+        "peer_count": peer_count,
+        "peers": peer_count,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn node_health_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let latest = chain.lock().unwrap().last().cloned();
+    let timestamp_delta_seconds = latest
+        .as_ref()
+        .map(|block| current_timestamp().saturating_sub(block.timestamp));
+    let quarantine_files = quarantine_marker_paths();
+    json!({
+        "status": if quarantine_files.is_empty() { "healthy" } else { "quarantined" },
+        "latest_height": latest.as_ref().map(|block| block.block_index).unwrap_or(0),
+        "latest_hash": latest.as_ref().map(|block| block.hash.clone()),
+        "latest_timestamp": latest.as_ref().map(|block| block.timestamp),
+        "timestamp_delta_seconds": timestamp_delta_seconds,
+        "quarantine_files": quarantine_files,
+        "sync": sync_status_json(chain),
+        "chain": chain_identity_json(),
+    })
+}
+
+fn node_readiness_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let health = node_health_json(chain);
+    let ready = health
+        .get("status")
+        .and_then(Value::as_str)
+        .map(|status| status == "healthy")
+        .unwrap_or(false);
+    json!({
+        "ready": ready,
+        "health": health,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn quarantine_marker_paths() -> Vec<String> {
+    [
+        "data/validator_quarantine.json",
+        "data/validator_quarantine_peer_evidence.json",
+    ]
+    .into_iter()
+    .filter_map(|path| {
+        let resolved = crate::utils::resolve_data_path(path);
+        resolved
+            .exists()
+            .then(|| resolved.to_string_lossy().to_string())
+    })
+    .collect()
+}
+
+fn latest_canonical_lock_json() -> Value {
+    let path = crate::utils::resolve_data_path("data/canonical_locks.json");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return json!({
+            "found": false,
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    let Ok(value) = serde_json::from_str::<Value>(&content) else {
+        return json!({
+            "found": false,
+            "error": "canonical lock file is not valid JSON",
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    let Some(map) = value.as_object() else {
+        return json!({
+            "found": false,
+            "error": "canonical lock file is not a height map",
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    let Some(height) = map.keys().filter_map(|key| key.parse::<u64>().ok()).max() else {
+        return json!({
+            "found": false,
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    let mut lock = map
+        .get(&height.to_string())
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    if let Value::Object(ref mut obj) = lock {
+        obj.insert("found".to_string(), json!(true));
+        obj.insert("chain".to_string(), chain_identity_json());
+    }
+    lock
+}
+
+fn latest_finalized_head_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let lock = latest_canonical_lock_json();
+    if lock.get("found").and_then(Value::as_bool) == Some(true) {
+        return lock;
+    }
+    let chain_guard = chain.lock().unwrap();
+    if let Some(block) = chain_guard.last() {
+        json!({
+            "found": true,
+            "height": block.block_index,
+            "block_hash": block.hash,
+            "parent_hash": block.previous_hash,
+            "timestamp": block.timestamp,
+            "source": "chain_tip_without_canonical_lock_file",
+            "chain": chain_identity_json(),
+        })
+    } else {
+        json!({"found": false, "chain": chain_identity_json()})
+    }
+}
+
+fn latest_committed_qc_json() -> Value {
+    let path = crate::utils::resolve_data_path("data/committed_qcs.jsonl");
+    let Ok(content) = fs::read_to_string(&path) else {
+        return json!({
+            "found": false,
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    let Some(line) = content.lines().rev().find(|line| !line.trim().is_empty()) else {
+        return json!({
+            "found": false,
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        });
+    };
+    match serde_json::from_str::<Value>(line) {
+        Ok(mut value) => {
+            if let Value::Object(ref mut obj) = value {
+                obj.insert("found".to_string(), json!(true));
+                obj.insert("chain".to_string(), chain_identity_json());
+            }
+            value
+        }
+        Err(error) => json!({
+            "found": false,
+            "error": format!("latest committed QC line is not JSON: {error}"),
+            "path": path.to_string_lossy(),
+            "chain": chain_identity_json(),
+        }),
+    }
+}
+
+fn aegis_status_json() -> Value {
+    match crate::crypto::aegis_pqvm::AegisPqvmSigner::initialize_required() {
+        Ok(_) => json!({
+            "present": true,
+            "initialized": true,
+            "available": true,
+            "fail_closed": true,
+            "private_key_material_exposed": false,
+            "chain": chain_identity_json(),
+        }),
+        Err(error) => json!({
+            "present": false,
+            "initialized": false,
+            "available": false,
+            "fail_closed": true,
+            "error": error.to_string(),
+            "chain": chain_identity_json(),
+        }),
+    }
+}
+
+fn aegis_capabilities_json() -> Value {
+    json!({
+        "domains": [
+            "SYNERGY_TX_V1",
+            "SYNERGY_DAG_NODE_V1",
+            "SYNERGY_BLOCK_V1",
+            "SYNERGY_VOTE_V1",
+            "SYNERGY_QC_V1",
+            "SYNERGY_ARCHIVE_SNAPSHOT_MANIFEST_V1",
+            "SYNERGY_ARCHIVE_SNAPSHOT_CATALOG_V1"
+        ],
+        "roles": [
+            "Transaction",
+            "ConsensusVote",
+            "ConsensusProposer",
+            "PeerIdentity",
+            "ArchivePeer",
+            "ArchiveSnapshotSigner"
+        ],
+        "signing_via_public_rpc": false,
+        "private_key_material_exposed": false,
+        "fail_closed": true,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn aegis_fail_closed_json(method: &str, reason: &str) -> Value {
+    json!({
+        "error": reason,
+        "method": method,
+        "fail_closed": true,
+        "aegis_pqvm_required": true,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn verify_aegis_transaction_envelope(envelope_value: &Value) -> Value {
+    let envelope = match serde_json::from_value::<crate::aegis_tx_tool::AegisTxSubmissionEnvelope>(
+        envelope_value.clone(),
+    ) {
+        Ok(envelope) => envelope,
+        Err(error) => {
+            return json!({
+                "error": format!("Invalid Aegis transaction envelope: {error}"),
+                "fail_closed": true,
+            });
+        }
+    };
+    match crate::aegis_tx_tool::legacy_transaction_from_aegis_envelope(&envelope) {
+        Ok(transaction) => json!({
+            "valid": true,
+            "aegis_pqvm_verification": "verified",
+            "wallet_cli_used": false,
+            "tx_hash": transaction.hash(),
+            "chain": chain_identity_json(),
+        }),
+        Err(error) => json!({
+            "error": error,
+            "valid": false,
+            "fail_closed": true,
+            "wallet_cli_used": false,
+            "chain": chain_identity_json(),
+        }),
+    }
+}
+
+fn dag_dependencies_json(params: &Value) -> Value {
+    if let Some(hash) = params.get(0).and_then(Value::as_str) {
+        let vertex = crate::dag::vertex_json(hash);
+        let parents = vertex
+            .get("parent_hashes")
+            .cloned()
+            .unwrap_or_else(|| json!([]));
+        return json!({
+            "dag_node_id": hash,
+            "dependencies": parents,
+            "found": vertex.is_object(),
+            "chain": chain_identity_json(),
+        });
+    }
+    let limit = dag_rpc_limit(params, 100, 1_000);
+    let topology = crate::dag::topology_json(limit);
+    json!({
+        "root": topology.get("root").cloned().unwrap_or_else(|| json!(crate::dag::GENESIS_DAG_ROOT)),
+        "dependencies": topology.get("edges").cloned().unwrap_or_else(|| json!([])),
+        "chain": chain_identity_json(),
+    })
+}
+
+fn dag_tx_order_root_json(params: &Value) -> Value {
+    let limit = dag_rpc_limit(params, 1_000, 10_000);
+    let topology = crate::dag::topology_json(limit);
+    let tx_order_root = canonical_value_digest(&topology)
+        .unwrap_or_else(|| crate::dag::GENESIS_DAG_ROOT.to_string());
+    json!({
+        "tx_order_root": tx_order_root,
+        "root": topology.get("root").cloned().unwrap_or_else(|| json!(crate::dag::GENESIS_DAG_ROOT)),
+        "vertex_count": topology.get("vertices").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0),
+        "edge_count": topology.get("edges").and_then(Value::as_array).map(|items| items.len()).unwrap_or(0),
+        "deterministic": true,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn transaction_lookup_json(
+    params: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+) -> Value {
+    let Some(tx_hash) = params.get(0).and_then(Value::as_str) else {
+        return json!({"error": "Missing transaction hash parameter"});
+    };
+    let normalized = tx_hash.strip_prefix("0x").unwrap_or(tx_hash).to_lowercase();
+    let raw_hash_search = normalized
+        .strip_prefix("syntxn-")
+        .or_else(|| normalized.strip_prefix("synxxn-"))
+        .unwrap_or(&normalized);
+    let matches_tx = |tx: &Transaction| -> bool {
+        let tx_hash_formatted = tx.hash().to_lowercase();
+        let tx_hash_raw = tx.raw_hash().to_lowercase();
+        tx_hash_formatted == normalized
+            || tx_hash_raw == normalized
+            || tx_hash_raw == raw_hash_search
+            || tx_hash_formatted
+                .strip_prefix("syntxn-")
+                .map(|hash| hash == raw_hash_search)
+                .unwrap_or(false)
+            || tx_hash_formatted
+                .strip_prefix("synxxn-")
+                .map(|hash| hash == raw_hash_search)
+                .unwrap_or(false)
+    };
+    {
+        let chain = chain.lock().unwrap();
+        for block in &chain.chain {
+            for (idx, tx) in block.transactions.iter().enumerate() {
+                if matches_tx(tx) {
+                    return tx_to_explorer_json(
+                        tx,
+                        "confirmed",
+                        Some(block.block_index),
+                        Some(idx),
+                    );
+                }
+            }
+        }
+    }
+    let pool = tx_pool.lock().unwrap();
+    for tx in pool.iter() {
+        if matches_tx(tx) {
+            return tx_to_explorer_json(tx, "pending", None, None);
+        }
+    }
+    json!(null)
+}
+
+fn transaction_status_json(
+    params: &Value,
+    tx_pool: &Arc<Mutex<Vec<Transaction>>>,
+    chain: &Arc<Mutex<BlockChain>>,
+) -> Value {
+    let Some(tx_hash) = params.get(0).and_then(Value::as_str) else {
+        return json!({"error": "Missing transaction hash parameter"});
+    };
+    let dag_status = crate::dag::transaction_status_json(tx_hash);
+    if dag_status.get("found").and_then(Value::as_bool) == Some(true) {
+        return dag_status;
+    }
+    let transaction = transaction_lookup_json(params, tx_pool, chain);
+    if transaction.is_null() {
+        json!({
+            "found": false,
+            "tx_hash": tx_hash,
+            "status": "not_found",
+            "dag": dag_status,
+            "chain": chain_identity_json(),
+        })
+    } else {
+        json!({
+            "found": true,
+            "tx_hash": tx_hash,
+            "status": transaction.get("status").cloned().unwrap_or_else(|| json!("unknown")),
+            "transaction": transaction,
+            "dag": dag_status,
+            "chain": chain_identity_json(),
+        })
+    }
+}
+
+fn transaction_receipt_json(params: &Value, chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let Some(tx_hash) = params.get(0).and_then(Value::as_str) else {
+        return json!({"error": "Missing transaction hash parameter"});
+    };
+    let normalized = tx_hash.strip_prefix("0x").unwrap_or(tx_hash).to_lowercase();
+    let raw_hash_search = normalized
+        .strip_prefix("syntxn-")
+        .or_else(|| normalized.strip_prefix("synxxn-"))
+        .unwrap_or(&normalized);
+    let matches_tx = |tx: &Transaction| -> bool {
+        let tx_hash_formatted = tx.hash().to_lowercase();
+        let tx_hash_raw = tx.raw_hash().to_lowercase();
+        tx_hash_formatted == normalized
+            || tx_hash_raw == normalized
+            || tx_hash_raw == raw_hash_search
+            || tx_hash_formatted
+                .strip_prefix("syntxn-")
+                .map(|hash| hash == raw_hash_search)
+                .unwrap_or(false)
+            || tx_hash_formatted
+                .strip_prefix("synxxn-")
+                .map(|hash| hash == raw_hash_search)
+                .unwrap_or(false)
+    };
+    let chain = chain.lock().unwrap();
+    for block in &chain.chain {
+        let mut cumulative_gas: u64 = 0;
+        for (idx, tx) in block.transactions.iter().enumerate() {
+            let gas_used = if tx.data.is_some() {
+                tx.gas_limit.min(tx.estimate_gas())
+            } else {
+                crate::gas::constants::GAS_LIMIT_TRANSFER
+            };
+            cumulative_gas = cumulative_gas.saturating_add(gas_used);
+            if matches_tx(tx) {
+                return json!({
+                    "transactionHash": tx.hash(),
+                    "transactionIndex": idx,
+                    "blockHash": block.hash,
+                    "blockNumber": block.block_index,
+                    "from": tx.sender,
+                    "to": tx.receiver,
+                    "cumulativeGasUsed": cumulative_gas,
+                    "gasUsed": gas_used,
+                    "effectiveGasPrice": tx.gas_price,
+                    "feeCharged": gas_used.saturating_mul(tx.gas_price),
+                    "feeCollector": crate::token::FEE_COLLECTOR_ADDRESS,
+                    "status": "0x1",
+                    "logs": [],
+                    "chain": chain_identity_json(),
+                });
+            }
+        }
+    }
+    json!(null)
+}
+
+fn transaction_fees_json(params: &Value, chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let receipt = transaction_receipt_json(params, chain);
+    if receipt.is_null() {
+        return json!(null);
+    }
+    json!({
+        "transactionHash": receipt.get("transactionHash").cloned(),
+        "feeCharged": receipt.get("feeCharged").cloned().unwrap_or_else(|| json!(0)),
+        "feeCollector": receipt.get("feeCollector").cloned().unwrap_or_else(|| json!(crate::token::FEE_COLLECTOR_ADDRESS)),
+        "gasUsed": receipt.get("gasUsed").cloned().unwrap_or_else(|| json!(0)),
+        "effectiveGasPrice": receipt.get("effectiveGasPrice").cloned().unwrap_or_else(|| json!(0)),
+        "chain": chain_identity_json(),
+    })
+}
+
+fn estimate_fee_json(params: &Value, chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let Some(tx_obj) = params.get(0) else {
+        return json!({"error": "Missing transaction object parameter"});
+    };
+    match normalize_rpc_transaction(tx_obj, false) {
+        Ok(normalized) => {
+            let gas = estimate_gas_for_transaction(&normalized.transaction);
+            let gas_price = current_gas_price_from_chain(chain);
+            let safe_fee = gas.saturating_mul(gas_price);
+            let max_fee = gas.saturating_mul(normalized.transaction.gas_price);
+            json!({
+                "fee_nwei": safe_fee,
+                "safeFee": safe_fee,
+                "maxFee": max_fee,
+                "gas": gas,
+                "gasPrice": gas_price,
+                "feeCollector": crate::token::FEE_COLLECTOR_ADDRESS,
+                "components": {
+                    "base": safe_fee,
+                    "compute": gas.saturating_mul(gas_price),
+                    "storage": 0,
+                    "priority": 0,
+                },
+                "integer_base_units": true,
+                "warnings": normalized.warnings,
+                "chain": chain_identity_json(),
+            })
+        }
+        Err(error) => json!({"error": error.message, "code": error.code, "data": error.data}),
+    }
+}
+
+fn fee_schedule_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
+    let gas_price = current_gas_price_from_chain(chain);
+    json!({
+        "feeCollector": crate::token::FEE_COLLECTOR_ADDRESS,
+        "gasPrice": gas_price,
+        "minGasPrice": crate::gas::constants::MIN_GAS_PRICE,
+        "maxGasPrice": crate::gas::constants::MAX_GAS_PRICE,
+        "defaultGasPrice": crate::gas::constants::DEFAULT_GAS_PRICE,
+        "blockGasLimit": crate::gas::constants::BLOCK_GAS_LIMIT,
+        "integer_base_units": true,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn fee_collector_json() -> Value {
+    json!({
+        "address": crate::token::FEE_COLLECTOR_ADDRESS,
+        "uma": crate::token::FEE_COLLECTOR_ADDRESS,
+        "source": "protocol_constant_and_genesis_allocation",
+        "chain": chain_identity_json(),
+    })
 }
 
 fn parse_u64ish(value: Option<&Value>) -> Result<Option<u64>, RpcError> {
@@ -5291,6 +6057,104 @@ mod tests {
             .expect("canonical public client method should be allowed");
         enforce_rpc_exposure_policy("synergy_simulateTransaction", &context)
             .expect("simulation should be allowed on the public client surface");
+    }
+
+    #[test]
+    fn public_gateway_allows_launch_read_rpc_surface() {
+        let mut headers = HashMap::new();
+        headers.insert("x-forwarded-for".to_string(), "198.51.100.22".to_string());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        for method in [
+            "synergy_chainId",
+            "synergy_networkId",
+            "synergy_genesisHash",
+            "synergy_getHealth",
+            "synergy_getReadiness",
+            "synergy_getFinalizedHead",
+            "synergy_getCanonicalLock",
+            "synergy_getCommittedQC",
+            "synergy_getAegisStatus",
+            "synergy_getAegisCapabilities",
+            "synergy_verifyAegisTransaction",
+            "synergy_getDagGraph",
+            "synergy_getDagDependencies",
+            "synergy_getDagTxOrderRoot",
+            "synergy_estimateFee",
+            "synergy_getFeeCollector",
+            "synergy_getFeeCollectorBalance",
+        ] {
+            enforce_rpc_exposure_policy(method, &context)
+                .unwrap_or_else(|error| panic!("{method} should be public: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn public_gateway_allows_launch_aegis_submit_methods() {
+        let mut headers = HashMap::new();
+        headers.insert("x-forwarded-for".to_string(), "198.51.100.22".to_string());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers,
+            role_profile: crate::role_profiles::profile_from_compiled_profile("rpc_gateway_node"),
+        };
+
+        for method in [
+            "synergy_submitAegisTransaction",
+            "synergy_submitAegisTransactionBatch",
+            "synergy_submitAegisDagTransaction",
+            "synergy_submitAegisDagTransactionBatch",
+        ] {
+            enforce_rpc_exposure_policy(method, &context)
+                .unwrap_or_else(|error| panic!("{method} should be client-safe: {error:?}"));
+        }
+    }
+
+    #[test]
+    fn launch_identity_rpc_reports_canonical_testnet_identity() {
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+
+        let identity = handle_json_rpc(
+            "synergy_chainId",
+            json!([]),
+            &tx_pool,
+            &chain,
+            &validator_manager,
+        );
+
+        assert_eq!(identity["chain_id"], 1264);
+        assert_eq!(identity["chain_id_hex"], "0x4f0");
+        assert_eq!(identity["network_id"], "synergy-testnet-v2");
+        assert_eq!(
+            identity["genesis_hash"],
+            "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789"
+        );
+    }
+
+    #[test]
+    fn missing_aegis_transaction_envelope_fails_closed() {
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+
+        let result = handle_json_rpc(
+            "synergy_verifyAegisTransaction",
+            json!([]),
+            &tx_pool,
+            &chain,
+            &validator_manager,
+        );
+
+        assert_eq!(result["fail_closed"], true);
+        assert!(result["error"].as_str().unwrap().contains("Missing Aegis"));
     }
 
     #[test]
