@@ -822,10 +822,7 @@ impl DualQuorumConsensus {
 
     fn required_validator_votes(&self, total_validators: usize) -> usize {
         let bft_required = ((total_validators * 2) / 3) + 1;
-        self.validator_vote_threshold
-            .max(1)
-            .max(bft_required)
-            .min(total_validators.max(1))
+        self.validator_vote_threshold.max(1).max(bft_required)
     }
 
     fn has_commit_quorum(&self, live_validators: &[Validator], votes: &[Vote]) -> bool {
@@ -1386,7 +1383,10 @@ impl DualQuorumConsensus {
             ));
         }
 
-        Ok(())
+        Err(format!(
+            "same-height vote supersede for height {} requires an explicit view-change certificate; refusing conflicting transient vote for {} after round {}",
+            proposed_block.block_index, proposed_block.hash, latest_conflicting_round
+        ))
     }
 
     fn register_local_vote_intent(
@@ -2141,7 +2141,7 @@ mod tests {
     }
 
     #[test]
-    fn same_height_higher_round_unfinalized_vote_allowed_after_view_change() {
+    fn same_height_higher_round_without_view_change_certificate_rejected() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
         crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
@@ -2175,20 +2175,24 @@ mod tests {
             "unexpected same-round error: {same_round_error}"
         );
 
-        DualQuorumConsensus::register_local_vote_intent(
+        let higher_round_error = DualQuorumConsensus::register_local_vote_intent(
             "validator2",
             &conflicting_block,
             40,
             2,
         )
-        .expect("higher-round proposal extending the canonical parent may supersede an unfinalized vote");
+        .expect_err("higher-round conflicting vote requires explicit view-change certificate");
+        assert!(
+            higher_round_error.contains("requires an explicit view-change certificate"),
+            "unexpected higher-round error: {higher_round_error}"
+        );
 
         let locked = DualQuorumConsensus::local_locked_vote_for_height("validator2", 40, 13)
             .expect("local vote lock lookup should succeed")
-            .expect("latest local vote lock should exist");
-        assert_eq!(locked.block_hash, conflicting_block.hash);
-        assert_eq!(locked.first_round_number, 2);
-        assert_eq!(locked.latest_round_number, 2);
+            .expect("original local vote lock should remain");
+        assert_eq!(locked.block_hash, block.hash);
+        assert_eq!(locked.first_round_number, 1);
+        assert_eq!(locked.latest_round_number, 1);
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
             .expect("persisted vote locks should load");
@@ -2196,12 +2200,12 @@ mod tests {
             locks.values().any(|lock| lock.block_hash == block.hash),
             "original unfinalized vote lock should remain as evidence"
         );
-        let superseding = locks
-            .values()
-            .find(|lock| lock.block_hash == conflicting_block.hash)
-            .expect("superseding lock should be persisted");
-        assert_eq!(superseding.superseded.len(), 1);
-        assert_eq!(superseding.superseded[0].block_hash, block.hash);
+        assert!(
+            locks
+                .values()
+                .all(|lock| lock.block_hash != conflicting_block.hash),
+            "conflicting higher-round vote lock must not be persisted without a certificate"
+        );
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
@@ -2542,6 +2546,52 @@ mod tests {
         assert!(
             consensus.has_commit_quorum(&active_validators, &five_votes),
             "5 of 6 equal-weight votes is strictly greater than two thirds"
+        );
+    }
+
+    #[test]
+    fn configured_quorum_does_not_shrink_to_live_validator_count() {
+        let validator_manager =
+            approved_validator_manager(&["validator1", "validator2", "validator3"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            false,
+            1,
+            4,
+            2,
+            6,
+        );
+        let active_validators =
+            consensus_membership_validators(validator_manager.get_active_validators());
+        let votes = ["validator1", "validator2", "validator3"]
+            .into_iter()
+            .map(|validator_address| Vote {
+                validator_address: validator_address.to_string(),
+                block_hash: "block-hash".to_string(),
+                block_index: 42,
+                epoch_number: 1,
+                round_number: 1,
+                signature: PQCSignature {
+                    algorithm: PQCAlgorithm::FNDSA,
+                    signature_data: Vec::new(),
+                    message_hash: Vec::new(),
+                    public_key_id: String::new(),
+                    created_at: 0,
+                },
+                signer_public_key: Vec::new(),
+                timestamp: 0,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            consensus.required_validator_votes(active_validators.len()),
+            4
+        );
+        assert!(
+            !consensus.has_commit_quorum(&active_validators, &votes),
+            "configured 4-of-5 quorum must not silently become 3-of-3 when peers disappear"
         );
     }
 
