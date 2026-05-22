@@ -96,8 +96,8 @@ From Faucet:
 ```bash
 python3 ./synergy-testnet-tx.py send \
   --from faucet \
-  --to synw1replacewithdestinationwallet \
-  --amount-snrg 1 \
+  --to synw1jmtpyjw62nxgattrcjc2tx2hezwj6rka5war \
+  --amount-snrg 1000 \
   --wait \
   --yes
 ```
