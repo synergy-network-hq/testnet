@@ -210,7 +210,13 @@ impl Transaction {
                 )),
             };
         }
-        match self.verify_embedded_signature() {
+        let verification = if crate::aegis_tx_tool::is_legacy_aegis_carrier_transaction(self) {
+            crate::aegis_tx_tool::validate_legacy_aegis_carrier_transaction(self)
+        } else {
+            self.verify_embedded_signature()
+        };
+
+        match verification {
             Ok(()) => TransactionValidationResult {
                 is_valid: true,
                 error_message: None,
@@ -679,6 +685,25 @@ mod tests {
         let mut missing_key = tx;
         missing_key.signer_public_key.clear();
         assert!(!missing_key.validate_for_admission().is_valid);
+    }
+
+    #[test]
+    fn aegis_carrier_transaction_validates_for_p2p_admission() {
+        let report = crate::aegis_tx_tool::sign_with_new_aegis_transaction_key(
+            crate::aegis_tx_tool::AegisTxBuildOptions::default(),
+        )
+        .unwrap();
+
+        let validation = report.rpc_transaction.validate_for_admission();
+
+        assert!(
+            validation.is_valid,
+            "Aegis carrier admission failed: {:?}",
+            validation.error_message
+        );
+        assert!(crate::aegis_tx_tool::is_legacy_aegis_carrier_transaction(
+            &report.rpc_transaction
+        ));
     }
 
     #[test]
