@@ -213,11 +213,14 @@ def confirm_or_exit(args: argparse.Namespace, message: str) -> None:
 
 
 class NonceTracker:
-    def __init__(self, rpc_url: str) -> None:
+    def __init__(self, rpc_url: str, mode: str = "zero") -> None:
         self.rpc_url = rpc_url
+        self.mode = mode
         self.next_by_sender: dict[str, int] = {}
 
     def next_nonce(self, sender_label: str, sender_address: str) -> int:
+        if self.mode == "zero":
+            return 0
         if sender_label not in self.next_by_sender:
             self.next_by_sender[sender_label] = int(
                 rpc_call(self.rpc_url, "synergy_getAccountNonce", [sender_address])["result"] or 0
@@ -331,8 +334,13 @@ def command_atlas_dag(args: argparse.Namespace) -> int:
 def send_once(args: argparse.Namespace, sender_label: str, receiver: str, amount_nwei: int, nonce_tracker: NonceTracker | None = None) -> str:
     sender = load_wallet(sender_label)
     wallet_cli = resolve_wallet_cli(args.wallet_cli)
-    nonce = nonce_tracker.next_nonce(sender_label, sender["address"]) if nonce_tracker else int(rpc_call(args.rpc_url, "synergy_getAccountNonce", [sender["address"]])["result"] or 0)
-    tx = build_unsigned_tx(sender, receiver, amount_nwei, nonce, args.gas_price, args.gas_limit, args.algo)
+    tracker = nonce_tracker or NonceTracker(args.rpc_url, args.nonce_mode)
+    nonce = tracker.next_nonce(sender_label, sender["address"])
+    data = getattr(args, "data", None)
+    if getattr(args, "unique_data", False):
+        unique = f"testnet-traffic:{utc_now()}:{time.time_ns()}:{sender_label}:{receiver}"
+        data = f"{data}|{unique}" if data else unique
+    tx = build_unsigned_tx(sender, receiver, amount_nwei, nonce, args.gas_price, args.gas_limit, args.algo, data=data)
     signed = sign_tx(wallet_cli, sender, tx, args.algo)
     tx_hash, _response = submit_tx(args.rpc_url, signed)
     print(f"[{utc_now()}] OK {sender_label} -> {receiver} nonce={nonce} tx={tx_hash}")
@@ -402,7 +410,8 @@ def command_pingpong(args: argparse.Namespace) -> int:
         sender_label = labels[index % 2]
         receiver_label = labels[(index + 1) % 2]
         plan.append((sender_label, EMBEDDED_WALLETS[receiver_label]["address"]))
-    sent, errors = run_transfer_loop(args, plan, amount_nwei, args.interval_seconds, NonceTracker(args.rpc_url))
+    args.unique_data = True
+    sent, errors = run_transfer_loop(args, plan, amount_nwei, args.interval_seconds, NonceTracker(args.rpc_url, args.nonce_mode))
     print(f"[{utc_now()}] complete sent={sent} errors={errors}")
     return 0
 
@@ -421,7 +430,8 @@ def command_burst(args: argparse.Namespace) -> int:
         for idx, sender_label in enumerate(senders):
             receiver = default_receiver_for_sender(sender_label, senders, idx, args.receiver)
             plan.append((sender_label, receiver))
-    sent, errors = run_transfer_loop(args, plan, amount_nwei, args.interval_seconds, NonceTracker(args.rpc_url))
+    args.unique_data = True
+    sent, errors = run_transfer_loop(args, plan, amount_nwei, args.interval_seconds, NonceTracker(args.rpc_url, args.nonce_mode))
     print(f"[{utc_now()}] complete sent={sent} errors={errors}")
     return 0
 
@@ -455,7 +465,8 @@ def command_stress(args: argparse.Namespace) -> int:
         f"Stress run on chain {TESTNET_CHAIN_ID}: {total} signed transactions over {args.duration_seconds} seconds, "
         f"interval={interval}, amount={format_snrg(amount_nwei)} SNRG."
     )
-    sent, errors = run_transfer_loop(args, plan, amount_nwei, interval, NonceTracker(args.rpc_url))
+    args.unique_data = True
+    sent, errors = run_transfer_loop(args, plan, amount_nwei, interval, NonceTracker(args.rpc_url, args.nonce_mode))
     print(f"[{utc_now()}] stress complete chain_id={TESTNET_CHAIN_ID} sent={sent} errors={errors}")
     return 0
 
@@ -466,6 +477,9 @@ def add_common_tx_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--algo", choices=["fndsa", "mldsa", "slhdsa"], default="fndsa")
     parser.add_argument("--gas-price", type=int, default=DEFAULT_GAS_PRICE)
     parser.add_argument("--gas-limit", type=int, default=DEFAULT_GAS_LIMIT)
+    parser.add_argument("--nonce-mode", choices=["zero", "rpc"], default=os.environ.get("SYNERGY_NONCE_MODE", "zero"))
+    parser.add_argument("--data", default=None, help="Optional transaction data/memo string")
+    parser.add_argument("--unique-data", action="store_true", help="Append a unique testnet memo so repeated sends have unique hashes")
     parser.add_argument("--wait", action="store_true")
     parser.add_argument("--receipt-timeout-seconds", type=int, default=60)
     parser.add_argument("--continue-on-error", action="store_true")

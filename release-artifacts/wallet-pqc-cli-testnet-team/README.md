@@ -40,6 +40,12 @@ The helper auto-detects the right local `wallet-pqc-cli` binary. Override it onl
 SYNERGY_WALLET_CLI="/path/to/wallet-pqc-cli" python3 ./synergy-testnet-tx.py chain-id
 ```
 
+## Transaction nonce mode
+
+The helper defaults to `--nonce-mode zero` because the current Testnet validator runtime verifies externally signed Faucet and Token Sales wallet transactions against imported wallet metadata. The traffic commands automatically append unique memo data, so repeated zero-nonce test transactions still produce unique transaction hashes and commit correctly.
+
+Use `--nonce-mode rpc` only after the validator runtime nonce tracker is updated to advance imported external wallet metadata on committed transactions.
+
 ## Query commands
 
 ```bash
@@ -200,7 +206,7 @@ python3 ./synergy-testnet-tx.py stress \
 
 ## Multi-machine traffic
 
-For clean nonce behavior, do not run the same sender alias concurrently from multiple machines unless you coordinate nonces. Use one sender per machine when possible.
+The bundle is safe to run from multiple machines with the default `--nonce-mode zero`; each generated traffic transaction includes unique memo data to avoid duplicate hashes. Use one sender per machine when you want cleaner source attribution in Atlas and logs.
 
 Machine A:
 
