@@ -46,6 +46,12 @@ lazy_static! {
 }
 
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+const MAX_HTTP_HEADER_BYTES: usize = 32 * 1024;
+const MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
+
+fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(4).position(|window| window == b"\r\n\r\n")
+}
 
 #[derive(Debug, Clone)]
 struct RpcError {
@@ -357,10 +363,34 @@ pub fn start_rpc_server(
         let cors_origins_for_conn = cors_origins.clone();
         thread::spawn(move || {
             if let Ok(mut stream) = stream {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
                 let mut buffer = [0; 16384];
                 if let Ok(bytes_read) = stream.read(&mut buffer) {
-                    let request_str = String::from_utf8_lossy(&buffer[..bytes_read]);
-                    let request_line = request_str.lines().next().unwrap_or_default();
+                    let mut request_bytes = buffer[..bytes_read].to_vec();
+                    while find_http_header_end(&request_bytes).is_none()
+                        && request_bytes.len() < MAX_HTTP_HEADER_BYTES
+                    {
+                        match stream.read(&mut buffer) {
+                            Ok(0) => break,
+                            Ok(next_read) => request_bytes.extend_from_slice(&buffer[..next_read]),
+                            Err(_) => break,
+                        }
+                    }
+
+                    let Some(header_end) = find_http_header_end(&request_bytes) else {
+                        send_json_rpc_error(
+                            &mut stream,
+                            None,
+                            &RpcError::new(-32700, "Malformed HTTP request"),
+                            cors_enabled_for_conn,
+                            &cors_origins_for_conn,
+                        );
+                        return;
+                    };
+
+                    let header_bytes = &request_bytes[..header_end];
+                    let request_headers = String::from_utf8_lossy(header_bytes);
+                    let request_line = request_headers.lines().next().unwrap_or_default();
                     let mut request_line_parts = request_line.split_whitespace();
                     let http_method = request_line_parts.next().unwrap_or_default();
                     let request_path = request_line_parts.next().unwrap_or("/");
@@ -398,26 +428,13 @@ pub fn start_rpc_server(
                         return;
                     }
 
-                    // Split headers and body
-                    let parts: Vec<&str> = request_str.splitn(2, "\r\n\r\n").collect();
-                    if parts.len() < 2 {
-                        send_json_rpc_error(
-                            &mut stream,
-                            None,
-                            &RpcError::new(-32700, "Malformed HTTP request"),
-                            cors_enabled_for_conn,
-                            &cors_origins_for_conn,
-                        );
-                        return;
-                    }
-
-                    let headers = parse_http_headers(parts[0]);
+                    let headers = parse_http_headers(&request_headers);
                     let request_context = RpcRequestContext::new(
                         RpcTransport::Http,
                         stream.peer_addr().ok(),
                         headers.clone(),
                     );
-                    let body = parts[1];
+                    let mut body = request_bytes[header_end + 4..].to_vec();
 
                     if http_method == "POST" {
                         if !request_is_json(&headers) {
@@ -431,7 +448,31 @@ pub fn start_rpc_server(
                             return;
                         }
 
-                        match serde_json::from_str::<Value>(body) {
+                        let content_length = headers
+                            .get("content-length")
+                            .and_then(|value| value.parse::<usize>().ok());
+                        if matches!(content_length, Some(length) if length > MAX_HTTP_BODY_BYTES) {
+                            send_json_rpc_error(
+                                &mut stream,
+                                None,
+                                &RpcError::new(-32600, "HTTP request body too large"),
+                                cors_enabled_for_conn,
+                                &cors_origins_for_conn,
+                            );
+                            return;
+                        }
+                        if let Some(content_length) = content_length {
+                            while body.len() < content_length {
+                                match stream.read(&mut buffer) {
+                                    Ok(0) => break,
+                                    Ok(next_read) => body.extend_from_slice(&buffer[..next_read]),
+                                    Err(_) => break,
+                                }
+                            }
+                            body.truncate(content_length);
+                        }
+
+                        match serde_json::from_slice::<Value>(&body) {
                             Ok(parsed) => match process_json_rpc_payload(
                                 &parsed,
                                 &tx_pool,
@@ -6059,6 +6100,15 @@ mod tests {
             "POST / HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json; charset=utf-8\r\n\r\n",
         );
         assert!(request_is_json(&headers));
+    }
+
+    #[test]
+    fn http_header_end_detects_split_body_boundary() {
+        let request =
+            b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 14\r\n\r\n{\"jsonrpc\":\"2";
+        let header_end = find_http_header_end(request).expect("header delimiter should be found");
+        assert_eq!(&request[header_end..header_end + 4], b"\r\n\r\n");
+        assert_eq!(&request[header_end + 4..], b"{\"jsonrpc\":\"2");
     }
 
     #[test]
