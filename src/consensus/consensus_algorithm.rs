@@ -769,10 +769,11 @@ impl ProofOfSynergy {
 
                         // Clone latest_block before we might need to drop the guard
                         let latest_block_clone = latest_block.clone();
-                        let view_anchor_timestamp = last_tip_observed_at
-                            .duration_since(UNIX_EPOCH)
-                            .unwrap_or_default()
-                            .as_secs();
+                        // View changes must be derived from shared canonical state. Using
+                        // each node's local tip-observation time lets validators pick
+                        // different same-height leaders after a restart or partition, which
+                        // recreates transient vote-lock splits at H+1.
+                        let view_anchor_timestamp = latest_block_clone.timestamp;
                         let view_offset = Self::deterministic_view_offset_for_block_time(
                             latest_block_clone.block_index,
                             view_anchor_timestamp,
@@ -2918,6 +2919,45 @@ mod tests {
             ProofOfSynergy::deterministic_view_offset_for_block_time(1, 4_983, 20, 5_500),
             ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_500)
         );
+    }
+
+    #[test]
+    fn same_height_view_offset_uses_shared_canonical_timestamp() {
+        let current_timestamp = 10_061;
+        let leader_timeout_secs = 20;
+        let canonical_tip_timestamp = 9_500;
+
+        let local_observed_a = 10_000;
+        let local_observed_b = 10_047;
+        let unsafe_local_offset_a = ProofOfSynergy::deterministic_view_offset_for_time(
+            local_observed_a,
+            leader_timeout_secs,
+            current_timestamp,
+        );
+        let unsafe_local_offset_b = ProofOfSynergy::deterministic_view_offset_for_time(
+            local_observed_b,
+            leader_timeout_secs,
+            current_timestamp,
+        );
+        assert_ne!(
+            unsafe_local_offset_a, unsafe_local_offset_b,
+            "local tip-observation anchors can diverge across validators"
+        );
+
+        let shared_offset_a = ProofOfSynergy::deterministic_view_offset_for_block_time(
+            40_536,
+            canonical_tip_timestamp,
+            leader_timeout_secs,
+            current_timestamp,
+        );
+        let shared_offset_b = ProofOfSynergy::deterministic_view_offset_for_block_time(
+            40_536,
+            canonical_tip_timestamp,
+            leader_timeout_secs,
+            current_timestamp,
+        );
+
+        assert_eq!(shared_offset_a, shared_offset_b);
     }
 
     #[test]
