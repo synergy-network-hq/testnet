@@ -2791,10 +2791,12 @@ fn handle_vote_request_message(
         "round" => round_number
     );
 
-    match DualQuorumConsensus::build_local_vote_for_proposal(
+    let transient_recovery_min_age_secs = vote_request_transient_recovery_min_age_secs(config);
+    match DualQuorumConsensus::build_local_vote_for_proposal_with_recovery(
         &block_data,
         epoch_number,
         round_number,
+        transient_recovery_min_age_secs,
     ) {
         Ok(vote) => {
             let response = NetworkMessage::Vote { vote };
@@ -2843,6 +2845,20 @@ fn handle_vote_request_message(
             );
         }
     }
+}
+
+fn vote_request_transient_recovery_min_age_secs(config: &NodeConfig) -> u64 {
+    let block_time_secs = config.consensus.block_time_secs.max(1);
+    let leader_timeout_secs = if config.consensus.leader_timeout_secs == 0 {
+        block_time_secs.saturating_mul(2).max(3)
+    } else {
+        config.consensus.leader_timeout_secs.max(block_time_secs)
+    };
+
+    leader_timeout_secs
+        .saturating_mul(2)
+        .max(block_time_secs.saturating_mul(3))
+        .max(6)
 }
 
 fn vote_request_local_tip(blockchain: &BlockchainArc) -> Option<(u64, String)> {

@@ -220,6 +220,15 @@ impl DualQuorumConsensus {
         proposed_block: &Block,
         minimum_round_number: u64,
     ) -> Result<QuorumCertificate, String> {
+        self.start_consensus_round_with_recovery(proposed_block, minimum_round_number, u64::MAX)
+    }
+
+    pub fn start_consensus_round_with_recovery(
+        &mut self,
+        proposed_block: &Block,
+        minimum_round_number: u64,
+        transient_vote_recovery_min_age_secs: u64,
+    ) -> Result<QuorumCertificate, String> {
         if let Some(record) = current_self_quarantine_record() {
             return Err(format!(
                 "validator is self-quarantined at divergence height {} and cannot propose, vote, or aggregate QCs: {}",
@@ -242,7 +251,13 @@ impl DualQuorumConsensus {
         self.validate_block_proposal(proposed_block)?;
 
         // Phase 2: Voting
-        let votes = self.collect_votes(proposed_block, &block_hash, epoch_number, round_number)?;
+        let votes = self.collect_votes(
+            proposed_block,
+            &block_hash,
+            epoch_number,
+            round_number,
+            transient_vote_recovery_min_age_secs,
+        )?;
 
         // Phase 3: Commitment
         self.check_quorums_and_commit(&block_hash, epoch_number, round_number, &votes)
@@ -274,6 +289,7 @@ impl DualQuorumConsensus {
         block_hash: &str,
         epoch_number: u64,
         round_number: u64,
+        transient_vote_recovery_min_age_secs: u64,
     ) -> Result<Vec<Vote>, String> {
         let active_validators = self.collect_live_validators();
         if active_validators.len() < self.minimum_validator_count {
@@ -297,6 +313,15 @@ impl DualQuorumConsensus {
                 local_validator_address
             ));
         }
+
+        Self::recover_stale_conflicting_vote_lock_before_vote(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+            transient_vote_recovery_min_age_secs,
+            "local proposer pre-vote transient lock reconciliation",
+        )?;
 
         Self::register_local_vote_intent(
             &local_validator_address,
@@ -396,6 +421,20 @@ impl DualQuorumConsensus {
         epoch_number: u64,
         round_number: u64,
     ) -> Result<Vote, String> {
+        Self::build_local_vote_for_proposal_with_recovery(
+            proposed_block,
+            epoch_number,
+            round_number,
+            u64::MAX,
+        )
+    }
+
+    pub fn build_local_vote_for_proposal_with_recovery(
+        proposed_block: &Block,
+        epoch_number: u64,
+        round_number: u64,
+        transient_vote_recovery_min_age_secs: u64,
+    ) -> Result<Vote, String> {
         Self::validate_block_proposal_static(proposed_block)?;
         verify_block_proposer_key_matches_validator(proposed_block, &VALIDATOR_MANAGER)?;
 
@@ -411,6 +450,15 @@ impl DualQuorumConsensus {
                 local_validator_address
             ));
         }
+
+        Self::recover_stale_conflicting_vote_lock_before_vote(
+            &local_validator_address,
+            proposed_block,
+            epoch_number,
+            round_number,
+            transient_vote_recovery_min_age_secs,
+            "remote vote-request transient lock reconciliation",
+        )?;
 
         Self::register_local_vote_intent(
             &local_validator_address,
@@ -1357,14 +1405,12 @@ impl DualQuorumConsensus {
             .lock()
             .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
         let locks = Self::load_local_vote_locks_unlocked()?;
-        let latest_lock = locks
-            .values()
-            .filter(|lock| {
-                lock.validator_address == validator_address
-                    && lock.epoch_number == epoch_number
-                    && lock.block_index == block_index
-            })
-            .max_by_key(|lock| (lock.latest_round_number, lock.updated_at));
+        let latest_lock = Self::latest_local_vote_lock_for_height_unlocked(
+            &locks,
+            validator_address,
+            epoch_number,
+            block_index,
+        );
 
         Ok(latest_lock.map(|lock| LocalLockedVote {
             validator_address: lock.validator_address.clone(),
@@ -1547,6 +1593,110 @@ impl DualQuorumConsensus {
             "same-height vote supersede for height {} requires an explicit view-change certificate; refusing conflicting transient vote for {} after round {}",
             proposed_block.block_index, proposed_block.hash, latest_conflicting_round
         ))
+    }
+
+    fn latest_local_vote_lock_for_height_unlocked(
+        locks: &HashMap<String, LocalVoteLock>,
+        validator_address: &str,
+        epoch_number: u64,
+        block_index: u64,
+    ) -> Option<LocalVoteLock> {
+        locks
+            .values()
+            .filter(|lock| {
+                lock.validator_address == validator_address
+                    && lock.epoch_number == epoch_number
+                    && lock.block_index == block_index
+            })
+            .max_by_key(|lock| (lock.latest_round_number, lock.updated_at))
+            .cloned()
+    }
+
+    fn recover_stale_conflicting_vote_lock_before_vote(
+        validator_address: &str,
+        proposed_block: &Block,
+        epoch_number: u64,
+        round_number: u64,
+        min_age_secs: u64,
+        reason: &str,
+    ) -> Result<(), String> {
+        if min_age_secs == u64::MAX {
+            return Ok(());
+        }
+
+        let latest_lock = {
+            let _guard = LOCAL_VOTE_LOCK_FILE_MUTEX
+                .lock()
+                .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
+            let locks = Self::load_local_vote_locks_unlocked()?;
+            Self::latest_local_vote_lock_for_height_unlocked(
+                &locks,
+                validator_address,
+                epoch_number,
+                proposed_block.block_index,
+            )
+        };
+
+        let Some(latest_lock) = latest_lock else {
+            return Ok(());
+        };
+        if latest_lock.block_hash == proposed_block.hash
+            || round_number <= latest_lock.latest_round_number
+        {
+            return Ok(());
+        }
+
+        if legacy_canonical_commit_record(proposed_block.block_index)?.is_some() {
+            return Ok(());
+        }
+
+        let Some(canonical_parent) = latest_legacy_canonical_commit_record()? else {
+            return Ok(());
+        };
+        if proposed_block.block_index != canonical_parent.height.saturating_add(1)
+            || proposed_block.previous_hash != canonical_parent.block_hash
+        {
+            return Ok(());
+        }
+
+        let now = Self::current_timestamp();
+        if now.saturating_sub(latest_lock.updated_at) < min_age_secs {
+            return Ok(());
+        }
+
+        let recovery_reason = format!(
+            "{reason}: validator={validator_address} height={} requested_hash={} requested_proposer={} requested_round={} stale_locked_hash={} stale_locked_proposer={} stale_latest_round={} canonical_parent_height={} canonical_parent_hash={}",
+            proposed_block.block_index,
+            proposed_block.hash,
+            proposed_block.validator_id,
+            round_number,
+            latest_lock.block_hash,
+            latest_lock.proposer,
+            latest_lock.latest_round_number,
+            canonical_parent.height,
+            canonical_parent.block_hash
+        );
+        let report = Self::recover_transient_vote_locks_above_finalized_height(
+            canonical_parent.height,
+            min_age_secs,
+            &recovery_reason,
+        )?;
+
+        if report.mutated {
+            warn!(
+                "consensus",
+                "Recovered stale transient vote locks before signing higher-round proposal",
+                "validator" => validator_address.to_string(),
+                "height" => proposed_block.block_index,
+                "requested_hash" => proposed_block.hash.clone(),
+                "requested_proposer" => proposed_block.validator_id.clone(),
+                "requested_round" => round_number,
+                "removed_count" => report.removed_count as u64,
+                "evidence_path" => report.evidence_path.clone()
+            );
+        }
+
+        Ok(())
     }
 
     fn register_local_vote_intent(
@@ -2415,6 +2565,118 @@ mod tests {
             let _ = fs::remove_dir_all(root);
         }
         let _ = fs::remove_file(report.evidence_path);
+    }
+
+    #[test]
+    fn stale_conflicting_vote_lock_is_recovered_before_higher_round_vote() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let path = temp_vote_lock_path("pre-vote-transient-recovery");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let parent = signed_block(12, 1, "validator0");
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &parent,
+            &test_qc(&parent.hash),
+        )
+        .expect("canonical parent lock should be written");
+
+        let mut first_block = signed_block(13, 1, "validator1");
+        first_block.previous_hash = parent.hash.clone();
+        let mut recovery_block = signed_block(13, 2, "validator3");
+        recovery_block.previous_hash = parent.hash.clone();
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &first_block, 40, 1)
+            .expect("first local vote intent should persist");
+
+        DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
+            "validator2",
+            &recovery_block,
+            40,
+            2,
+            0,
+            "test higher-round transient recovery",
+        )
+        .expect("stale conflicting lock should recover before signing");
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &recovery_block, 40, 2)
+            .expect("higher-round vote may proceed only after stale transient evidence recovery");
+
+        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
+            .expect("persisted vote locks should load");
+        assert!(locks
+            .values()
+            .any(|lock| lock.block_hash == recovery_block.hash
+                && lock.block_index == 13
+                && lock.latest_round_number == 2));
+        assert!(
+            locks
+                .values()
+                .all(|lock| lock.block_hash != first_block.hash),
+            "stale lock must be archived as recovery evidence before replacement"
+        );
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn fresh_conflicting_vote_lock_is_not_recovered_before_timeout() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let path = temp_vote_lock_path("fresh-pre-vote-transient-recovery");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let parent = signed_block(12, 1, "validator0");
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &parent,
+            &test_qc(&parent.hash),
+        )
+        .expect("canonical parent lock should be written");
+
+        let mut first_block = signed_block(13, 1, "validator1");
+        first_block.previous_hash = parent.hash.clone();
+        let mut recovery_block = signed_block(13, 2, "validator3");
+        recovery_block.previous_hash = parent.hash.clone();
+
+        DualQuorumConsensus::register_local_vote_intent("validator2", &first_block, 40, 1)
+            .expect("first local vote intent should persist");
+
+        DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
+            "validator2",
+            &recovery_block,
+            40,
+            2,
+            u64::MAX - 1,
+            "test fresh transient lock remains locked",
+        )
+        .expect("fresh lock check should fail closed without mutation");
+
+        let err =
+            DualQuorumConsensus::register_local_vote_intent("validator2", &recovery_block, 40, 2)
+                .expect_err("fresh conflicting vote remains unsafe without stale recovery");
+        assert!(
+            err.contains("requires an explicit view-change certificate"),
+            "unexpected fresh-lock error: {err}"
+        );
+
+        let locked = DualQuorumConsensus::local_locked_vote_for_height("validator2", 40, 13)
+            .expect("local vote lock lookup should succeed")
+            .expect("original lock should remain");
+        assert_eq!(locked.block_hash, first_block.hash);
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
     }
 
     #[test]

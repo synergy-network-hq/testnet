@@ -780,6 +780,11 @@ impl ProofOfSynergy {
                             leader_timeout_secs,
                             Self::current_timestamp(),
                         );
+                        let transient_recovery_min_age_secs =
+                            Self::transient_vote_recovery_min_age_secs(
+                                leader_timeout_secs,
+                                block_time_secs,
+                            );
 
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
@@ -957,6 +962,7 @@ impl ProofOfSynergy {
                             &dual_quorum_consensus,
                             current_epoch,
                             view_offset,
+                            transient_recovery_min_age_secs,
                         );
 
                         consensus_log!("Dual-quorum consensus complete!");
@@ -2348,6 +2354,7 @@ impl ProofOfSynergy {
         dual_quorum_consensus: &Arc<Mutex<DualQuorumConsensus>>,
         current_epoch: u64,
         view_offset: usize,
+        transient_recovery_min_age_secs: u64,
     ) -> Result<QuorumCertificate, String> {
         consensus_log!(
             "🔒 [execute_dual_quorum_consensus] Attempting to lock dual_quorum_consensus..."
@@ -2366,7 +2373,11 @@ impl ProofOfSynergy {
         consensus_log!("📞 [execute_dual_quorum_consensus] Calling start_consensus_round...");
         io::stdout().flush().unwrap();
         // Execute the dual-quorum consensus process
-        let result = consensus.start_consensus_round(block, minimum_round_number);
+        let result = consensus.start_consensus_round_with_recovery(
+            block,
+            minimum_round_number,
+            transient_recovery_min_age_secs,
+        );
         consensus_log!("✅ [execute_dual_quorum_consensus] start_consensus_round returned!");
         io::stdout().flush().unwrap();
         result
