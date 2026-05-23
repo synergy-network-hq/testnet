@@ -140,6 +140,30 @@ pub struct RewardWeights {
     pub collaboration: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ArchivedConsensusProposal {
+    pub source_path: String,
+    pub evidence_path: String,
+    pub block_index: u64,
+    pub block_hash: String,
+    pub parent_hash: String,
+    pub proposer: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProposalCacheRecoveryReport {
+    pub action: String,
+    pub reason: String,
+    pub finalized_height: u64,
+    pub proposal_cache_dir: String,
+    pub evidence_dir: String,
+    pub scanned_count: usize,
+    pub archived_count: usize,
+    pub archived: Vec<ArchivedConsensusProposal>,
+    pub mutated: bool,
+    pub timestamp: u64,
+}
+
 // Track leader rotation within epochs
 lazy_static::lazy_static! {
     static ref EPOCH_LEADER_ROTATION: Arc<Mutex<(u64, Vec<String>, usize, Vec<String>)>> =
@@ -1192,6 +1216,69 @@ impl ProofOfSynergy {
                                 println!("⚠️ Block proposal failed: {}", e);
                                 consecutive_failures += 1;
 
+                                if Self::consensus_failure_needs_transient_lock_recovery(&e)
+                                    && consecutive_failures >= 3
+                                {
+                                    let finalized_height = new_block.block_index.saturating_sub(1);
+                                    let min_age_secs = Self::transient_vote_recovery_min_age_secs(
+                                        leader_timeout_secs,
+                                        block_time_secs,
+                                    );
+                                    let reason = format!(
+                                        "automatic consensus liveness recovery after {consecutive_failures} consecutive failures at proposed_height={} proposed_hash={}: {e}",
+                                        new_block.block_index, new_block.hash
+                                    );
+                                    match (
+                                        DualQuorumConsensus::recover_transient_vote_locks_above_finalized_height(
+                                            finalized_height,
+                                            min_age_secs,
+                                            &reason,
+                                        ),
+                                        Self::recover_cached_block_proposals_above_finalized_height(
+                                            finalized_height,
+                                            &reason,
+                                        ),
+                                    ) {
+                                        (Ok(vote_report), Ok(proposal_report))
+                                            if vote_report.mutated || proposal_report.mutated =>
+                                        {
+                                            warn!(
+                                                "consensus",
+                                                "Recovered stale transient consensus state above finalized head",
+                                                "finalized_height" => finalized_height,
+                                                "vote_locks_removed" => vote_report.removed_count as u64,
+                                                "proposal_cache_archived" => proposal_report.archived_count as u64,
+                                                "vote_lock_evidence" => vote_report.evidence_path.clone(),
+                                                "proposal_evidence" => proposal_report.evidence_dir.clone()
+                                            );
+                                            last_logged_view_timeout = None;
+                                            last_tip_observed_at = SystemTime::now();
+                                            last_block_time = SystemTime::now();
+                                            consecutive_failures = 0;
+                                            thread::sleep(Duration::from_millis(500));
+                                            continue;
+                                        }
+                                        (Ok(vote_report), Ok(proposal_report)) => {
+                                            info!(
+                                                "consensus",
+                                                "Transient consensus recovery checked but no stale mutable state was eligible",
+                                                "finalized_height" => finalized_height,
+                                                "min_age_secs" => min_age_secs,
+                                                "vote_locks_removed" => vote_report.removed_count as u64,
+                                                "proposal_cache_archived" => proposal_report.archived_count as u64
+                                            );
+                                        }
+                                        (Err(error), _) | (_, Err(error)) => {
+                                            warn!(
+                                                "consensus",
+                                                "Automatic transient consensus recovery failed closed",
+                                                "finalized_height" => finalized_height,
+                                                "error" => error
+                                            );
+                                        }
+                                    }
+                                }
+
                                 // Apply penalty to proposer for failed block
                                 Self::maybe_apply_proposer_penalty(
                                     penalization_enabled,
@@ -2128,6 +2215,102 @@ impl ProofOfSynergy {
         }
     }
 
+    pub fn recover_cached_block_proposals_above_finalized_height(
+        finalized_height: u64,
+        reason: &str,
+    ) -> Result<ProposalCacheRecoveryReport, String> {
+        let _guard = PROPOSAL_CACHE_LOCK
+            .lock()
+            .map_err(|_| "proposal cache lock is poisoned".to_string())?;
+        let dir = Self::proposal_cache_dir();
+        let now = Self::current_timestamp();
+        let evidence_nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let mut evidence_dir: Option<PathBuf> = None;
+
+        let mut scanned_count = 0usize;
+        let mut archived = Vec::new();
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|value| value.to_str()) != Some("json") {
+                    continue;
+                }
+                scanned_count += 1;
+                let Some(block) = fs::read_to_string(&path)
+                    .ok()
+                    .and_then(|contents| serde_json::from_str::<Block>(&contents).ok())
+                else {
+                    continue;
+                };
+                if block.block_index <= finalized_height {
+                    continue;
+                }
+
+                let file_name = path
+                    .file_name()
+                    .map(|value| value.to_owned())
+                    .unwrap_or_else(|| format!("proposal-{}.json", block.hash).into());
+                let evidence_dir = match evidence_dir.as_ref() {
+                    Some(evidence_dir) => evidence_dir.clone(),
+                    None => {
+                        let evidence_dir_relative = format!(
+                            "data/consensus_recovery_evidence/{}-{}-proposals-above-{}",
+                            now, evidence_nonce, finalized_height
+                        );
+                        let created = crate::utils::resolve_data_path(&evidence_dir_relative);
+                        fs::create_dir_all(&created).map_err(|error| {
+                            format!("failed to create proposal evidence directory: {error}")
+                        })?;
+                        evidence_dir = Some(created.clone());
+                        created
+                    }
+                };
+                let target = evidence_dir.join(file_name);
+                fs::rename(&path, &target).map_err(|error| {
+                    format!(
+                        "failed to archive proposal cache file {:?} to {:?}: {error}",
+                        path, target
+                    )
+                })?;
+                archived.push(ArchivedConsensusProposal {
+                    source_path: path.to_string_lossy().to_string(),
+                    evidence_path: target.to_string_lossy().to_string(),
+                    block_index: block.block_index,
+                    block_hash: block.hash,
+                    parent_hash: block.previous_hash,
+                    proposer: block.validator_id,
+                });
+            }
+        }
+
+        let report = ProposalCacheRecoveryReport {
+            action: "recover_cached_block_proposals_above_finalized_height".to_string(),
+            reason: reason.to_string(),
+            finalized_height,
+            proposal_cache_dir: dir.to_string_lossy().to_string(),
+            evidence_dir: evidence_dir
+                .as_ref()
+                .map(|path| path.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            scanned_count,
+            archived_count: archived.len(),
+            mutated: !archived.is_empty(),
+            archived,
+            timestamp: now,
+        };
+        if let Some(evidence_dir) = evidence_dir {
+            let manifest_path = evidence_dir.join("manifest.json");
+            let manifest = serde_json::to_vec_pretty(&report)
+                .map_err(|error| format!("failed to encode proposal evidence manifest: {error}"))?;
+            fs::write(&manifest_path, manifest)
+                .map_err(|error| format!("failed to write proposal evidence manifest: {error}"))?;
+        }
+        Ok(report)
+    }
+
     fn block_matches_proposal_context(
         block: &Block,
         previous_block: &Block,
@@ -2186,6 +2369,19 @@ impl ProofOfSynergy {
         consensus_log!("✅ [execute_dual_quorum_consensus] start_consensus_round returned!");
         io::stdout().flush().unwrap();
         result
+    }
+
+    fn consensus_failure_needs_transient_lock_recovery(error: &str) -> bool {
+        error.contains("same-height vote supersede")
+            || error.contains("already locally voted for different block")
+            || error.contains("Insufficient validator votes")
+    }
+
+    fn transient_vote_recovery_min_age_secs(leader_timeout_secs: u64, block_time_secs: u64) -> u64 {
+        leader_timeout_secs
+            .saturating_mul(2)
+            .max(block_time_secs.saturating_mul(3))
+            .max(6)
     }
 
     fn validate_transaction(
@@ -3065,6 +3261,63 @@ mod tests {
 
         ProofOfSynergy::set_test_proposal_cache_dir(None);
         let _ = fs::remove_dir_all(cache_dir);
+    }
+
+    #[test]
+    fn stale_unfinalized_proposal_cache_is_archived_after_evidence() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("proposal cache test lock should succeed");
+        let cache_dir = unique_proposal_cache_dir("proposal-recovery");
+        ProofOfSynergy::set_test_proposal_cache_dir(Some(cache_dir.clone()));
+
+        let previous = Block::new_with_timestamp(
+            38481,
+            vec![],
+            "canonical-parent".to_string(),
+            "synv1previous".to_string(),
+            38481,
+            1_779_540_000,
+        );
+        let mut leader = Validator::new(
+            "synv1proposal-recovery".to_string(),
+            "leader-pubkey".to_string(),
+            "Proposal Recovery".to_string(),
+            1_000,
+        );
+        leader.status = ValidatorStatus::Active;
+        let registered_leaders = active_validator_manager(&leader.address);
+        leader.public_key = registered_leaders
+            .get_validator(&leader.address)
+            .expect("test leader should be registered")
+            .public_key;
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+
+        let proposal =
+            ProofOfSynergy::create_block_proposal(&previous, &leader, vec![], 2, &pqc_manager);
+        assert!(fs::read_dir(&cache_dir)
+            .expect("cache dir should be readable")
+            .next()
+            .is_some());
+
+        let report = ProofOfSynergy::recover_cached_block_proposals_above_finalized_height(
+            previous.block_index,
+            "test stale proposal recovery",
+        )
+        .expect("proposal cache recovery should succeed");
+
+        assert!(report.mutated);
+        assert_eq!(report.archived_count, 1);
+        assert_eq!(report.archived[0].block_hash, proposal.hash);
+        assert!(PathBuf::from(&report.archived[0].evidence_path).exists());
+        assert!(fs::read_dir(&cache_dir)
+            .expect("cache dir should remain readable")
+            .next()
+            .is_none());
+
+        ProofOfSynergy::set_test_proposal_cache_dir(None);
+        let _ = fs::remove_dir_all(cache_dir);
+        let _ = fs::remove_dir_all(report.evidence_dir);
     }
 
     #[test]

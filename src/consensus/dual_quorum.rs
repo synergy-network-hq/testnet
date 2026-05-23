@@ -112,6 +112,35 @@ pub struct LocalLockedVote {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveredTransientVoteLock {
+    pub validator_address: String,
+    pub block_hash: String,
+    pub block_index: u64,
+    pub epoch_number: u64,
+    pub first_round_number: u64,
+    pub latest_round_number: u64,
+    pub proposer: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TransientVoteLockRecoveryReport {
+    pub action: String,
+    pub reason: String,
+    pub finalized_height: u64,
+    pub min_age_secs: u64,
+    pub vote_lock_path: String,
+    pub evidence_path: String,
+    pub before_count: usize,
+    pub kept_count: usize,
+    pub removed_count: usize,
+    pub removed: Vec<RecoveredTransientVoteLock>,
+    pub mutated: bool,
+    pub timestamp: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuorumCertificate {
     pub block_hash: String,
     pub epoch_number: u64,
@@ -1348,6 +1377,137 @@ impl DualQuorumConsensus {
         }))
     }
 
+    pub fn recover_transient_vote_locks_above_finalized_height(
+        finalized_height: u64,
+        min_age_secs: u64,
+        reason: &str,
+    ) -> Result<TransientVoteLockRecoveryReport, String> {
+        let _guard = LOCAL_VOTE_LOCK_FILE_MUTEX
+            .lock()
+            .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
+        let path = Self::local_vote_lock_path();
+        let mut locks = Self::load_local_vote_locks_unlocked()?;
+        let now = Self::current_timestamp();
+        let before_count = locks.len();
+
+        let mut removed = locks
+            .iter()
+            .filter_map(|(key, lock)| {
+                let stale_enough = now.saturating_sub(lock.updated_at) >= min_age_secs;
+                (lock.block_index > finalized_height && stale_enough).then(|| {
+                    (
+                        key.clone(),
+                        RecoveredTransientVoteLock {
+                            validator_address: lock.validator_address.clone(),
+                            block_hash: lock.block_hash.clone(),
+                            block_index: lock.block_index,
+                            epoch_number: lock.epoch_number,
+                            first_round_number: lock.first_round_number,
+                            latest_round_number: lock.latest_round_number,
+                            proposer: lock.proposer.clone(),
+                            created_at: lock.created_at,
+                            updated_at: lock.updated_at,
+                        },
+                    )
+                })
+            })
+            .collect::<Vec<_>>();
+        removed.sort_by(|(_, left), (_, right)| {
+            (
+                left.block_index,
+                left.epoch_number,
+                left.latest_round_number,
+                left.block_hash.as_str(),
+            )
+                .cmp(&(
+                    right.block_index,
+                    right.epoch_number,
+                    right.latest_round_number,
+                    right.block_hash.as_str(),
+                ))
+        });
+
+        if removed.is_empty() {
+            return Ok(TransientVoteLockRecoveryReport {
+                action: "recover_transient_vote_locks_above_finalized_height".to_string(),
+                reason: reason.to_string(),
+                finalized_height,
+                min_age_secs,
+                vote_lock_path: path.to_string_lossy().to_string(),
+                evidence_path: String::new(),
+                before_count,
+                kept_count: locks.len(),
+                removed_count: 0,
+                removed: Vec::new(),
+                mutated: false,
+                timestamp: now,
+            });
+        }
+
+        let evidence_root = crate::utils::resolve_data_path("data/consensus_recovery_evidence");
+        fs::create_dir_all(&evidence_root)
+            .map_err(|err| format!("failed to create vote-lock evidence directory: {err}"))?;
+        let evidence_nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let evidence_path = evidence_root.join(format!(
+            "{}-{}-transient-vote-locks-above-{}.json",
+            now, evidence_nonce, finalized_height
+        ));
+
+        let removed_locks = removed
+            .iter()
+            .map(|(_, lock)| lock.clone())
+            .collect::<Vec<_>>();
+        let evidence = serde_json::json!({
+            "action": "recover_transient_vote_locks_above_finalized_height",
+            "reason": reason,
+            "finalized_height": finalized_height,
+            "min_age_secs": min_age_secs,
+            "vote_lock_path": path.to_string_lossy(),
+            "before_count": before_count,
+            "removed_count": removed_locks.len(),
+            "removed": removed_locks,
+            "all_locks_before": locks,
+            "timestamp": now,
+        });
+        let serialized = serde_json::to_vec_pretty(&evidence)
+            .map_err(|err| format!("failed to encode vote-lock evidence: {err}"))?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&evidence_path)
+            .map_err(|err| format!("failed to create vote-lock evidence file: {err}"))?;
+        file.write_all(&serialized)
+            .map_err(|err| format!("failed to write vote-lock evidence file: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync vote-lock evidence file: {err}"))?;
+        drop(file);
+
+        for (key, _) in &removed {
+            locks.remove(key);
+        }
+        Self::persist_local_vote_locks_unlocked(&locks)?;
+
+        Ok(TransientVoteLockRecoveryReport {
+            action: "recover_transient_vote_locks_above_finalized_height".to_string(),
+            reason: reason.to_string(),
+            finalized_height,
+            min_age_secs,
+            vote_lock_path: path.to_string_lossy().to_string(),
+            evidence_path: evidence_path.to_string_lossy().to_string(),
+            before_count,
+            kept_count: locks.len(),
+            removed_count: removed.len(),
+            removed: removed.into_iter().map(|(_, lock)| lock).collect(),
+            mutated: before_count != locks.len(),
+            timestamp: now,
+        })
+    }
+
     fn validate_same_height_vote_supersede(
         proposed_block: &Block,
         round_number: u64,
@@ -2212,6 +2372,49 @@ mod tests {
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
             let _ = fs::remove_dir_all(root);
         }
+    }
+
+    #[test]
+    fn stale_unfinalized_vote_locks_are_pruned_after_evidence() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = temp_vote_lock_path("transient-recovery");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let finalized = signed_block(12, 1, "validator1");
+        let transient = signed_block(13, 1, "validator1");
+        DualQuorumConsensus::register_local_vote_intent("validator2", &finalized, 40, 1)
+            .expect("finalized-height vote lock should persist");
+        DualQuorumConsensus::register_local_vote_intent("validator2", &transient, 40, 1)
+            .expect("transient vote lock should persist");
+
+        let report = DualQuorumConsensus::recover_transient_vote_locks_above_finalized_height(
+            12,
+            0,
+            "test stale transient recovery",
+        )
+        .expect("transient vote lock recovery should succeed");
+
+        assert!(report.mutated);
+        assert_eq!(report.removed_count, 1);
+        assert_eq!(report.removed[0].block_hash, transient.hash);
+        assert!(PathBuf::from(&report.evidence_path).exists());
+
+        let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
+            .expect("remaining vote locks should load");
+        assert!(locks
+            .values()
+            .any(|lock| lock.block_hash == finalized.hash && lock.block_index == 12));
+        assert!(locks
+            .values()
+            .all(|lock| lock.block_index <= 12 && lock.block_hash != transient.hash));
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        if let Some(root) = path.parent().and_then(|data| data.parent()) {
+            let _ = fs::remove_dir_all(root);
+        }
+        let _ = fs::remove_file(report.evidence_path);
     }
 
     #[test]

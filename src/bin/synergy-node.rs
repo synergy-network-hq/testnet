@@ -24,6 +24,52 @@ fn run() -> Result<(), String> {
             let report = diagnose_sync_target(&rpc_url, expected_genesis_hash.as_deref())?;
             println!("{report}");
         }
+        "diagnose-consensus-stall" => {
+            require_testnet_args(&args)?;
+            print_json(
+                synergy_testnet::consensus::diagnostics::diagnose_consensus_stall(
+                    &synergy_testnet::rpc::rpc_server::SHARED_CHAIN,
+                ),
+            )?;
+        }
+        "diagnose-vote-locks" => {
+            require_testnet_args(&args)?;
+            let finalized_height = optional_u64_arg(&args, "--finalized-height")?;
+            print_json(
+                synergy_testnet::consensus::diagnostics::diagnose_vote_locks(finalized_height),
+            )?;
+        }
+        "quarantine-status" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::quarantine_status())?;
+        }
+        "self-heal" => {
+            require_testnet_args(&args)?;
+            match synergy_testnet::consensus::diagnostics::start_self_heal() {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
+        "recover-transient-vote-locks" => {
+            require_testnet_args(&args)?;
+            let finalized_height = optional_u64_arg(&args, "--finalized-height")?;
+            let min_age_secs = optional_u64_arg(&args, "--min-age-secs")?.unwrap_or(0);
+            let reason = arg_value(&args, "--reason")
+                .unwrap_or_else(|| "operator_cli_recover_transient_vote_locks".to_string());
+            let report = synergy_testnet::consensus::diagnostics::recover_transient_vote_locks(
+                finalized_height,
+                min_age_secs,
+                &reason,
+            )?;
+            print_json(report)?;
+        }
+        "sync-from-canonical-peer" => {
+            require_testnet_args(&args)?;
+            match synergy_testnet::consensus::diagnostics::sync_from_canonical_peer() {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
         "sync-from-archive" | "self-heal-from-archive" => {
             require_testnet_args(&args)?;
             let archive_url = arg_value(&args, "--archive-url")
@@ -46,6 +92,14 @@ fn run() -> Result<(), String> {
             println!("  synergy-node tx submit-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
             println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node diagnose-sync-target --rpc-url <url> --chain-id 1264 --network-id synergy-testnet-v2 [--expected-genesis-hash <hash>]");
+            println!("  synergy-node diagnose-consensus-stall --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node diagnose-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>]");
+            println!(
+                "  synergy-node quarantine-status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!("  synergy-node recover-transient-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>] [--min-age-secs <seconds>]");
+            println!("  synergy-node self-heal --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node sync-from-archive --archive-url <url> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
             println!("  synergy-node self-heal-from-archive --archive-url <url> --divergence-height <height> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
         }
@@ -464,6 +518,16 @@ fn require_testnet_args(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| "missing --network-id synergy-testnet-v2".to_string())?;
     NetworkId(network_id).require_testnet_v2()?;
     Ok(())
+}
+
+fn optional_u64_arg(args: &[String], name: &str) -> Result<Option<u64>, String> {
+    arg_value(args, name)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid {name}: {error}"))
+        })
+        .transpose()
 }
 
 fn arg_value(args: &[String], name: &str) -> Option<String> {

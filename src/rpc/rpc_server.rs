@@ -1093,6 +1093,31 @@ fn submit_aegis_transaction_envelope(
     }
 }
 
+fn rpc_u64_param(params: &Value, object_key: &str, array_index: usize) -> Option<u64> {
+    params
+        .get(object_key)
+        .or_else(|| params.get(array_index))
+        .and_then(|value| {
+            value.as_u64().or_else(|| {
+                value.as_str().and_then(|text| {
+                    let trimmed = text.trim();
+                    trimmed
+                        .strip_prefix("0x")
+                        .and_then(|hex| u64::from_str_radix(hex, 16).ok())
+                        .or_else(|| trimmed.parse::<u64>().ok())
+                })
+            })
+        })
+}
+
+fn rpc_string_param(params: &Value, object_key: &str, array_index: usize) -> Option<String> {
+    params
+        .get(object_key)
+        .or_else(|| params.get(array_index))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
 fn handle_json_rpc(
     method: &str,
     params: Value,
@@ -1178,6 +1203,61 @@ fn handle_json_rpc(
         "synergy_getCanonicalLock" => latest_canonical_lock_json(),
 
         "synergy_getCommittedQC" => latest_committed_qc_json(),
+
+        "synergy_getDivergenceStatus" => {
+            crate::consensus::diagnostics::divergence_status(chain)
+        }
+
+        "synergy_getQuarantineStatus" => crate::consensus::diagnostics::quarantine_status(),
+
+        "synergy_getReconciliationPlan" => {
+            crate::consensus::diagnostics::reconciliation_plan(chain)
+        }
+
+        "synergy_getSelfHealStatus" => crate::consensus::diagnostics::self_heal_status(),
+
+        "synergy_diagnoseConsensusStall" => {
+            crate::consensus::diagnostics::diagnose_consensus_stall(chain)
+        }
+
+        "synergy_diagnoseVoteLocks" => {
+            let finalized_height = rpc_u64_param(&params, "finalized_height", 0);
+            crate::consensus::diagnostics::diagnose_vote_locks(finalized_height)
+        }
+
+        "synergy_recoverTransientVoteLocks" => {
+            let finalized_height = rpc_u64_param(&params, "finalized_height", 0);
+            let min_age_secs = rpc_u64_param(&params, "min_age_secs", 1).unwrap_or(0);
+            let reason = rpc_string_param(&params, "reason", 2)
+                .unwrap_or_else(|| "operator_rpc_recover_transient_vote_locks".to_string());
+            match crate::consensus::diagnostics::recover_transient_vote_locks(
+                finalized_height,
+                min_age_secs,
+                &reason,
+            ) {
+                Ok(report) => report,
+                Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+            }
+        }
+
+        "synergy_startSelfHeal" => match crate::consensus::diagnostics::start_self_heal() {
+            Ok(report) => report,
+            Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+        },
+
+        "synergy_syncFromCanonicalPeer" => {
+            match crate::consensus::diagnostics::sync_from_canonical_peer() {
+                Ok(report) => report,
+                Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+            }
+        }
+
+        "synergy_selfHealFromArchive" => {
+            match crate::consensus::diagnostics::self_heal_from_archive() {
+                Ok(report) => report,
+                Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+            }
+        }
 
         "synergy_getValidatorSet" => {
             let chain = chain.lock().unwrap();
@@ -4024,6 +4104,12 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getFinalizedHead"
         | "synergy_getCanonicalLock"
         | "synergy_getCommittedQC"
+        | "synergy_getDivergenceStatus"
+        | "synergy_getQuarantineStatus"
+        | "synergy_getReconciliationPlan"
+        | "synergy_getSelfHealStatus"
+        | "synergy_diagnoseConsensusStall"
+        | "synergy_diagnoseVoteLocks"
         | "synergy_getValidatorSet"
         | "synergy_getProtocolConfig"
         | "synergy_getAegisStatus"
@@ -4184,7 +4270,11 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_resetSxcpState"
         | "synergy_mine"
         | "synergy_setAccountBalance"
-        | "synergy_resetChainHead" => Some(RpcMethodExposure::Operator),
+        | "synergy_resetChainHead"
+        | "synergy_startSelfHeal"
+        | "synergy_recoverTransientVoteLocks"
+        | "synergy_syncFromCanonicalPeer"
+        | "synergy_selfHealFromArchive" => Some(RpcMethodExposure::Operator),
         _ => None,
     }
 }
