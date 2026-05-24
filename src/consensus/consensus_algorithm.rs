@@ -774,9 +774,10 @@ impl ProofOfSynergy {
                         // different same-height leaders after a restart or partition, which
                         // recreates transient vote-lock splits at H+1.
                         let view_anchor_timestamp = latest_block_clone.timestamp;
-                        let view_offset = Self::deterministic_view_offset_for_block_time(
+                        let view_offset = Self::deterministic_view_offset_for_next_block_slot(
                             latest_block_clone.block_index,
                             view_anchor_timestamp,
+                            block_time_secs,
                             leader_timeout_secs,
                             Self::current_timestamp(),
                         );
@@ -1621,22 +1622,10 @@ impl ProofOfSynergy {
         Self::epoch_for_block(last_block_index.saturating_add(1), epoch_length)
     }
 
-    fn deterministic_view_offset(
+    fn deterministic_view_offset_for_next_block_slot(
         last_block_index: u64,
         last_block_timestamp: u64,
-        leader_timeout_secs: u64,
-    ) -> usize {
-        Self::deterministic_view_offset_for_block_time(
-            last_block_index,
-            last_block_timestamp,
-            leader_timeout_secs,
-            Self::current_timestamp(),
-        )
-    }
-
-    fn deterministic_view_offset_for_block_time(
-        last_block_index: u64,
-        last_block_timestamp: u64,
+        block_time_secs: u64,
         leader_timeout_secs: u64,
         current_timestamp: u64,
     ) -> usize {
@@ -1648,8 +1637,13 @@ impl ProofOfSynergy {
             return 0;
         }
 
+        // View timeout starts when the next block is actually due, not at the
+        // previous block timestamp. Otherwise normal target cadence plus PQC
+        // vote propagation consumes the primary leader's timeout budget and
+        // causes unnecessary same-height view changes on a healthy chain.
+        let next_block_slot_timestamp = last_block_timestamp.saturating_add(block_time_secs.max(1));
         Self::deterministic_view_offset_for_time(
-            last_block_timestamp,
+            next_block_slot_timestamp,
             leader_timeout_secs,
             current_timestamp,
         )
@@ -2919,16 +2913,55 @@ mod tests {
     #[test]
     fn deterministic_view_offset_keeps_genesis_on_primary_leader() {
         assert_eq!(
-            ProofOfSynergy::deterministic_view_offset_for_block_time(0, 4_983, 20, 4_983),
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(0, 4_983, 2, 20, 4_983),
             0
         );
         assert_eq!(
-            ProofOfSynergy::deterministic_view_offset_for_block_time(0, 4_983, 20, 5_500),
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(0, 4_983, 2, 20, 5_500),
             0
         );
         assert_eq!(
-            ProofOfSynergy::deterministic_view_offset_for_block_time(1, 4_983, 20, 5_500),
-            ProofOfSynergy::deterministic_view_offset_for_time(4_983, 20, 5_500)
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(1, 4_983, 2, 20, 5_500),
+            ProofOfSynergy::deterministic_view_offset_for_time(4_985, 20, 5_500)
+        );
+    }
+
+    #[test]
+    fn view_timeout_starts_at_next_block_slot_not_previous_block_timestamp() {
+        let last_block_height = 54_443;
+        let last_block_timestamp = 1_779_611_545;
+        let block_time_secs = 2;
+        let leader_timeout_secs = 4;
+
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_time(
+                last_block_timestamp,
+                leader_timeout_secs,
+                last_block_timestamp + leader_timeout_secs
+            ),
+            1,
+            "anchoring at the previous block timestamp rotates exactly when a healthy next block is due"
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
+                last_block_height,
+                last_block_timestamp,
+                block_time_secs,
+                leader_timeout_secs,
+                last_block_timestamp + leader_timeout_secs
+            ),
+            0,
+            "the primary leader must keep its full timeout after the next block slot opens"
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
+                last_block_height,
+                last_block_timestamp,
+                block_time_secs,
+                leader_timeout_secs,
+                last_block_timestamp + block_time_secs + leader_timeout_secs
+            ),
+            1
         );
     }
 
@@ -2955,15 +2988,17 @@ mod tests {
             "local tip-observation anchors can diverge across validators"
         );
 
-        let shared_offset_a = ProofOfSynergy::deterministic_view_offset_for_block_time(
+        let shared_offset_a = ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
             40_536,
             canonical_tip_timestamp,
+            2,
             leader_timeout_secs,
             current_timestamp,
         );
-        let shared_offset_b = ProofOfSynergy::deterministic_view_offset_for_block_time(
+        let shared_offset_b = ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
             40_536,
             canonical_tip_timestamp,
+            2,
             leader_timeout_secs,
             current_timestamp,
         );
