@@ -45,7 +45,7 @@ fn get_chain_path() -> String {
 }
 const VALIDATOR_REGISTRY_PATH: &str = "data/validator_registry.json";
 const VERBOSE_CONSENSUS_LOGS: bool = false;
-const POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS: u64 = 750;
+const POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS: u64 = 250;
 
 macro_rules! consensus_log {
     ($($arg:tt)*) => {
@@ -2830,7 +2830,29 @@ mod tests {
                 .duration_since(UNIX_EPOCH)
                 .expect("anchor should be after epoch")
                 .as_millis(),
-            1_001_750
+            1_001_250
+        );
+    }
+
+    #[test]
+    fn post_commit_pacing_does_not_add_full_block_interval_after_vote_collection() {
+        let block_time_secs = 2;
+        let proposal_timestamp = 1_000;
+        let commit_after_vote_collection = UNIX_EPOCH + Duration::from_millis(1_003_000);
+        let anchor = ProofOfSynergy::next_block_pacing_anchor_for_time(
+            proposal_timestamp,
+            block_time_secs,
+            commit_after_vote_collection,
+        );
+
+        let next_proposal_at = anchor + Duration::from_secs(block_time_secs);
+        assert_eq!(
+            next_proposal_at
+                .duration_since(commit_after_vote_collection)
+                .expect("next proposal should be after the delayed commit")
+                .as_millis(),
+            POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS as u128,
+            "post-commit pacing must wait only parent propagation grace, not another full block interval"
         );
     }
 
