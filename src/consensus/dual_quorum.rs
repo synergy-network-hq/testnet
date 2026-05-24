@@ -43,6 +43,7 @@ lazy_static::lazy_static! {
 static COMMITTED_QC_STORE_INIT: Once = Once::new();
 
 const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
+const MIN_LAUNCH_VOTE_TIMEOUT_SECS: u64 = 4;
 
 #[cfg(test)]
 lazy_static::lazy_static! {
@@ -205,7 +206,7 @@ impl DualQuorumConsensus {
             validator_vote_threshold: validator_vote_threshold.max(1),
             validation_quorum_threshold: TWO_THIRDS_QUORUM_THRESHOLD,
             cooperation_quorum_threshold: 0.51,
-            vote_timeout: vote_timeout_secs.max(1),
+            vote_timeout: vote_timeout_secs.max(MIN_LAUNCH_VOTE_TIMEOUT_SECS),
             block_timeout: block_timeout_secs.max(1),
             current_epoch: 0,
             current_round_by_height: HashMap::new(),
@@ -2274,6 +2275,25 @@ mod tests {
             .join(format!("synergy-{test_name}-{unique}"))
             .join("data")
             .join("consensus_vote_locks.json")
+    }
+
+    #[test]
+    fn configured_vote_timeout_has_launch_liveness_floor() {
+        let validator_manager = approved_validator_manager(&["validator1", "validator2"]);
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let consensus = DualQuorumConsensus::new(
+            Arc::clone(&validator_manager),
+            Arc::clone(&pqc_manager),
+            true,
+            2,
+            2,
+            2,
+            6,
+        );
+
+        assert_eq!(consensus.vote_timeout, MIN_LAUNCH_VOTE_TIMEOUT_SECS);
+        assert_eq!(consensus.validator_vote_threshold, 2);
+        assert_eq!(consensus.minimum_validator_count, 2);
     }
 
     #[test]
