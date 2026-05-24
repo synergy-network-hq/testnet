@@ -57,6 +57,8 @@ const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
 const MAX_STATUS_SYNC_BATCH: u32 = 16;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
 const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 8;
+const MAX_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 2_048;
+const MAX_P2P_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
 const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS: u64 = 5;
@@ -3132,10 +3134,30 @@ fn handle_get_blocks_message(
         return;
     }
 
-    let policy = {
+    let (policy, refuse_deep_support_sync) = {
+        let local_height = {
+            let chain = blockchain.lock().unwrap();
+            chain.last().map(|block| block.block_index).unwrap_or(0)
+        };
         let peers = connected_peers.lock().unwrap();
-        block_sync_response_policy(config, peers.get(peer_address))
+        let peer = peers.get(peer_address);
+        (
+            block_sync_response_policy(config, peer),
+            support_peer_sync_request_is_too_deep(peer, local_height, from_height),
+        )
     };
+    if refuse_deep_support_sync {
+        warn!(
+            "p2p",
+            "Refusing deep support-peer block sync request",
+            "peer" => peer_address.to_string(),
+            "from_height" => from_height,
+            "max_support_peer_deep_sync_lag" => MAX_SUPPORT_PEER_DEEP_SYNC_LAG
+        );
+        let mut peers = connected_peers.lock().unwrap();
+        disconnect_peer_entry(peer_state_cache, &mut peers, peer_address);
+        return;
+    }
     let response_count = count.min(policy.max_blocks);
     let (blocks, quorum_certificates) = {
         let chain = blockchain.lock().unwrap();
@@ -3268,15 +3290,14 @@ fn peer_is_active_consensus_validator(peer: &PeerConnection) -> bool {
 }
 
 fn block_sync_response_policy(
-    config: &NodeConfig,
+    _config: &NodeConfig,
     peer: Option<&PeerConnection>,
 ) -> BlockSyncResponsePolicy {
-    let validator_serving_support_peer = local_node_runs_validator_consensus(config)
-        && !peer
-            .map(peer_is_active_consensus_validator)
-            .unwrap_or(false);
+    let serving_support_peer = !peer
+        .map(peer_is_active_consensus_validator)
+        .unwrap_or(false);
 
-    if validator_serving_support_peer {
+    if serving_support_peer {
         BlockSyncResponsePolicy {
             max_blocks: MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS,
             write_timeout: Duration::from_millis(
@@ -3289,6 +3310,18 @@ fn block_sync_response_policy(
             write_timeout: Duration::from_secs(BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS),
         }
     }
+}
+
+fn support_peer_sync_request_is_too_deep(
+    peer: Option<&PeerConnection>,
+    local_height: u64,
+    from_height: u64,
+) -> bool {
+    let serving_support_peer = !peer
+        .map(peer_is_active_consensus_validator)
+        .unwrap_or(false);
+    serving_support_peer
+        && local_height.saturating_sub(from_height) > MAX_SUPPORT_PEER_DEEP_SYNC_LAG
 }
 
 fn background_poll_interval(behind: u64, heartbeat: Duration, sync_active: bool) -> Duration {
@@ -4559,6 +4592,12 @@ fn receive_message(stream: &mut impl Read) -> Result<NetworkMessage, io::Error> 
     let mut len_bytes = [0u8; 4];
     stream.read_exact(&mut len_bytes)?;
     let len = u32::from_le_bytes(len_bytes) as usize;
+    if len > MAX_P2P_FRAME_BYTES {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("p2p frame length {len} exceeds limit {MAX_P2P_FRAME_BYTES}"),
+        ));
+    }
 
     // Read message data
     let mut data = vec![0u8; len];
@@ -5465,14 +5504,15 @@ mod tests {
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
-        validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
+        support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
+        validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
         vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
         PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
-        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
-        MAX_BLOCK_SYNC_RESPONSE_BLOCKS, MAX_STATUS_SYNC_BATCH,
-        MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
-        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
+        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH, MAX_P2P_FRAME_BYTES,
+        MAX_STATUS_SYNC_BATCH, MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS,
+        NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS, STALE_UNIDENTIFIED_PEER_SECS,
+        STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -5494,6 +5534,7 @@ mod tests {
     use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::fs;
+    use std::io;
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
@@ -6921,15 +6962,53 @@ mod tests {
     }
 
     #[test]
-    fn non_validator_nodes_keep_normal_block_sync_response_budget() {
+    fn non_validator_nodes_throttle_support_peer_block_sync_responses() {
         let mut config = NodeConfig::default();
         config.identity.role = "relayer".to_string();
         let support_peer = test_peer_with_validator_address(Some("synv1support"));
 
         let policy = block_sync_response_policy(&config, Some(&support_peer));
 
-        assert_eq!(policy.max_blocks, MAX_BLOCK_SYNC_RESPONSE_BLOCKS);
-        assert_eq!(policy.write_timeout, Duration::from_secs(1));
+        assert_eq!(
+            policy.max_blocks,
+            MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS
+        );
+        assert_eq!(policy.write_timeout, Duration::from_millis(500));
+    }
+
+    #[test]
+    fn deep_support_peer_sync_request_is_refused() {
+        configure_canonical_genesis_path_for_tests();
+        let active_validator = "synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs";
+        ensure_test_validator_key(active_validator);
+
+        let support_peer = test_peer_with_validator_address(Some("synv1support"));
+        let active_peer = test_peer_with_validator_address(Some(active_validator));
+
+        assert!(support_peer_sync_request_is_too_deep(
+            Some(&support_peer),
+            50_000,
+            11_666
+        ));
+        assert!(!support_peer_sync_request_is_too_deep(
+            Some(&support_peer),
+            50_000,
+            49_500
+        ));
+        assert!(!support_peer_sync_request_is_too_deep(
+            Some(&active_peer),
+            50_000,
+            11_666
+        ));
+    }
+
+    #[test]
+    fn oversized_p2p_frame_is_rejected_before_body_read() {
+        let len = (MAX_P2P_FRAME_BYTES as u32).saturating_add(1);
+        let mut input = std::io::Cursor::new(len.to_le_bytes().to_vec());
+        let error = receive_message(&mut input).expect_err("oversized frame must fail closed");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 
     #[test]

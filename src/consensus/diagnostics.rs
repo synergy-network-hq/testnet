@@ -13,6 +13,7 @@ const EXPECTED_CHAIN_ID: u64 = 1264;
 const EXPECTED_NETWORK_ID: &str = "synergy-testnet-v2";
 const EXPECTED_GENESIS_HASH: &str =
     "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789";
+const DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VoteLockEntry {
@@ -139,31 +140,47 @@ pub fn diagnose_vote_locks(finalized_height: Option<u64>) -> Value {
     let (path, locks, parse_error) = vote_lock_entries();
     let now = now_secs();
     let mut hashes_by_height: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
-    let above_finalized = locks
-        .iter()
-        .filter(|lock| {
-            finalized_height
-                .map(|height| lock.block_index > height)
-                .unwrap_or(false)
-        })
-        .map(|lock| {
-            hashes_by_height
+    let mut stale_hashes_by_height: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
+    let mut above_finalized = Vec::new();
+    let mut stale_above_finalized = Vec::new();
+    let mut fresh_above_finalized = Vec::new();
+    for lock in locks.iter().filter(|lock| {
+        finalized_height
+            .map(|height| lock.block_index > height)
+            .unwrap_or(false)
+    }) {
+        let age_seconds = now.saturating_sub(lock.updated_at);
+        hashes_by_height
+            .entry(lock.block_index)
+            .or_default()
+            .insert(lock.block_hash.clone());
+        let item = json!({
+            "validator_address": lock.validator_address,
+            "height": lock.block_index,
+            "block_hash": lock.block_hash,
+            "epoch": lock.epoch_number,
+            "first_round": lock.first_round_number,
+            "latest_round": lock.latest_round_number,
+            "proposer": lock.proposer,
+            "age_seconds": age_seconds,
+        });
+        if age_seconds >= DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS {
+            stale_hashes_by_height
                 .entry(lock.block_index)
                 .or_default()
                 .insert(lock.block_hash.clone());
-            json!({
-                "validator_address": lock.validator_address,
-                "height": lock.block_index,
-                "block_hash": lock.block_hash,
-                "epoch": lock.epoch_number,
-                "first_round": lock.first_round_number,
-                "latest_round": lock.latest_round_number,
-                "proposer": lock.proposer,
-                "age_seconds": now.saturating_sub(lock.updated_at),
-            })
-        })
-        .collect::<Vec<_>>();
+            stale_above_finalized.push(item.clone());
+        } else {
+            fresh_above_finalized.push(item.clone());
+        }
+        above_finalized.push(item);
+    }
     let conflicting_heights = hashes_by_height
+        .into_iter()
+        .filter(|(_, hashes)| hashes.len() > 1)
+        .map(|(height, hashes)| json!({"height": height, "hashes": hashes}))
+        .collect::<Vec<_>>();
+    let stale_conflicting_heights = stale_hashes_by_height
         .into_iter()
         .filter(|(_, hashes)| hashes.len() > 1)
         .map(|(height, hashes)| json!({"height": height, "hashes": hashes}))
@@ -176,8 +193,14 @@ pub fn diagnose_vote_locks(finalized_height: Option<u64>) -> Value {
         "finalized_height": finalized_height,
         "total_vote_locks": locks.len(),
         "locks_above_finalized": above_finalized.len(),
+        "fresh_locks_above_finalized": fresh_above_finalized.len(),
+        "stale_locks_above_finalized": stale_above_finalized.len(),
+        "stale_threshold_seconds": DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
         "conflicting_heights_above_finalized": conflicting_heights,
+        "stale_conflicting_heights_above_finalized": stale_conflicting_heights,
         "locks": above_finalized,
+        "stale_locks": stale_above_finalized,
+        "fresh_locks": fresh_above_finalized,
     })
 }
 
@@ -224,12 +247,12 @@ pub fn diagnose_consensus_stall(chain: &Arc<Mutex<BlockChain>>) -> Value {
         latest_timestamp.map(|timestamp| now_secs().saturating_sub(timestamp));
     let finalized_height = latest_canonical_lock_height();
     let vote_locks = diagnose_vote_locks(finalized_height);
-    let locks_above = vote_locks
-        .get("locks_above_finalized")
+    let stale_locks_above = vote_locks
+        .get("stale_locks_above_finalized")
         .and_then(Value::as_u64)
         .unwrap_or(0);
-    let conflicting_heights = vote_locks
-        .get("conflicting_heights_above_finalized")
+    let stale_conflicting_heights = vote_locks
+        .get("stale_conflicting_heights_above_finalized")
         .and_then(Value::as_array)
         .map(|items| !items.is_empty())
         .unwrap_or(false);
@@ -238,10 +261,10 @@ pub fn diagnose_consensus_stall(chain: &Arc<Mutex<BlockChain>>) -> Value {
     if timestamp_delta_seconds.unwrap_or(0) > 30 {
         categories.push("no_finalized_block_for_timeout");
     }
-    if locks_above > 0 {
+    if stale_locks_above > 0 {
         categories.push("transient_vote_lock_above_finalized_height");
     }
-    if conflicting_heights {
+    if stale_conflicting_heights {
         categories.push("same_height_competing_transient_vote_locks");
     }
     if quarantine_status()
@@ -357,4 +380,189 @@ pub fn sync_from_canonical_peer() -> Result<Value, String> {
 pub fn self_heal_from_archive() -> Result<Value, String> {
     require_local_testnet_v2()?;
     Err("self-heal-from-archive is not yet enabled: refusing archive state install until signed catalog, manifest, content root, state root, chunks, and every QC verify through aegis-pqvm".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{diagnose_consensus_stall, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS};
+    use crate::block::{Block, BlockChain};
+    use serde_json::{json, Value};
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static DIAGNOSTICS_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    fn now_secs_for_test() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    }
+
+    fn test_runtime_root(name: &str) -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "synergy-diagnostics-{name}-{}-{}",
+            std::process::id(),
+            now_secs_for_test()
+        ));
+        fs::create_dir_all(root.join("config")).expect("test config dir should be created");
+        fs::create_dir_all(root.join("data")).expect("test data dir should be created");
+        root
+    }
+
+    fn write_vote_lock(root: &Path, updated_at: u64, second_hash: Option<&str>) {
+        let mut locks = serde_json::Map::new();
+        locks.insert(
+            "synv1a:101".to_string(),
+            json!({
+                "validator_address": "synv1a",
+                "block_hash": "hash-a",
+                "block_index": 101,
+                "epoch_number": 0,
+                "first_round_number": 1,
+                "latest_round_number": 1,
+                "proposer": "synv1leader",
+                "created_at": updated_at,
+                "updated_at": updated_at,
+            }),
+        );
+        if let Some(hash) = second_hash {
+            locks.insert(
+                "synv1b:101".to_string(),
+                json!({
+                    "validator_address": "synv1b",
+                    "block_hash": hash,
+                    "block_index": 101,
+                    "epoch_number": 0,
+                    "first_round_number": 1,
+                    "latest_round_number": 1,
+                    "proposer": "synv1leader2",
+                    "created_at": updated_at,
+                    "updated_at": updated_at,
+                }),
+            );
+        }
+        fs::write(
+            root.join("data/consensus_vote_locks.json"),
+            Value::Object(locks).to_string(),
+        )
+        .expect("test vote locks should be written");
+    }
+
+    fn write_canonical_lock(root: &Path) {
+        fs::write(
+            root.join("data/canonical_locks.json"),
+            json!({
+                "100": {
+                    "block_hash": "finalized-hash",
+                    "qc_hash": "qc-hash"
+                }
+            })
+            .to_string(),
+        )
+        .expect("test canonical lock should be written");
+    }
+
+    fn advancing_chain() -> Arc<Mutex<BlockChain>> {
+        let mut chain = BlockChain::new();
+        chain.add_block(Block::new_with_timestamp(
+            100,
+            Vec::new(),
+            "parent".to_string(),
+            "synv1leader".to_string(),
+            1,
+            now_secs_for_test(),
+        ));
+        Arc::new(Mutex::new(chain))
+    }
+
+    fn with_runtime_root<T>(root: &Path, test: impl FnOnce() -> T) -> T {
+        let previous_root = std::env::var("SYNERGY_PROJECT_ROOT").ok();
+        let previous_genesis = std::env::var("SYNERGY_GENESIS_FILE").ok();
+        std::env::set_var("SYNERGY_PROJECT_ROOT", root);
+        std::env::remove_var("SYNERGY_GENESIS_FILE");
+        let result = test();
+        match previous_root {
+            Some(value) => std::env::set_var("SYNERGY_PROJECT_ROOT", value),
+            None => std::env::remove_var("SYNERGY_PROJECT_ROOT"),
+        }
+        match previous_genesis {
+            Some(value) => std::env::set_var("SYNERGY_GENESIS_FILE", value),
+            None => std::env::remove_var("SYNERGY_GENESIS_FILE"),
+        }
+        result
+    }
+
+    #[test]
+    fn fresh_vote_lock_above_finalized_does_not_false_report_stall() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("fresh-lock");
+        write_canonical_lock(&root);
+        write_vote_lock(&root, now_secs_for_test(), None);
+
+        let diagnosis = with_runtime_root(&root, || diagnose_consensus_stall(&advancing_chain()));
+        let categories = diagnosis
+            .get("categories")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(!diagnosis
+            .get("stalled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert!(!categories
+            .iter()
+            .any(|category| category == "transient_vote_lock_above_finalized_height"));
+        assert_eq!(
+            diagnosis
+                .get("vote_locks")
+                .and_then(|locks| locks.get("fresh_locks_above_finalized"))
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+    }
+
+    #[test]
+    fn stale_conflicting_vote_locks_above_finalized_report_stall() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("stale-conflict");
+        write_canonical_lock(&root);
+        write_vote_lock(
+            &root,
+            now_secs_for_test().saturating_sub(DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS + 5),
+            Some("hash-b"),
+        );
+
+        let diagnosis = with_runtime_root(&root, || diagnose_consensus_stall(&advancing_chain()));
+        let categories = diagnosis
+            .get("categories")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+
+        assert!(diagnosis
+            .get("stalled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false));
+        assert!(categories
+            .iter()
+            .any(|category| category == "transient_vote_lock_above_finalized_height"));
+        assert!(categories
+            .iter()
+            .any(|category| category == "same_height_competing_transient_vote_locks"));
+        assert_eq!(
+            diagnosis
+                .get("vote_locks")
+                .and_then(|locks| locks.get("stale_locks_above_finalized"))
+                .and_then(Value::as_u64),
+            Some(2)
+        );
+    }
 }
