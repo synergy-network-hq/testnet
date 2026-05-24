@@ -43,7 +43,7 @@ lazy_static::lazy_static! {
 static COMMITTED_QC_STORE_INIT: Once = Once::new();
 
 const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
-const MIN_LAUNCH_VOTE_TIMEOUT_SECS: u64 = 4;
+pub const MIN_LAUNCH_VOTE_TIMEOUT_SECS: u64 = 4;
 
 #[cfg(test)]
 lazy_static::lazy_static! {

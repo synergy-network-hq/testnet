@@ -1,7 +1,6 @@
 use crate::block::BlockChain;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
-use crate::genesis::canonical_genesis;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -60,7 +59,7 @@ fn configured_network_id() -> String {
 }
 
 fn configured_genesis_hash() -> String {
-    canonical_genesis()
+    crate::genesis::load_canonical_genesis_for_runtime()
         .map(|genesis| genesis.hash().to_string())
         .unwrap_or_else(|_| EXPECTED_GENESIS_HASH.to_string())
 }
@@ -78,7 +77,9 @@ fn chain_identity() -> Value {
 fn require_local_testnet_v2() -> Result<(), String> {
     let chain_id = configured_chain_id();
     let network_id = configured_network_id();
-    let genesis_hash = configured_genesis_hash();
+    let genesis_hash = crate::genesis::load_canonical_genesis_for_runtime()
+        .map(|genesis| genesis.hash().to_string())
+        .map_err(|error| format!("genesis unavailable; refusing mutation: {error}"))?;
     if chain_id != EXPECTED_CHAIN_ID {
         return Err(format!(
             "wrong chain_id {chain_id}; expected {EXPECTED_CHAIN_ID}"

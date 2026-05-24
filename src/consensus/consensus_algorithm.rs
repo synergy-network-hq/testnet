@@ -2,6 +2,7 @@ use super::cartel_detection::{CartelDetectionEngine, VoteRecord};
 use super::dao_governance::{DAOGovernance, GovernanceProposal, ProposalStatus};
 use super::dual_quorum::{
     DualQuorumConsensus, EntropyBeacon, QuorumCertificate, ValidatorRotation, Vote,
+    MIN_LAUNCH_VOTE_TIMEOUT_SECS,
 };
 use super::legacy_canonical_lock::{verify_legacy_canonical_lock, write_legacy_canonical_lock};
 use super::synergy_score::SynergyScoreCalculator;
@@ -1604,11 +1605,31 @@ impl ProofOfSynergy {
     }
 
     fn effective_leader_timeout_secs(&self) -> u64 {
-        let block_time_secs = self.block_time.max(1);
-        if self.leader_timeout_secs == 0 {
-            (block_time_secs * 2).max(3)
+        Self::effective_leader_timeout_secs_for_config(
+            self.block_time,
+            self.leader_timeout_secs,
+            self.vote_timeout_secs,
+        )
+    }
+
+    fn effective_leader_timeout_secs_for_config(
+        block_time_secs: u64,
+        configured_leader_timeout_secs: u64,
+        configured_vote_timeout_secs: u64,
+    ) -> u64 {
+        let block_time_secs = block_time_secs.max(1);
+        let vote_timeout_secs = configured_vote_timeout_secs
+            .max(1)
+            .max(MIN_LAUNCH_VOTE_TIMEOUT_SECS);
+        let min_timeout_covering_vote_window = vote_timeout_secs
+            .saturating_add(block_time_secs)
+            .saturating_add(1)
+            .max((block_time_secs * 2).max(3));
+
+        if configured_leader_timeout_secs == 0 {
+            min_timeout_covering_vote_window
         } else {
-            self.leader_timeout_secs.max(block_time_secs)
+            configured_leader_timeout_secs.max(min_timeout_covering_vote_window)
         }
     }
 
@@ -2868,6 +2889,56 @@ mod tests {
         assert_eq!(after.missed_blocks, before.missed_blocks);
         assert_eq!(after.missed_vote_window, before.missed_vote_window);
         assert_eq!(after.uptime_percentage, before.uptime_percentage);
+    }
+
+    #[test]
+    fn effective_leader_timeout_covers_enforced_vote_window() {
+        assert_eq!(
+            ProofOfSynergy::effective_leader_timeout_secs_for_config(2, 4, 2),
+            7,
+            "configured leader timeout must not expire while the enforced vote window is still open"
+        );
+        assert_eq!(
+            ProofOfSynergy::effective_leader_timeout_secs_for_config(2, 0, 2),
+            7,
+            "auto leader timeout must include block slot, vote window, and propagation margin"
+        );
+        assert_eq!(
+            ProofOfSynergy::effective_leader_timeout_secs_for_config(2, 12, 2),
+            12,
+            "operator-configured longer leader timeout should be preserved"
+        );
+    }
+
+    #[test]
+    fn view_offset_does_not_advance_during_active_vote_window() {
+        let last_block_height = 56_353;
+        let last_block_timestamp = 1_779_619_000;
+        let block_time_secs = 2;
+        let effective_leader_timeout_secs =
+            ProofOfSynergy::effective_leader_timeout_secs_for_config(block_time_secs, 4, 2);
+
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
+                last_block_height,
+                last_block_timestamp,
+                block_time_secs,
+                effective_leader_timeout_secs,
+                last_block_timestamp + block_time_secs + MIN_LAUNCH_VOTE_TIMEOUT_SECS
+            ),
+            0,
+            "peers must not rotate away while the scheduled proposer can still gather launch-quorum votes"
+        );
+        assert_eq!(
+            ProofOfSynergy::deterministic_view_offset_for_next_block_slot(
+                last_block_height,
+                last_block_timestamp,
+                block_time_secs,
+                effective_leader_timeout_secs,
+                last_block_timestamp + block_time_secs + effective_leader_timeout_secs
+            ),
+            1
+        );
     }
 
     #[test]

@@ -60,6 +60,10 @@ pub fn canonical_genesis() -> Result<&'static GenesisDocument, String> {
     }
 }
 
+pub(crate) fn load_canonical_genesis_for_runtime() -> Result<GenesisDocument, String> {
+    load_canonical_genesis_from_disk()
+}
+
 impl GenesisDocument {
     pub fn path(&self) -> &PathBuf {
         &self.path
