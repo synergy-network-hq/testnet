@@ -14,6 +14,7 @@ pub mod posy;
 pub mod synergy_score;
 #[cfg(test)]
 pub mod tests;
+pub mod timing_trace;
 pub mod validator_keys;
 pub mod vrf;
 

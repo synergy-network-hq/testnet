@@ -1,3 +1,4 @@
+use super::timing_trace;
 use crate::block::Block;
 use crate::consensus::anti_divergence::current_self_quarantine_record;
 use crate::consensus::legacy_canonical_lock::{
@@ -346,10 +347,56 @@ impl DualQuorumConsensus {
             .iter()
             .filter(|address| *address != &local_validator_address)
             .count();
+        let collection_started = Instant::now();
+        timing_trace::emit(
+            "vote_collection_start",
+            serde_json::json!({
+                "height": proposed_block.block_index,
+                "block_hash": block_hash.to_string(),
+                "previous_hash": proposed_block.previous_hash.clone(),
+                "proposer": proposed_block.validator_id.clone(),
+                "epoch": epoch_number,
+                "round": round_number,
+                "local_validator": local_validator_address.clone(),
+                "expected_validators": expected_validators.iter().cloned().collect::<Vec<_>>(),
+                "remote_validators": remote_validators,
+                "initial_vote_count": votes.len(),
+                "effective_vote_timeout_secs": self.vote_timeout.max(1)
+            }),
+        );
         if remote_validators > 0 {
             if let Some(network) = crate::p2p::get_p2p_network() {
                 let notified =
                     network.broadcast_vote_request(proposed_block, epoch_number, round_number);
+                timing_trace::emit(
+                    "proposal_sent",
+                    serde_json::json!({
+                        "height": proposed_block.block_index,
+                        "block_hash": block_hash.to_string(),
+                        "previous_hash": proposed_block.previous_hash.clone(),
+                        "proposer": proposed_block.validator_id.clone(),
+                        "epoch": epoch_number,
+                        "round": round_number,
+                        "local_validator": local_validator_address.clone(),
+                        "notified_peers": notified,
+                        "network_peer_count": network.get_peer_count()
+                    }),
+                );
+                timing_trace::emit(
+                    "vote_request_sent",
+                    serde_json::json!({
+                        "height": proposed_block.block_index,
+                        "block_hash": block_hash.to_string(),
+                        "previous_hash": proposed_block.previous_hash.clone(),
+                        "proposer": proposed_block.validator_id.clone(),
+                        "epoch": epoch_number,
+                        "round": round_number,
+                        "local_validator": local_validator_address.clone(),
+                        "remote_validators": remote_validators,
+                        "notified_peers": notified,
+                        "network_peer_count": network.get_peer_count()
+                    }),
+                );
                 debug!(
                     "consensus",
                     "Broadcasted vote request",
@@ -367,10 +414,25 @@ impl DualQuorumConsensus {
                     "epoch" => epoch_number,
                     "round" => round_number
                 );
+                timing_trace::emit(
+                    "vote_request_send_skipped",
+                    serde_json::json!({
+                        "height": proposed_block.block_index,
+                        "block_hash": block_hash.to_string(),
+                        "previous_hash": proposed_block.previous_hash.clone(),
+                        "proposer": proposed_block.validator_id.clone(),
+                        "epoch": epoch_number,
+                        "round": round_number,
+                        "local_validator": local_validator_address.clone(),
+                        "remote_validators": remote_validators,
+                        "reason": "no_active_p2p_network"
+                    }),
+                );
             }
         }
 
         let deadline = Instant::now() + Duration::from_secs(self.vote_timeout.max(1));
+        let mut qc_threshold_reported = false;
         while Instant::now() < deadline {
             self.apply_recorded_equivocations();
             votes.retain(|vote| self.vote_is_eligible(vote));
@@ -387,6 +449,23 @@ impl DualQuorumConsensus {
             );
 
             if self.has_commit_quorum(&active_validators, &votes) {
+                if !qc_threshold_reported {
+                    timing_trace::emit(
+                        "qc_threshold_reached",
+                        serde_json::json!({
+                            "height": proposed_block.block_index,
+                            "block_hash": block_hash.to_string(),
+                            "previous_hash": proposed_block.previous_hash.clone(),
+                            "proposer": proposed_block.validator_id.clone(),
+                            "epoch": epoch_number,
+                            "round": round_number,
+                            "local_validator": local_validator_address.clone(),
+                            "vote_count": votes.len(),
+                            "elapsed_ms": timing_trace::duration_ms(collection_started.elapsed())
+                        }),
+                    );
+                    qc_threshold_reported = true;
+                }
                 break;
             }
 
@@ -407,6 +486,24 @@ impl DualQuorumConsensus {
 
         self.apply_recorded_equivocations();
         votes.retain(|vote| self.vote_is_eligible(vote));
+        let final_quorum_met = self.has_commit_quorum(&active_validators, &votes);
+        if final_quorum_met && !qc_threshold_reported {
+            timing_trace::emit(
+                "qc_threshold_reached",
+                serde_json::json!({
+                    "height": proposed_block.block_index,
+                    "block_hash": block_hash.to_string(),
+                    "previous_hash": proposed_block.previous_hash.clone(),
+                    "proposer": proposed_block.validator_id.clone(),
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "local_validator": local_validator_address.clone(),
+                    "vote_count": votes.len(),
+                    "elapsed_ms": timing_trace::duration_ms(collection_started.elapsed()),
+                    "after_deadline_drain": true
+                }),
+            );
+        }
         self.record_vote_participation(&votes);
         if self.penalization_enabled {
             self.record_missed_vote_timeouts(&active_validators, &votes);
@@ -414,6 +511,21 @@ impl DualQuorumConsensus {
 
         Self::reset_network_vote_mailbox(block_hash, epoch_number, round_number);
         self.votes.insert(block_hash.to_string(), votes.clone());
+        timing_trace::emit(
+            "vote_collection_end",
+            serde_json::json!({
+                "height": proposed_block.block_index,
+                "block_hash": block_hash.to_string(),
+                "previous_hash": proposed_block.previous_hash.clone(),
+                "proposer": proposed_block.validator_id.clone(),
+                "epoch": epoch_number,
+                "round": round_number,
+                "vote_count": votes.len(),
+                "quorum_met": final_quorum_met,
+                "elapsed_ms": timing_trace::duration_ms(collection_started.elapsed()),
+                "effective_vote_timeout_secs": self.vote_timeout.max(1)
+            }),
+        );
         Ok(votes)
     }
 
@@ -495,6 +607,17 @@ impl DualQuorumConsensus {
         if Self::register_vote_observation(&vote).is_some() {
             return;
         }
+        timing_trace::emit(
+            "vote_response_received_by_proposer",
+            serde_json::json!({
+                "height": vote.block_index,
+                "block_hash": vote.block_hash.clone(),
+                "validator": vote.validator_address.clone(),
+                "epoch": vote.epoch_number,
+                "round": vote.round_number,
+                "vote_timestamp": vote.timestamp
+            }),
+        );
 
         let key = Self::vote_mailbox_key(&vote.block_hash, vote.epoch_number, vote.round_number);
         if let Ok(mut mailbox) = NETWORK_VOTE_MAILBOX.lock() {
@@ -688,11 +811,59 @@ impl DualQuorumConsensus {
             round_number,
         );
 
-        let (public_key, signature) = sign_with_local_validator_key(
-            validator_address,
-            message.as_bytes(),
-            validator_manager,
-        )?;
+        let sign_started = Instant::now();
+        timing_trace::emit(
+            "pqc_vote_sign_start",
+            serde_json::json!({
+                "height": proposed_block.block_index,
+                "block_hash": proposed_block.hash.clone(),
+                "previous_hash": proposed_block.previous_hash.clone(),
+                "proposer": proposed_block.validator_id.clone(),
+                "validator": validator_address,
+                "epoch": epoch_number,
+                "round": round_number
+            }),
+        );
+        let sign_result =
+            sign_with_local_validator_key(validator_address, message.as_bytes(), validator_manager);
+        let sign_duration_ms = timing_trace::duration_ms(sign_started.elapsed());
+        let (public_key, signature) = match sign_result {
+            Ok(result) => {
+                timing_trace::emit(
+                    "pqc_vote_sign_end",
+                    serde_json::json!({
+                        "height": proposed_block.block_index,
+                        "block_hash": proposed_block.hash.clone(),
+                        "previous_hash": proposed_block.previous_hash.clone(),
+                        "proposer": proposed_block.validator_id.clone(),
+                        "validator": validator_address,
+                        "epoch": epoch_number,
+                        "round": round_number,
+                        "duration_ms": sign_duration_ms,
+                        "status": "ok"
+                    }),
+                );
+                result
+            }
+            Err(error) => {
+                timing_trace::emit(
+                    "pqc_vote_sign_end",
+                    serde_json::json!({
+                        "height": proposed_block.block_index,
+                        "block_hash": proposed_block.hash.clone(),
+                        "previous_hash": proposed_block.previous_hash.clone(),
+                        "proposer": proposed_block.validator_id.clone(),
+                        "validator": validator_address,
+                        "epoch": epoch_number,
+                        "round": round_number,
+                        "duration_ms": sign_duration_ms,
+                        "status": "error",
+                        "error": error
+                    }),
+                );
+                return Err(error);
+            }
+        };
 
         Ok(Vote {
             validator_address: validator_address.to_string(),
@@ -811,7 +982,31 @@ impl DualQuorumConsensus {
         validator_manager: Arc<ValidatorManager>,
     ) -> thread::JoinHandle<(Vote, String, Result<(), String>)> {
         thread::spawn(move || {
+            let verify_started = Instant::now();
+            timing_trace::emit(
+                "pqc_vote_verify_start",
+                serde_json::json!({
+                    "height": vote.block_index,
+                    "block_hash": vote.block_hash.clone(),
+                    "validator": vote.validator_address.clone(),
+                    "epoch": vote.epoch_number,
+                    "round": vote.round_number
+                }),
+            );
             let verification = Self::verify_vote_signature_uncached(&vote, &validator_manager);
+            timing_trace::emit(
+                "pqc_vote_verify_end",
+                serde_json::json!({
+                    "height": vote.block_index,
+                    "block_hash": vote.block_hash.clone(),
+                    "validator": vote.validator_address.clone(),
+                    "epoch": vote.epoch_number,
+                    "round": vote.round_number,
+                    "duration_ms": timing_trace::duration_ms(verify_started.elapsed()),
+                    "status": if verification.is_ok() { "ok" } else { "error" },
+                    "error": verification.as_ref().err().cloned()
+                }),
+            );
             (vote, cache_key, verification)
         })
     }
@@ -1684,6 +1879,20 @@ impl DualQuorumConsensus {
         )?;
 
         if report.mutated {
+            timing_trace::emit(
+                "stale_transient_lock_recovery",
+                serde_json::json!({
+                    "height": proposed_block.block_index,
+                    "block_hash": proposed_block.hash.clone(),
+                    "previous_hash": proposed_block.previous_hash.clone(),
+                    "proposer": proposed_block.validator_id.clone(),
+                    "validator": validator_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "removed_count": report.removed_count,
+                    "evidence_path": report.evidence_path.clone()
+                }),
+            );
             warn!(
                 "consensus",
                 "Recovered stale transient vote locks before signing higher-round proposal",

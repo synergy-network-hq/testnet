@@ -6,6 +6,7 @@ use super::dual_quorum::{
 };
 use super::legacy_canonical_lock::{verify_legacy_canonical_lock, write_legacy_canonical_lock};
 use super::synergy_score::SynergyScoreCalculator;
+use super::timing_trace;
 use super::validator_keys::{consensus_algorithm_label, load_local_validator_keypair};
 use super::vrf::{VRFConsensus, VRFSeed};
 use crate::block::{Block, BlockChain};
@@ -46,6 +47,7 @@ fn get_chain_path() -> String {
 const VALIDATOR_REGISTRY_PATH: &str = "data/validator_registry.json";
 const VERBOSE_CONSENSUS_LOGS: bool = false;
 const POST_COMMIT_PARENT_PROPAGATION_GRACE_MILLIS: u64 = 250;
+const SAFE_HEAD_CATCHUP_WITHOUT_MESH_RESET_BLOCKS: u64 = 1;
 
 macro_rules! consensus_log {
     ($($arg:tt)*) => {
@@ -139,6 +141,31 @@ pub struct RewardWeights {
     pub task_accuracy: f64,
     pub uptime: f64,
     pub collaboration: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CatchupReadinessDecision {
+    preserve_mesh_readiness: bool,
+    reset_pacing_anchor_to_now: bool,
+    reason: &'static str,
+}
+
+impl CatchupReadinessDecision {
+    const fn preserve(reason: &'static str) -> Self {
+        Self {
+            preserve_mesh_readiness: true,
+            reset_pacing_anchor_to_now: false,
+            reason,
+        }
+    }
+
+    const fn reset(reason: &'static str) -> Self {
+        Self {
+            preserve_mesh_readiness: false,
+            reset_pacing_anchor_to_now: true,
+            reason,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -526,6 +553,7 @@ impl ProofOfSynergy {
         let mesh_settle_secs = self.mesh_settle_secs;
         let penalization_enabled = self.penalization_enabled;
         let leader_timeout_secs = self.effective_leader_timeout_secs();
+        let vote_timeout_secs = self.vote_timeout_secs.max(MIN_LAUNCH_VOTE_TIMEOUT_SECS);
 
         thread::spawn(move || {
             let mut last_block_time = chain
@@ -639,8 +667,8 @@ impl ProofOfSynergy {
                         }
 
                         if let Some(network) = crate::p2p::get_p2p_network() {
+                            let status_ready_validators = live_validator_addresses.len();
                             if status_ready_gate_enabled {
-                                let status_ready_validators = live_validator_addresses.len();
                                 let is_genesis_height = latest_block.block_index == 0;
                                 if !is_genesis_height {
                                     genesis_status_gate_bypassed = false;
@@ -712,17 +740,69 @@ impl ProofOfSynergy {
                                 .get_best_validator_peer_height_with_support(required_sync_support);
                             let local_height = latest_block.block_index;
                             if best_validator_height > local_height {
-                                mesh_ready_since = None;
-                                status_sync_grace_since = None;
+                                let mesh_was_ready = mesh_ready_since.is_some();
+                                let live_active_validator_count = live_active_validators.len();
                                 drop(chain_guard);
                                 drop(pool);
-                                Self::sync_validator_to_network_tip(
+                                let final_height = Self::sync_validator_to_network_tip(
                                     &network,
                                     local_height,
                                     best_validator_height,
                                     required_sync_support,
+                                )
+                                .ok();
+                                let readiness_decision = Self::catchup_mesh_readiness_after_sync(
+                                    local_height,
+                                    best_validator_height,
+                                    final_height,
+                                    mesh_was_ready,
+                                    live_active_validator_count,
+                                    min_validators,
+                                    status_ready_validators,
+                                    status_ready_required_validators,
                                 );
-                                last_block_time = SystemTime::now();
+                                timing_trace::emit(
+                                    "catchup_mesh_readiness_decision",
+                                    serde_json::json!({
+                                        "local_height": local_height,
+                                        "best_validator_height": best_validator_height,
+                                        "final_height": final_height,
+                                        "catchup_depth": best_validator_height.saturating_sub(local_height),
+                                        "mesh_was_ready": mesh_was_ready,
+                                        "preserve_mesh_readiness": readiness_decision.preserve_mesh_readiness,
+                                        "reset_pacing_anchor_to_now": readiness_decision.reset_pacing_anchor_to_now,
+                                        "reason": readiness_decision.reason,
+                                        "live_active_validators": live_active_validator_count as u64,
+                                        "min_validators": min_validators as u64,
+                                        "status_ready_validators": status_ready_validators as u64,
+                                        "status_ready_required_validators": status_ready_required_validators as u64,
+                                        "required_sync_support": required_sync_support as u64,
+                                    }),
+                                );
+                                if readiness_decision.preserve_mesh_readiness {
+                                    info!(
+                                        "consensus",
+                                        "Preserving validator mesh readiness after safe head catch-up",
+                                        "local_height" => local_height,
+                                        "best_validator_height" => best_validator_height,
+                                        "final_height" => final_height.unwrap_or(0),
+                                        "reason" => readiness_decision.reason
+                                    );
+                                } else {
+                                    mesh_ready_since = None;
+                                    status_sync_grace_since = None;
+                                    if readiness_decision.reset_pacing_anchor_to_now {
+                                        last_block_time = SystemTime::now();
+                                    }
+                                    info!(
+                                        "consensus",
+                                        "Resetting validator mesh readiness after catch-up",
+                                        "local_height" => local_height,
+                                        "best_validator_height" => best_validator_height,
+                                        "final_height" => final_height.unwrap_or(0),
+                                        "reason" => readiness_decision.reason
+                                    );
+                                }
                                 continue;
                             }
 
@@ -858,6 +938,36 @@ impl ProofOfSynergy {
 
                         consensus_log!("LEADER SELECTED: {}", selected_validator.address);
                         consensus_log!("Getting transactions from pool...");
+                        let proposal_build_started = Instant::now();
+                        let target_next_slot_timestamp =
+                            latest_block_clone.timestamp.saturating_add(block_time_secs);
+                        let network_peer_count = crate::p2p::get_p2p_network()
+                            .map(|network| network.get_peer_count())
+                            .unwrap_or(0);
+                        let self_quarantined =
+                            crate::consensus::anti_divergence::current_self_quarantine_record()
+                                .is_some();
+                        timing_trace::emit(
+                            "proposal_build_start",
+                            serde_json::json!({
+                                "previous_block_height": latest_block_clone.block_index,
+                                "previous_block_hash": latest_block_clone.hash.clone(),
+                                "previous_block_timestamp": latest_block_clone.timestamp,
+                                "height": next_block_index,
+                                "target_next_slot_timestamp": target_next_slot_timestamp,
+                                "chosen_proposer": selected_validator.address.clone(),
+                                "local_validator": local_validator_address.clone(),
+                                "local_view_round": view_offset,
+                                "effective_leader_timeout_secs": leader_timeout_secs,
+                                "effective_vote_timeout_secs": vote_timeout_secs,
+                                "network_peer_count": network_peer_count,
+                                "proposer_online": live_validator_address_set.contains(&selected_validator.address),
+                                "proposer_current": local_validator_address.as_deref() == Some(selected_validator.address.as_str()),
+                                "proposer_quarantined": self_quarantined,
+                                "relayer_rpc_lag": serde_json::Value::Null,
+                                "relayer_rpc_lag_unavailable_reason": "not_available_inside_validator_consensus_loop"
+                            }),
+                        );
 
                         let confirmed_hashes = chain_guard
                             .chain
@@ -939,6 +1049,23 @@ impl ProofOfSynergy {
                             block_time_secs,
                             &pqc_manager,
                         );
+                        timing_trace::emit(
+                            "proposal_built",
+                            serde_json::json!({
+                                "previous_block_height": latest_block_clone.block_index,
+                                "previous_block_hash": latest_block_clone.hash.clone(),
+                                "previous_block_timestamp": latest_block_clone.timestamp,
+                                "height": new_block.block_index,
+                                "block_hash": new_block.hash.clone(),
+                                "block_timestamp": new_block.timestamp,
+                                "target_next_slot_timestamp": target_next_slot_timestamp,
+                                "chosen_proposer": selected_validator.address.clone(),
+                                "local_validator": local_validator_address.clone(),
+                                "local_view_round": view_offset,
+                                "transactions": new_block.transactions.len(),
+                                "duration_ms": timing_trace::duration_ms(proposal_build_started.elapsed())
+                            }),
+                        );
                         consensus_log!("Block proposal created!");
                         io::stdout().flush().unwrap();
 
@@ -958,6 +1085,25 @@ impl ProofOfSynergy {
                               "epoch" => current_epoch,
                               "validator" => selected_validator.address.clone());
 
+                        let dual_quorum_started = Instant::now();
+                        timing_trace::emit(
+                            "dual_quorum_start",
+                            serde_json::json!({
+                                "previous_block_height": latest_block_clone.block_index,
+                                "previous_block_hash": latest_block_clone.hash.clone(),
+                                "previous_block_timestamp": latest_block_clone.timestamp,
+                                "height": new_block.block_index,
+                                "block_hash": new_block.hash.clone(),
+                                "block_timestamp": new_block.timestamp,
+                                "target_next_slot_timestamp": target_next_slot_timestamp,
+                                "chosen_proposer": selected_validator.address.clone(),
+                                "local_validator": local_validator_address.clone(),
+                                "local_view_round": view_offset,
+                                "effective_leader_timeout_secs": leader_timeout_secs,
+                                "effective_vote_timeout_secs": vote_timeout_secs,
+                                "network_peer_count": crate::p2p::get_p2p_network().map(|network| network.get_peer_count()).unwrap_or(0)
+                            }),
+                        );
                         let quorum_certificate = Self::execute_dual_quorum_consensus(
                             &new_block,
                             &validator_manager,
@@ -975,9 +1121,41 @@ impl ProofOfSynergy {
 
                         match quorum_certificate {
                             Ok(qc) => {
+                                timing_trace::emit(
+                                    "dual_quorum_end",
+                                    serde_json::json!({
+                                        "previous_block_height": latest_block_clone.block_index,
+                                        "previous_block_hash": latest_block_clone.hash.clone(),
+                                        "previous_block_timestamp": latest_block_clone.timestamp,
+                                        "height": new_block.block_index,
+                                        "block_hash": new_block.hash.clone(),
+                                        "block_timestamp": new_block.timestamp,
+                                        "target_next_slot_timestamp": target_next_slot_timestamp,
+                                        "chosen_proposer": selected_validator.address.clone(),
+                                        "local_validator": local_validator_address.clone(),
+                                        "local_view_round": view_offset,
+                                        "vote_count": qc.votes.len(),
+                                        "signature_count": qc.votes.len(),
+                                        "qc_timestamp": qc.timestamp,
+                                        "duration_ms": timing_trace::duration_ms(dual_quorum_started.elapsed()),
+                                        "status": "ok"
+                                    }),
+                                );
                                 if let Err(error) =
                                     Self::verify_legacy_precommit(&new_block, &qc, current_epoch)
                                 {
+                                    timing_trace::emit(
+                                        "rejected_proposal",
+                                        serde_json::json!({
+                                            "height": new_block.block_index,
+                                            "block_hash": new_block.hash.clone(),
+                                            "previous_hash": new_block.previous_hash.clone(),
+                                            "chosen_proposer": selected_validator.address.clone(),
+                                            "local_validator": local_validator_address.clone(),
+                                            "local_view_round": view_offset,
+                                            "reason": error.clone()
+                                        }),
+                                    );
                                     warn!(
                                         "consensus",
                                         "Rejecting committed block before local finalization",
@@ -988,6 +1166,18 @@ impl ProofOfSynergy {
                                     continue;
                                 }
                                 if let Err(error) = verify_legacy_canonical_lock(&new_block) {
+                                    timing_trace::emit(
+                                        "rejected_proposal",
+                                        serde_json::json!({
+                                            "height": new_block.block_index,
+                                            "block_hash": new_block.hash.clone(),
+                                            "previous_hash": new_block.previous_hash.clone(),
+                                            "chosen_proposer": selected_validator.address.clone(),
+                                            "local_validator": local_validator_address.clone(),
+                                            "local_view_round": view_offset,
+                                            "reason": error.clone()
+                                        }),
+                                    );
                                     warn!(
                                         "consensus",
                                         "Rejecting committed block because it conflicts with canonical lock",
@@ -1004,6 +1194,25 @@ impl ProofOfSynergy {
                                 last_logged_view_timeout = None;
 
                                 let mut block_appended_to_local_tip = false;
+                                let commit_started = Instant::now();
+                                timing_trace::emit(
+                                    "block_commit_start",
+                                    serde_json::json!({
+                                        "previous_block_height": latest_block_clone.block_index,
+                                        "previous_block_hash": latest_block_clone.hash.clone(),
+                                        "previous_block_timestamp": latest_block_clone.timestamp,
+                                        "height": new_block.block_index,
+                                        "block_hash": new_block.hash.clone(),
+                                        "block_timestamp": new_block.timestamp,
+                                        "target_next_slot_timestamp": target_next_slot_timestamp,
+                                        "chosen_proposer": selected_validator.address.clone(),
+                                        "local_validator": local_validator_address.clone(),
+                                        "local_view_round": view_offset,
+                                        "vote_count": qc.votes.len(),
+                                        "signature_count": qc.votes.len(),
+                                        "qc_timestamp": qc.timestamp
+                                    }),
+                                );
                                 let persist_snapshot = {
                                     let mut chain_guard = chain.lock().unwrap();
                                     match chain_guard.add_block_extending_tip(new_block.clone()) {
@@ -1031,6 +1240,19 @@ impl ProofOfSynergy {
                                             );
                                         }
                                         Err(error) => {
+                                            timing_trace::emit(
+                                                "rejected_proposal",
+                                                serde_json::json!({
+                                                    "height": new_block.block_index,
+                                                    "block_hash": new_block.hash.clone(),
+                                                    "previous_hash": new_block.previous_hash.clone(),
+                                                    "chosen_proposer": selected_validator.address.clone(),
+                                                    "local_validator": local_validator_address.clone(),
+                                                    "local_view_round": view_offset,
+                                                    "reason": error.clone(),
+                                                    "fail_closed_same_height_supersede": true
+                                                }),
+                                            );
                                             warn!(
                                                 "consensus",
                                                 "Skipping stale committed block that no longer extends local tip",
@@ -1168,6 +1390,56 @@ impl ProofOfSynergy {
                                     block_time_secs,
                                     last_tip_observed_at,
                                 );
+                                let next_proposal_eligibility =
+                                    last_block_time + Duration::from_secs(block_time_secs);
+                                timing_trace::emit(
+                                    "block_committed_timing",
+                                    serde_json::json!({
+                                        "previous_block_height": latest_block_clone.block_index,
+                                        "previous_block_hash": latest_block_clone.hash.clone(),
+                                        "previous_block_timestamp": latest_block_clone.timestamp,
+                                        "height": new_block.block_index,
+                                        "block_hash": new_block.hash.clone(),
+                                        "block_timestamp": new_block.timestamp,
+                                        "target_next_slot_timestamp": target_next_slot_timestamp,
+                                        "chosen_proposer": selected_validator.address.clone(),
+                                        "local_validator": local_validator_address.clone(),
+                                        "local_view_round": view_offset,
+                                        "effective_leader_timeout_secs": leader_timeout_secs,
+                                        "effective_vote_timeout_secs": vote_timeout_secs,
+                                        "vote_count": qc.votes.len(),
+                                        "signature_count": qc.votes.len(),
+                                        "qc_timestamp": qc.timestamp,
+                                        "commit_duration_ms": timing_trace::duration_ms(commit_started.elapsed()),
+                                        "elapsed_since_proposal_build_start_ms": timing_trace::duration_ms(proposal_build_started.elapsed()),
+                                        "block_commit_time_ms": timing_trace::now_unix_ms(),
+                                        "next_proposal_eligibility_time_ms": timing_trace::system_time_ms(next_proposal_eligibility),
+                                        "network_peer_count": crate::p2p::get_p2p_network().map(|network| network.get_peer_count()).unwrap_or(0),
+                                        "relayer_rpc_lag": serde_json::Value::Null,
+                                        "relayer_rpc_lag_unavailable_reason": "not_available_inside_validator_consensus_loop"
+                                    }),
+                                );
+                                timing_trace::emit(
+                                    "block_commit_end",
+                                    serde_json::json!({
+                                        "previous_block_height": latest_block_clone.block_index,
+                                        "previous_block_hash": latest_block_clone.hash.clone(),
+                                        "previous_block_timestamp": latest_block_clone.timestamp,
+                                        "height": new_block.block_index,
+                                        "block_hash": new_block.hash.clone(),
+                                        "block_timestamp": new_block.timestamp,
+                                        "target_next_slot_timestamp": target_next_slot_timestamp,
+                                        "chosen_proposer": selected_validator.address.clone(),
+                                        "local_validator": local_validator_address.clone(),
+                                        "local_view_round": view_offset,
+                                        "vote_count": qc.votes.len(),
+                                        "signature_count": qc.votes.len(),
+                                        "qc_timestamp": qc.timestamp,
+                                        "commit_duration_ms": timing_trace::duration_ms(commit_started.elapsed()),
+                                        "elapsed_since_proposal_build_start_ms": timing_trace::duration_ms(proposal_build_started.elapsed()),
+                                        "next_proposal_eligibility_time_ms": timing_trace::system_time_ms(next_proposal_eligibility)
+                                    }),
+                                );
                                 consecutive_failures = 0;
 
                                 // Get synergy score components for detailed logging
@@ -1219,6 +1491,24 @@ impl ProofOfSynergy {
                                 );
                             }
                             Err(e) => {
+                                timing_trace::emit(
+                                    "dual_quorum_end",
+                                    serde_json::json!({
+                                        "previous_block_height": latest_block_clone.block_index,
+                                        "previous_block_hash": latest_block_clone.hash.clone(),
+                                        "previous_block_timestamp": latest_block_clone.timestamp,
+                                        "height": new_block.block_index,
+                                        "block_hash": new_block.hash.clone(),
+                                        "block_timestamp": new_block.timestamp,
+                                        "target_next_slot_timestamp": target_next_slot_timestamp,
+                                        "chosen_proposer": selected_validator.address.clone(),
+                                        "local_validator": local_validator_address.clone(),
+                                        "local_view_round": view_offset,
+                                        "duration_ms": timing_trace::duration_ms(dual_quorum_started.elapsed()),
+                                        "status": "error",
+                                        "error": e.clone()
+                                    }),
+                                );
                                 warn!("consensus", "QC error - block proposal failed", "error" => e.clone());
                                 use std::io::{self, Write};
                                 io::stdout().flush().unwrap();
@@ -1315,7 +1605,7 @@ impl ProofOfSynergy {
         local_height: u64,
         best_validator_height: u64,
         required_sync_support: usize,
-    ) {
+    ) -> Result<u64, String> {
         info!(
             "consensus",
             "Starting validator catch-up sync before block production",
@@ -1327,17 +1617,20 @@ impl ProofOfSynergy {
         let sync_result = {
             let mut manager = SYNC_MANAGER.lock().unwrap();
             manager.attach_network(Arc::clone(network));
-            manager.start_sync().map(|_| manager.local_height)
+            manager
+                .start_sync()
+                .map(|_| manager.local_height)
+                .map_err(|error| error.to_string())
         };
 
-        match sync_result {
+        match &sync_result {
             Ok(final_height) => {
                 info!(
                     "consensus",
                     "Validator catch-up sync completed",
                     "starting_height" => local_height,
                     "best_validator_height" => best_validator_height,
-                    "final_height" => final_height
+                    "final_height" => *final_height
                 );
             }
             Err(error) => {
@@ -1346,10 +1639,54 @@ impl ProofOfSynergy {
                     "Validator catch-up sync failed",
                     "local_height" => local_height,
                     "best_validator_height" => best_validator_height,
-                    "error" => error.to_string()
+                    "error" => error.clone()
                 );
             }
         }
+
+        sync_result
+    }
+
+    fn catchup_mesh_readiness_after_sync(
+        local_height: u64,
+        best_validator_height: u64,
+        final_height: Option<u64>,
+        mesh_was_ready: bool,
+        live_active_validators: usize,
+        min_validators: usize,
+        status_ready_validators: usize,
+        status_ready_required_validators: usize,
+    ) -> CatchupReadinessDecision {
+        if best_validator_height <= local_height {
+            return CatchupReadinessDecision::reset("no_catchup_required");
+        }
+
+        if !mesh_was_ready {
+            return CatchupReadinessDecision::reset("mesh_not_previously_ready");
+        }
+
+        let catchup_depth = best_validator_height.saturating_sub(local_height);
+        if catchup_depth > SAFE_HEAD_CATCHUP_WITHOUT_MESH_RESET_BLOCKS {
+            return CatchupReadinessDecision::reset("deep_catchup");
+        }
+
+        let Some(final_height) = final_height else {
+            return CatchupReadinessDecision::reset("catchup_failed_or_unverified");
+        };
+
+        if final_height < best_validator_height {
+            return CatchupReadinessDecision::reset("catchup_did_not_reach_verified_head");
+        }
+
+        if live_active_validators < min_validators {
+            return CatchupReadinessDecision::reset("insufficient_live_validators");
+        }
+
+        if status_ready_validators < status_ready_required_validators {
+            return CatchupReadinessDecision::reset("insufficient_status_ready_validators");
+        }
+
+        CatchupReadinessDecision::preserve("safe_one_block_head_catchup")
     }
 
     fn initialize_genesis_validators(validator_manager: &Arc<ValidatorManager>) {
@@ -2770,6 +3107,98 @@ mod tests {
             ))
             .join("data")
             .join("consensus_vote_locks.json")
+    }
+
+    fn catchup_decision(
+        local_height: u64,
+        best_validator_height: u64,
+        final_height: Option<u64>,
+        mesh_was_ready: bool,
+        live_active_validators: usize,
+        status_ready_validators: usize,
+    ) -> CatchupReadinessDecision {
+        ProofOfSynergy::catchup_mesh_readiness_after_sync(
+            local_height,
+            best_validator_height,
+            final_height,
+            mesh_was_ready,
+            live_active_validators,
+            4,
+            status_ready_validators,
+            4,
+        )
+    }
+
+    #[test]
+    fn ordinary_one_block_catchup_preserves_mesh_readiness() {
+        let decision = catchup_decision(100, 101, Some(101), true, 5, 5);
+
+        assert!(decision.preserve_mesh_readiness);
+        assert!(!decision.reset_pacing_anchor_to_now);
+        assert_eq!(decision.reason, "safe_one_block_head_catchup");
+    }
+
+    #[test]
+    fn deep_or_unverified_catchup_resets_mesh_readiness() {
+        let deep = catchup_decision(100, 105, Some(105), true, 5, 5);
+        assert!(!deep.preserve_mesh_readiness);
+        assert!(deep.reset_pacing_anchor_to_now);
+        assert_eq!(deep.reason, "deep_catchup");
+
+        let unverified = catchup_decision(100, 101, None, true, 5, 5);
+        assert!(!unverified.preserve_mesh_readiness);
+        assert!(unverified.reset_pacing_anchor_to_now);
+        assert_eq!(unverified.reason, "catchup_failed_or_unverified");
+    }
+
+    #[test]
+    fn catchup_does_not_lower_quorum() {
+        let insufficient_live = catchup_decision(100, 101, Some(101), true, 3, 5);
+        assert!(!insufficient_live.preserve_mesh_readiness);
+        assert!(insufficient_live.reset_pacing_anchor_to_now);
+        assert_eq!(insufficient_live.reason, "insufficient_live_validators");
+
+        let insufficient_status_ready = catchup_decision(100, 101, Some(101), true, 5, 3);
+        assert!(!insufficient_status_ready.preserve_mesh_readiness);
+        assert!(insufficient_status_ready.reset_pacing_anchor_to_now);
+        assert_eq!(
+            insufficient_status_ready.reason,
+            "insufficient_status_ready_validators"
+        );
+    }
+
+    #[test]
+    fn catchup_does_not_allow_stale_proposal() {
+        let stale = catchup_decision(100, 101, Some(100), true, 5, 5);
+
+        assert!(!stale.preserve_mesh_readiness);
+        assert!(stale.reset_pacing_anchor_to_now);
+        assert_eq!(stale.reason, "catchup_did_not_reach_verified_head");
+    }
+
+    #[test]
+    fn proposal_eligibility_gap_after_safe_catchup_under_launch_threshold() {
+        let mesh_settle_secs = 3;
+        let safe = catchup_decision(100, 101, Some(101), true, 5, 5);
+        let unsafe_deep = catchup_decision(100, 104, Some(104), true, 5, 5);
+
+        let safe_extra_settle_secs = if safe.preserve_mesh_readiness {
+            0
+        } else {
+            mesh_settle_secs
+        };
+        let unsafe_extra_settle_secs = if unsafe_deep.preserve_mesh_readiness {
+            0
+        } else {
+            mesh_settle_secs
+        };
+
+        assert_eq!(safe_extra_settle_secs, 0);
+        assert!(
+            safe_extra_settle_secs < 4,
+            "safe catch-up must not add a full launch-failing settle interval"
+        );
+        assert_eq!(unsafe_extra_settle_secs, mesh_settle_secs);
     }
 
     fn active_validator_manager(address: &str) -> Arc<ValidatorManager> {

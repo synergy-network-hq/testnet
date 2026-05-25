@@ -5,6 +5,7 @@ use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
     legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
 };
+use crate::consensus::timing_trace;
 use crate::crypto::aegis_pqvm::{
     AegisPqvmKeyRegistry, AegisPqvmSigner, AegisPqvmVerifier, SYNERGY_P2P_HANDSHAKE_V1,
 };
@@ -2734,6 +2735,37 @@ fn handle_vote_request_message(
     epoch_number: u64,
     round_number: u64,
 ) {
+    let vote_request_received_at = Instant::now();
+    let local_validator = crate::config::resolve_runtime_validator_address();
+    let network_peer_count = connected_peers
+        .lock()
+        .ok()
+        .map(|peers| {
+            peers
+                .values()
+                .filter(|peer| {
+                    peer.validator_address
+                        .as_ref()
+                        .map(|address| !address.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .count()
+        })
+        .unwrap_or(0);
+    timing_trace::emit(
+        "vote_request_received",
+        serde_json::json!({
+            "height": block_data.block_index,
+            "block_hash": block_data.hash.clone(),
+            "previous_hash": block_data.previous_hash.clone(),
+            "proposer": block_data.validator_id.clone(),
+            "validator": local_validator,
+            "peer": peer_address,
+            "epoch": epoch_number,
+            "round": round_number,
+            "network_peer_count": network_peer_count
+        }),
+    );
     if config.node.bootstrap_only {
         debug!(
             "p2p",
@@ -2762,14 +2794,60 @@ fn handle_vote_request_message(
     let mut local_tip = vote_request_local_tip(blockchain);
     if validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data).is_err() {
         request_vote_request_parent_sync(local_tip.clone(), block_data.block_index);
+        let parent_wait_started = Instant::now();
         if vote_request_can_wait_for_parent(local_tip.as_ref(), &block_data)
             && wait_for_vote_request_parent(blockchain, &block_data)
         {
             local_tip = vote_request_local_tip(blockchain);
+            timing_trace::emit(
+                "vote_request_parent_sync_wait",
+                serde_json::json!({
+                    "height": block_data.block_index,
+                    "block_hash": block_data.hash.clone(),
+                    "previous_hash": block_data.previous_hash.clone(),
+                    "proposer": block_data.validator_id.clone(),
+                    "validator": crate::config::resolve_runtime_validator_address(),
+                    "peer": peer_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "duration_ms": timing_trace::duration_ms(parent_wait_started.elapsed()),
+                    "status": "ok"
+                }),
+            );
+        } else {
+            timing_trace::emit(
+                "vote_request_parent_sync_wait",
+                serde_json::json!({
+                    "height": block_data.block_index,
+                    "block_hash": block_data.hash.clone(),
+                    "previous_hash": block_data.previous_hash.clone(),
+                    "proposer": block_data.validator_id.clone(),
+                    "validator": crate::config::resolve_runtime_validator_address(),
+                    "peer": peer_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "duration_ms": timing_trace::duration_ms(parent_wait_started.elapsed()),
+                    "status": "not_ready"
+                }),
+            );
         }
     }
 
     if let Err(error) = validate_vote_request_extends_local_tip(local_tip.as_ref(), &block_data) {
+        timing_trace::emit(
+            "vote_request_rejected",
+            serde_json::json!({
+                "height": block_data.block_index,
+                "block_hash": block_data.hash.clone(),
+                "previous_hash": block_data.previous_hash.clone(),
+                "proposer": block_data.validator_id.clone(),
+                "validator": crate::config::resolve_runtime_validator_address(),
+                "peer": peer_address,
+                "epoch": epoch_number,
+                "round": round_number,
+                "reason": error.clone()
+            }),
+        );
         warn!(
             "p2p",
             "Refusing vote request",
@@ -2794,6 +2872,20 @@ fn handle_vote_request_message(
     );
 
     let transient_recovery_min_age_secs = vote_request_transient_recovery_min_age_secs(config);
+    let validation_started = Instant::now();
+    timing_trace::emit(
+        "vote_validation_start",
+        serde_json::json!({
+            "height": block_data.block_index,
+            "block_hash": block_data.hash.clone(),
+            "previous_hash": block_data.previous_hash.clone(),
+            "proposer": block_data.validator_id.clone(),
+            "validator": crate::config::resolve_runtime_validator_address(),
+            "peer": peer_address,
+            "epoch": epoch_number,
+            "round": round_number
+        }),
+    );
     match DualQuorumConsensus::build_local_vote_for_proposal_with_recovery(
         &block_data,
         epoch_number,
@@ -2801,6 +2893,21 @@ fn handle_vote_request_message(
         transient_recovery_min_age_secs,
     ) {
         Ok(vote) => {
+            timing_trace::emit(
+                "vote_validation_end",
+                serde_json::json!({
+                    "height": block_data.block_index,
+                    "block_hash": block_data.hash.clone(),
+                    "previous_hash": block_data.previous_hash.clone(),
+                    "proposer": block_data.validator_id.clone(),
+                    "validator": vote.validator_address.clone(),
+                    "peer": peer_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "duration_ms": timing_trace::duration_ms(validation_started.elapsed()),
+                    "status": "ok"
+                }),
+            );
             let response = NetworkMessage::Vote { vote };
             let mut peers = connected_peers.lock().unwrap();
             match send_vote_to_requester(
@@ -2810,6 +2917,21 @@ fn handle_vote_request_message(
                 &response,
             ) {
                 Ok(response_peer) => {
+                    timing_trace::emit(
+                        "vote_response_sent",
+                        serde_json::json!({
+                            "height": block_data.block_index,
+                            "block_hash": block_data.hash.clone(),
+                            "previous_hash": block_data.previous_hash.clone(),
+                            "proposer": block_data.validator_id.clone(),
+                            "validator": crate::config::resolve_runtime_validator_address(),
+                            "request_peer": peer_address,
+                            "response_peer": response_peer.clone(),
+                            "epoch": epoch_number,
+                            "round": round_number,
+                            "elapsed_since_request_ms": timing_trace::duration_ms(vote_request_received_at.elapsed())
+                        }),
+                    );
                     info!(
                         "p2p",
                         "Vote sent",
@@ -2822,6 +2944,21 @@ fn handle_vote_request_message(
                     );
                 }
                 Err(error) => {
+                    timing_trace::emit(
+                        "vote_response_send_failed",
+                        serde_json::json!({
+                            "height": block_data.block_index,
+                            "block_hash": block_data.hash.clone(),
+                            "previous_hash": block_data.previous_hash.clone(),
+                            "proposer": block_data.validator_id.clone(),
+                            "validator": crate::config::resolve_runtime_validator_address(),
+                            "peer": peer_address,
+                            "epoch": epoch_number,
+                            "round": round_number,
+                            "elapsed_since_request_ms": timing_trace::duration_ms(vote_request_received_at.elapsed()),
+                            "error": error.clone()
+                        }),
+                    );
                     warn!(
                         "p2p",
                         "Failed to send vote",
@@ -2836,6 +2973,36 @@ fn handle_vote_request_message(
             }
         }
         Err(error) => {
+            timing_trace::emit(
+                "vote_validation_end",
+                serde_json::json!({
+                    "height": block_data.block_index,
+                    "block_hash": block_data.hash.clone(),
+                    "previous_hash": block_data.previous_hash.clone(),
+                    "proposer": block_data.validator_id.clone(),
+                    "validator": crate::config::resolve_runtime_validator_address(),
+                    "peer": peer_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "duration_ms": timing_trace::duration_ms(validation_started.elapsed()),
+                    "status": "error",
+                    "error": error.clone()
+                }),
+            );
+            timing_trace::emit(
+                "vote_request_rejected",
+                serde_json::json!({
+                    "height": block_data.block_index,
+                    "block_hash": block_data.hash.clone(),
+                    "previous_hash": block_data.previous_hash.clone(),
+                    "proposer": block_data.validator_id.clone(),
+                    "validator": crate::config::resolve_runtime_validator_address(),
+                    "peer": peer_address,
+                    "epoch": epoch_number,
+                    "round": round_number,
+                    "reason": error.clone()
+                }),
+            );
             warn!(
                 "p2p",
                 "Refusing vote request",
@@ -3001,6 +3168,19 @@ fn handle_vote_message(
         return;
     }
 
+    timing_trace::emit(
+        "vote_response_received_by_peer",
+        serde_json::json!({
+            "height": vote.block_index,
+            "block_hash": vote.block_hash.clone(),
+            "validator": vote.validator_address.clone(),
+            "peer": peer_address,
+            "announced_validator": announced_validator,
+            "epoch": vote.epoch_number,
+            "round": vote.round_number,
+            "vote_timestamp": vote.timestamp
+        }),
+    );
     DualQuorumConsensus::record_network_vote(vote.clone());
     debug!(
         "p2p",

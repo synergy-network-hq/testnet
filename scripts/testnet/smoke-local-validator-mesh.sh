@@ -6,6 +6,7 @@ CALLER_PWD="$(pwd -P)"
 BINARY="${ROOT_DIR}/target/release/synergy-testnet"
 TIMEOUT_SECS="${TIMEOUT_SECS:-120}"
 POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-2}"
+MIN_HEIGHT="${MIN_HEIGHT:-2}"
 KEEP_WORKDIR="false"
 WORKDIR=""
 CREATED_WORKDIR="false"
@@ -23,6 +24,11 @@ WS_PORTS=(5760 5761 5762 5763 5764)
 START_VALIDATOR_COUNT="${START_VALIDATOR_COUNT:-5}"
 PIDS=()
 WORKSPACES=()
+CONSENSUS_PRIVATE_KEY_FILES=()
+LOCAL_CONFIG_DIR=""
+LOCAL_GENESIS_FILE=""
+LOCAL_GENESIS_VALIDATORS_DIR=""
+RUNTIME_SHA256=""
 
 usage() {
   cat <<USAGE
@@ -31,6 +37,9 @@ Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir]
 Starts the first five local validators against the canonical five-validator
 genesis and fails unless all active validators form the full validator peer
 mesh and advance chain height from genesis within the timeout.
+
+Environment:
+  MIN_HEIGHT  Minimum height every validator must reach before success (default: 2).
 USAGE
 }
 
@@ -72,6 +81,17 @@ if [[ ! -x "$BINARY" ]]; then
   echo "Binary not found at $BINARY; building release node binary..." >&2
   cargo build --manifest-path "$ROOT_DIR/src/Cargo.toml" --release --bin synergy-testnet
 fi
+
+sha256_for_file() {
+  local file="$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$file" | awk '{print $1}'
+  else
+    sha256sum "$file" | awk '{print $1}'
+  fi
+}
+
+RUNTIME_SHA256="$(sha256_for_file "$BINARY")"
 
 if [[ -z "$WORKDIR" ]]; then
   WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/synergy-testnet-mesh-smoke.XXXXXX")"
@@ -139,6 +159,182 @@ json_array() {
 import json
 import sys
 print(json.dumps(sys.argv[1:]))
+PY
+}
+
+prepare_test_consensus_material() {
+  local key_root="${WORKDIR}/test-only-consensus-keys"
+  local public_keys_tsv="${key_root}/public-keys.tsv"
+  local index
+
+  LOCAL_CONFIG_DIR="${WORKDIR}/local-test-config"
+  LOCAL_GENESIS_FILE="${LOCAL_CONFIG_DIR}/genesis.json"
+  LOCAL_GENESIS_VALIDATORS_DIR="${LOCAL_CONFIG_DIR}/genesis-validators"
+
+  mkdir -p "$key_root" "$LOCAL_CONFIG_DIR"
+  cp "$ROOT_DIR/config/genesis.json" "$LOCAL_GENESIS_FILE"
+  cp -R "$ROOT_DIR/config/genesis-validators" "$LOCAL_GENESIS_VALIDATORS_DIR"
+  : > "$public_keys_tsv"
+
+  for index in $(seq 1 "$START_VALIDATOR_COUNT"); do
+    local key_dir="${key_root}/validator-${index}"
+    local private_key_file="${key_dir}/private.key"
+    local public_key_file="${key_dir}/public.key"
+    local validator_address="${VALIDATOR_ADDRESSES[$((index - 1))]}"
+
+    mkdir -p "$key_dir"
+    "$BINARY" generate-keypair --output "$key_dir" --class 1 >/dev/null
+    chmod 700 "$key_dir"
+    chmod 600 "$private_key_file"
+    printf '%s\tfn-dsa:%s\n' "$validator_address" "$(tr -d '\n\r ' < "$public_key_file")" >> "$public_keys_tsv"
+    CONSENSUS_PRIVATE_KEY_FILES[$((index - 1))]="$private_key_file"
+  done
+
+  python3 - "$LOCAL_GENESIS_FILE" "$LOCAL_GENESIS_VALIDATORS_DIR" "$public_keys_tsv" <<'PY'
+import json
+import pathlib
+import sys
+
+import blake3
+
+genesis_path = pathlib.Path(sys.argv[1])
+identity_dir = pathlib.Path(sys.argv[2])
+public_keys_path = pathlib.Path(sys.argv[3])
+
+public_keys = {}
+for line in public_keys_path.read_text(encoding="utf-8").splitlines():
+    address, public_key = line.split("\t", 1)
+    public_keys[address] = public_key
+
+def canonical_json(value):
+    if value is None:
+        return "null"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, str):
+        return json.dumps(value, separators=(",", ":"))
+    if isinstance(value, list):
+        return "[" + ",".join(canonical_json(item) for item in value) + "]"
+    if isinstance(value, dict):
+        return "{" + ",".join(
+            json.dumps(key, separators=(",", ":")) + ":" + canonical_json(value[key])
+            for key in sorted(value)
+        ) + "}"
+    raise TypeError(type(value).__name__)
+
+def hash_json(value):
+    return blake3.blake3(canonical_json(value).encode("utf-8")).hexdigest()
+
+def remove_dotted(value, dotted):
+    current = value
+    parts = dotted.split(".")
+    for part in parts[:-1]:
+        if not isinstance(current, dict) or part not in current:
+            return
+        current = current[part]
+    if isinstance(current, dict):
+        current.pop(parts[-1], None)
+
+def genesis_hash_payload(genesis):
+    payload = {
+        key: genesis[key]
+        for key in genesis["canonicalization"]["genesis_hash_inputs"]
+        if key in genesis
+    }
+    payload = json.loads(json.dumps(payload))
+    exclusions = set(genesis["canonicalization"].get("excluded_from_genesis_hash", []))
+    exclusions.update({
+        "integrity.genesis_hash",
+        "integrity.signed_by",
+        "integrity.draft_artifact_sha256",
+        "integrity.recompute_required",
+        "integrity.recompute_reason",
+        "p2p_identity.network_magic_bytes",
+        "p2p_identity.provisional_derivation_note",
+    })
+    for dotted in sorted(exclusions):
+        remove_dotted(payload, dotted)
+    return payload
+
+def network_magic_bytes_for(caip2, genesis_hash):
+    data = b"synergy-network-magic-v1" + caip2.encode("utf-8") + genesis_hash.encode("utf-8")
+    return blake3.blake3(data).digest()[:4].hex()
+
+def patch_consensus_keys(value):
+    if isinstance(value, dict):
+        address = (
+            value.get("operator_address")
+            or value.get("validator_address")
+            or value.get("address")
+        )
+        if address in public_keys:
+            if "consensus_public_key" in value:
+                value["consensus_public_key"] = public_keys[address]
+            if "consensus_key_type" in value:
+                value["consensus_key_type"] = "FN-DSA-1024"
+            consensus_key = value.get("consensus_key")
+            if isinstance(consensus_key, dict):
+                consensus_key["algorithm"] = "FN-DSA-1024"
+                consensus_key["public_key"] = public_keys[address]
+        for child in value.values():
+            patch_consensus_keys(child)
+    elif isinstance(value, list):
+        for child in value:
+            patch_consensus_keys(child)
+
+genesis = json.loads(genesis_path.read_text(encoding="utf-8"))
+patch_consensus_keys(genesis)
+
+empty_hash = blake3.blake3(b"").hexdigest()
+validator_set = genesis["contracts"]["validator_registry"]["init_params"]["validators"]
+genesis["integrity"]["validator_hash"] = hash_json(genesis["validators"])
+validator_set_hash = hash_json(validator_set)
+genesis["contracts"]["validator_registry"]["init_params"]["validator_set_hash"] = validator_set_hash
+genesis["integrity"]["validator_set_hash"] = validator_set_hash
+genesis["integrity"]["allocation_hash"] = hash_json(genesis["allocations"])
+genesis["header"]["parent_hash"] = "0" * 64
+genesis["header"]["transactions_root"] = empty_hash
+genesis["header"]["receipts_root"] = empty_hash
+genesis["integrity"]["contract_hash"] = hash_json(genesis["contracts"])
+state_root = hash_json({
+    "accounts": genesis["accounts"],
+    "balances": genesis["balances"],
+    "allocations": genesis["allocations"],
+    "contracts": genesis["contracts"],
+    "consensus": genesis["consensus"],
+    "genesis_message": genesis["genesis_message"],
+    "governance": genesis["governance"],
+    "modules": genesis["modules"],
+    "network": genesis["network"],
+    "network_identity": genesis["network_identity"],
+    "reserved_addresses": genesis["system_reserved_addresses"],
+    "security": genesis["security"],
+    "synergy_state": genesis["synergy_state"],
+    "token": genesis["token"],
+    "validators": genesis["validators"],
+})
+data_root = hash_json({
+    "contracts": genesis["contracts"],
+    "modules": genesis["modules"],
+    "precompiles": genesis["precompiles"],
+})
+genesis["header"]["state_root"] = state_root
+genesis["header"]["data_root"] = data_root
+genesis["integrity"]["state_root"] = state_root
+genesis["integrity"]["contract_hash"] = hash_json(genesis["contracts"])
+genesis["integrity"]["recompute_required"] = False
+genesis_hash = hash_json(genesis_hash_payload(genesis))
+genesis["integrity"]["genesis_hash"] = genesis_hash
+caip2 = genesis["network_identity"]["canonical_caip2"]["value"]
+genesis["p2p_identity"]["network_magic_bytes"] = network_magic_bytes_for(caip2, genesis_hash)
+genesis_path.write_text(json.dumps(genesis, indent=2, sort_keys=False) + "\n", encoding="utf-8")
+
+for identity_path in sorted(identity_dir.glob("*.identity.json")):
+    identity = json.loads(identity_path.read_text(encoding="utf-8"))
+    patch_consensus_keys(identity)
+    identity_path.write_text(json.dumps(identity, indent=2, sort_keys=False) + "\n", encoding="utf-8")
 PY
 }
 
@@ -275,6 +471,7 @@ create_workspace() {
   local index="$1"
   local workspace="${WORKDIR}/validator-${index}"
   local validator_address="${VALIDATOR_ADDRESSES[$((index - 1))]}"
+  local consensus_private_key="${CONSENSUS_PRIVATE_KEY_FILES[$((index - 1))]}"
   local p2p_port="${P2P_PORTS[$((index - 1))]}"
   local rpc_port="${RPC_PORTS[$((index - 1))]}"
   local ws_port="${WS_PORTS[$((index - 1))]}"
@@ -282,9 +479,11 @@ create_workspace() {
   local additional_targets=()
   local i
 
-  mkdir -p "$workspace/config" "$workspace/data" "$workspace/logs"
-  cp "$ROOT_DIR/config/genesis.json" "$workspace/config/genesis.json"
-  cp -R "$ROOT_DIR/config/genesis-validators" "$workspace/config/"
+  mkdir -p "$workspace/config/validator" "$workspace/data" "$workspace/logs"
+  cp "$LOCAL_GENESIS_FILE" "$workspace/config/genesis.json"
+  cp -R "$LOCAL_GENESIS_VALIDATORS_DIR" "$workspace/config/"
+  cp "$consensus_private_key" "$workspace/config/validator/consensus.private.key"
+  chmod 600 "$workspace/config/validator/consensus.private.key"
 
   for i in "${!P2P_PORTS[@]}"; do
     if [[ "$i" -ne $((index - 1)) ]]; then
@@ -439,11 +638,24 @@ start_node() {
   local config_path="${workspace}/config/node.toml"
   local stdout_path="${workspace}/logs/control-start.stdout.log"
   local stderr_path="${workspace}/logs/control-start.stderr.log"
+  local node_name
+  local validator_index
+  local validator_address
+  node_name="$(basename "$workspace")"
+  validator_index="${node_name##*-}"
+  validator_address="${VALIDATOR_ADDRESSES[$((validator_index - 1))]}"
 
   (
     cd "$workspace"
     SYNERGY_PROJECT_ROOT="$workspace" \
     SYNERGY_CONFIG_PATH="$config_path" \
+    SYNERGY_GENESIS_FILE="$workspace/config/genesis.json" \
+    SYNERGY_VALIDATOR_CONSENSUS_PRIVATE_KEY_FILE="$workspace/config/validator/consensus.private.key" \
+    SYNERGY_RUNTIME_SHA256="$RUNTIME_SHA256" \
+    SYNERGY_TIMING_TRACE_NODE_ROLE="validator" \
+    SYNERGY_TIMING_TRACE_NODE_NAME="$node_name" \
+    SYNERGY_TIMING_TRACE_VALIDATOR="$validator_address" \
+    SYNERGY_CONSENSUS_TIMING_TRACE_PATH="$workspace/data/consensus_timing_trace.jsonl" \
     "$BINARY" start --config "$config_path" >"$stdout_path" 2>"$stderr_path"
   ) &
   PIDS+=("$!")
@@ -474,6 +686,8 @@ print_diagnostics() {
     tail -n 20 "${workspace}/logs/control-start.stderr.log" 2>/dev/null || true
   done
 }
+
+prepare_test_consensus_material
 
 for index in $(seq 1 "$START_VALIDATOR_COUNT"); do
   create_workspace "$index"
@@ -515,14 +729,14 @@ while [[ "$(date +%s)" -lt "$deadline" ]]; do
     fi
   done
 
-  if [[ "$ready" == "true" && "$mesh_ready" == "true" && "$max_height" -ge 2 ]]; then
-    echo "Smoke test passed: all validators formed the full peer mesh and advanced beyond genesis (min_height=${min_height}, max_height=${max_height})."
+  if [[ "$ready" == "true" && "$mesh_ready" == "true" && "$min_height" -ge "$MIN_HEIGHT" ]]; then
+    echo "Smoke test passed: all validators formed the full peer mesh and reached min_height=${min_height}, max_height=${max_height}, required_min_height=${MIN_HEIGHT}."
     exit 0
   fi
 
   sleep "$POLL_INTERVAL_SECS"
 done
 
-echo "Smoke test failed: validators did not all form the full peer mesh and advance height within ${TIMEOUT_SECS}s." >&2
+echo "Smoke test failed: validators did not all form the full peer mesh and reach height ${MIN_HEIGHT} within ${TIMEOUT_SECS}s." >&2
 print_diagnostics >&2
 exit 1
