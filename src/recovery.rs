@@ -790,10 +790,13 @@ fn read_block_hash_at(root: &Path, data_dir: &Path, height: u64) -> Option<Strin
     let chain_path = data_dir.join("chain.json");
     if let Ok(content) = fs::read_to_string(chain_path) {
         if let Ok(blocks) = serde_json::from_str::<Vec<Block>>(&content) {
-            return blocks
+            if let Some(hash) = blocks
                 .iter()
                 .find(|block| block.block_index == height)
-                .map(|block| block.hash.clone());
+                .map(|block| block.hash.clone())
+            {
+                return Some(hash);
+            }
         }
     }
     read_rpc_block(root.join(format!("rpc/block_{height}.json")))
@@ -1794,6 +1797,25 @@ mod tests {
     fn plan_uses_canonical_lock_for_conflict_hash_when_block_missing() {
         let target = temp_root("lock-only-target");
         let source = temp_root("lock-only-source");
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        write_proof(&source, &qc, &set, &cluster);
+
+        let plan = build_plan(base_input(&target, &source));
+
+        assert_eq!(plan.target_canonical_lock_hash, "minority-hash");
+        assert!(plan.failure_reason.is_none());
+        assert!(!plan.operator_approval_required);
+    }
+
+    #[test]
+    fn plan_uses_canonical_lock_for_conflict_hash_when_chain_lacks_height() {
+        let target = temp_root("chain-short-target");
+        let source = temp_root("chain-short-source");
+        write_chain(&target, &[("old-target-tip", 9)]);
         write_lock(&target, 10, "minority-hash");
         write_chain(&source, &[("majority-hash", 10)]);
         write_lock(&source, 10, "majority-hash");
