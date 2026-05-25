@@ -1,6 +1,6 @@
 # How to query and exercise the Synergy Testnet from any machine
 
-This guide uses the portable `wallet-pqc-cli-testnet-team` bundle. The bundle contains the command helper, available `wallet-pqc-cli` binaries, and embedded Synergy Testnet Faucet and Token Sales wallet keys, so team members do not need separate `.json` key files.
+This guide uses the portable `wallet-pqc-cli-testnet-team` bundle. The bundle contains the command helper, available `wallet-pqc-cli` binaries, and embedded Synergy Testnet Faucet, Token Sales, and Validator Rewards wallet keys, so team members do not need separate `.json` key files.
 
 Do not use this embedded-key pattern for mainnet or any wallet with real value.
 
@@ -44,6 +44,7 @@ Expected wallet aliases:
 
 - `faucet`
 - `token-sales`
+- `validator-rewards`
 
 Override binary detection only when intentionally using another local build:
 
@@ -53,7 +54,7 @@ SYNERGY_WALLET_CLI="/path/to/wallet-pqc-cli" python3 ./synergy-testnet-tx.py cha
 
 ## Transaction nonce mode
 
-The helper defaults to `--nonce-mode zero` because the current Testnet validator runtime verifies externally signed Faucet and Token Sales wallet transactions against imported wallet metadata. The traffic commands automatically append unique memo data, so repeated zero-nonce test transactions still produce unique transaction hashes and commit correctly.
+The helper defaults to `--nonce-mode zero` because the current Testnet validator runtime verifies externally signed Faucet, Token Sales, and Validator Rewards wallet transactions against imported wallet metadata. The traffic and validator funding commands automatically append unique memo data, so repeated zero-nonce test transactions still produce unique transaction hashes and commit correctly.
 
 Use `--nonce-mode rpc` only after the validator runtime nonce tracker is updated to advance imported external wallet metadata on committed transactions.
 
@@ -106,6 +107,7 @@ Check balances:
 ```bash
 python3 ./synergy-testnet-tx.py balance faucet
 python3 ./synergy-testnet-tx.py balance token-sales
+python3 ./synergy-testnet-tx.py balance validator-rewards
 python3 ./synergy-testnet-tx.py balance synw1replacewithanytestnetwallet
 ```
 
@@ -114,6 +116,7 @@ Check nonces:
 ```bash
 python3 ./synergy-testnet-tx.py nonce faucet
 python3 ./synergy-testnet-tx.py nonce token-sales
+python3 ./synergy-testnet-tx.py nonce validator-rewards
 python3 ./synergy-testnet-tx.py nonce synw1replacewithanytestnetwallet
 ```
 
@@ -185,6 +188,33 @@ python3 ./synergy-testnet-tx.py send \
   --from token-sales \
   --to faucet \
   --amount-nwei 1 \
+  --wait \
+  --yes
+```
+
+## Fund a new validator stake wallet
+
+Use the embedded Validator Rewards wallet to send the required 50,000 SNRG stake amount to a new validator address:
+
+```bash
+python3 ./synergy-testnet-tx.py fund-validator \
+  --to synv1replacewithnewvalidatoraddress \
+  --wait \
+  --yes
+```
+
+Verify the destination balance:
+
+```bash
+python3 ./synergy-testnet-tx.py balance synv1replacewithnewvalidatoraddress
+```
+
+Override the amount only when intentionally sending a different testnet validator stake grant:
+
+```bash
+python3 ./synergy-testnet-tx.py fund-validator \
+  --to synv1replacewithnewvalidatoraddress \
+  --amount-snrg 50000 \
   --wait \
   --yes
 ```

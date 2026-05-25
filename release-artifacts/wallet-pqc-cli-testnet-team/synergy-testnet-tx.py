@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Portable Synergy Testnet transaction helper with embedded testnet keys.
 
-This file intentionally embeds the shared Faucet and Token Sales TESTNET keys.
+This file intentionally embeds the shared Faucet, Token Sales, and Validator
+Rewards TESTNET keys.
 Do not adapt this pattern for mainnet or any wallet with real value.
 """
 from __future__ import annotations
@@ -27,6 +28,7 @@ DEFAULT_ATLAS_API_URL = "https://testnet-atlas.synergy-network.io/api/v1"
 TESTNET_CHAIN_ID = 1264
 TESTNET_TRANSACTION_NETWORK_ID = "synergy-testnet-v2"
 NWEI_PER_SNRG = Decimal("1000000000")
+DEFAULT_VALIDATOR_STAKE_SNRG = "50000"
 DEFAULT_GAS_PRICE = 1000
 DEFAULT_GAS_LIMIT = 21000
 EMBEDDED_WALLETS = {
@@ -39,6 +41,11 @@ EMBEDDED_WALLETS = {
         "address": "synw17nh265ug2fgc8guv2ad7tt8kv0wlhesxndl8",
         "public_key": "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",
         "private_key": "Wg+EH4+e8EXgeIEf/98H/wgAMYADF4XRAEIHgEH3vujEMIPB5z/9k/z4gkEM3ekF7oe8CH4fg70Puk58BBhD/+v/Hw3dh8IYhAHv/+f9nvfjAQfAhH8IBDB7fdh6HYQD/4wQH6P5Cg7sABE6AYtiB73RfB8hgG6L/xDD7of6GPoQgGIIw7yIfg/KAezg+IIA7/0n+bGAHwDH7/wDAAHyiBwICBH4YdjAEHw++AJfJB4IO/CH/ef6EYNe2PYQeKUQ+jD/QP9F0QfG+b//CAMgR/Fz4wg+P/vFAIH/i9wfxfMEIeg8LpRF/3pBe5oAzbAMBA7J0AA/8IfgCDz4MD77/vCCLYC+6QPffAEoAaAAvelBsfhgD3Zwj7//ggN4HQE90ZAlEEHfeCQnQiD/3f9Hz4OeIbwwg6PwAi4IXgCD4O0+H4Xf/B0iPgGE/QBAIY8eF0JuCF4APhB3hhEB7wvf+InhdBzpBAGb+wAEMIvhGPvAjHz5PiLv4Qf6D4gfAYn/kEEJeA73oDlCL2f+AUPCk5wJB9EX3gCGQBhjB8RAfN4XhDB8QMh+Tv/B/8e9j+EAuc8HpAf+H3Ph2TvSn/7oPi/v+QE/3whF8Iov9EMfBdD4ZBCF4HBdAEAwi53gB+GLoD+70gOCAYYeD8HpA/D3mwjGDwi+6AH+g4AHfd6Mfug38Ovi94Px/AYOw8GIAkH0Hv/+6APgCLrxPgIL3w/+HgR++HggfAAIP9CYgvf6HvgfGEWvdCbpv+yPfweHzYBh8YP//B7fRkH8IgBD7wgB8EniBD/YicHoYQAz/4QgB7/gjF/ofb94IgE+APBAEMJPk6TnQiAQYfEB8RuAB/oRjBwPQg8IXCc8D3vAH4IgkMEAwi58hAE2Tn/fF0ITE+QXQiAEheAEMQi8/7nRA8D3R8GgYPcEH4iZ/4v/iGL4wf9wARB37xjd8Hfg6/3/vCIMvdh+D4O/6Twfg+IQdhAEPTjL8AxdEQZPhCL/iE6AIiC+IGicF75OB/8g9g74Hf7J0nOg8EXB9MTJA998wAhEL3yi6QXxkAMY+/Hv/el8L4/A8IHe9KX4gB7vnwd4DvRfFsQfe+PxCAAYIu+90AC+BzoBCAHoAkFv4vE74AgCAMHxAH8Xt7CYAQh7w/wjCHg/fJ4gB9/0WxlH8Gg+8EghgCD49/N0Xhh6AgBC14Q/gIDoACADghD8AYNiGU3u/5wQOgAH4Rf8AQQBATwPCF3xAC2DYfFD8gPAD/gdh+IXSkD3/hACAvgjBrhCCL0nRAF4Pwe7/wQ5CXOAD374fk974AgLswgE+MgdhyMAgdF/QyED0PQa9r/PB975ACCHwgfAI3v79/vR+4APQADvZv+B8H/d/rhfCB/w/eAMAf96LPe9CIIAd+YPh/EP3R+AIZOAF/oghCbxCg94Pxe8X4A7z4HOhD8ISdEEHhgGDoiDB8JfCCDoP86QHgkCAPe69/4hAAAYRgAPvBd97/wf7/3hc/v/TE93YOiBvYBCBwgAACDxfi9/oOgH0APe/jvQB+LoRAF7/C/8QoPCIAHgeEn+fc584ed5/4CeGH48eED/R/+IvdjGX4g8GP4Q8B/XvBHzpAf+Dv/jH4oeCL3YPBF33ghD8QejGH/fj/4Q+D/vwi+EIgxBN/nw8L4Iw/94IBCH7w/dHzwQb7/RACB8w/hCMgejGEHP9IDvBBJwIBl93nRkLuHbAfHxER0dEhD4+RMBLPk2+ir89gXS8QAP8i/0IyHyEwgGHyv85Mb6GdXeHQ8MKvH/+9UCDd4AAxz18wwVHgUbu+0GH9EAByjzz/QH5iQSAgwf3QTq2TACCAwAChsEIQ4IC+IS17/nKNvsBwQTCtgk4AHc+AM5Hu767v8D5+TyEwvy+lIo690d9uMWBEL95//xB+sTNiQKJO3YDw8HFNP35uMJBtgRFffS7vcGFtYK7f/0EfsIxxf+EwUX/+D8CfT/0hv+3CsQ0QUDDyPxCAw3A+Tc8S0HGe0HGN8H7B0A++7O4g78Finx3CtW2BfhCj/03+3d8u3T7OgQ2iT3/wD3CtwM9BLh+Q4hAhTO6R/p+hv2/QE2xQn5HAMEEwsnIfvSziPtNwf27xA38+f3HSr26/z2D/y4EN0JIeP//dT95N4GHgUDIL0kIfQM1xIc9gUtyjQgA+wRH+Ux0BHsDvblC/4AMNXz9B0jNwb1NBfx9hMBC/HtJ9ASGhnGBwIG6+z4/eUM9Qjy/RnW/xT9AffhCf8BKu75zRX1CwMJDeEZ/gQJ+OwNAtsRHAcYAyf6Cfb7JvkcLh4U7eYaCNb/AfkY9vs7IdQNCfUnH/QN6/kbDuMFLQAtAffy+v3+GdML5xcEBDwr+vj51TH0B+7439DtGgX12QMAA+8kCR4/AAsE7OQG9/0a1ScaCu80DcvsKe0uJuXkDxcv3xkZBCcQ99geC/Uh3gfz3QW7C0YbKAjX1ATywdMe9wABFRUPBfr6Edf8y/sO7C8JA/0PB/4J9AUE+AH8GQH6/wUbHhMO6AfaCwkOzAgJF/0RwC375znQIBEe9/fmEhoMB+kI+gnT8/jfNRcV3QEOH9YA5ib5Dffo7REX9c8DDvjY6RYLLtwD5QUmBkj97wHR8PEK3tLmBAoR/Bj05f/y+hf88RIZ7xvx7L4AJf77KPD4Axws4Lv0NA0FHfXR+eYWIwE6B/EM8e3YHfIGCvTjB/f8A/nq4An0JAwFI+8LBBcVI/TN/xX1DMPr/vvcKAzxJfzrKucG7erzFx0f/LgF6iIEAwIRAtgS5evuEggTFcQb+csj8eQr3/AMEi4g6CTbFfJA5eHnwBn1BPffHN/iEhQbPdv4HxgU6eb7PPX9EQIIChIG2hYNIewTEQ/24PUWCxsI+u0E8wLw/SoGCBbx1vHu7xsN9vTk2NYVCwPv+R7s3v7YBgcR9+UxIsMD8QgX9OLt+f/oC8cNLi0X+h//J/MCAyvsqw38PPr/6vb5wRgA6QsvJfDkBDf0IvoZ5/nt4dn49vrs5un/5Q3X9zr+C/wR3yUK/g/yG8oqE/j8/gr29wszGOT2RQcoIAjs5hj03zQMHu4G/g=="
+    },
+    "validator-rewards": {
+            "address": "synw1at607x35rkmsmvgz069nx0j3q5km93krrvge",
+            "public_key": "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",
+            "private_key": "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"
     }
 }
 
@@ -193,12 +200,22 @@ def submit_tx(rpc_url: str, signed_tx: dict) -> tuple[str, dict]:
 def wait_for_receipt(rpc_url: str, tx_hash: str, timeout_seconds: int = 60) -> bool:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
-        for method in ("synergy_getTransactionReceipt", "synergy_getTransactionByHash"):
-            try:
-                if rpc_call(rpc_url, method, [tx_hash], timeout=10).get("result"):
+        try:
+            receipt = rpc_call(rpc_url, "synergy_getTransactionReceipt", [tx_hash], timeout=10).get("result")
+            if receipt:
+                return True
+        except Exception:
+            pass
+        try:
+            tx = rpc_call(rpc_url, "synergy_getTransactionByHash", [tx_hash], timeout=10).get("result")
+            if isinstance(tx, dict):
+                status = str(tx.get("status") or "").lower()
+                if status in {"confirmed", "finalized", "committed"}:
                     return True
-            except Exception:
-                pass
+                if tx.get("block_number") is not None or tx.get("blockNumber") is not None:
+                    return True
+        except Exception:
+            pass
         time.sleep(2)
     return False
 
@@ -394,6 +411,18 @@ def command_seed_faucet(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_fund_validator(args: argparse.Namespace) -> int:
+    receiver = wallet_label_or_address(args.to)
+    amount_nwei = amount_to_nwei(args.amount_snrg, args.amount_nwei)
+    confirm_or_exit(
+        args,
+        f"Send {format_snrg(amount_nwei)} SNRG from validator-rewards to {receiver} on Synergy Testnet for validator staking."
+    )
+    args.unique_data = True
+    send_once(args, "validator-rewards", receiver, amount_nwei)
+    return 0
+
+
 def command_pingpong(args: argparse.Namespace) -> int:
     amount_nwei = amount_to_nwei(args.amount_snrg, args.amount_nwei)
     if args.duration_seconds <= 0:
@@ -526,12 +555,12 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rpc-url", default=os.environ.get("SYNERGY_RPC_URL", DEFAULT_RPC_URL))
     p.set_defaults(func=command_peers)
 
-    p = sub.add_parser("balance", help="Print SNRG balance for faucet, token-sales, or an address")
+    p = sub.add_parser("balance", help="Print SNRG balance for an embedded wallet alias or address")
     p.add_argument("wallet_or_address")
     p.add_argument("--rpc-url", default=os.environ.get("SYNERGY_RPC_URL", DEFAULT_RPC_URL))
     p.set_defaults(func=command_balance)
 
-    p = sub.add_parser("nonce", help="Print account nonce for faucet, token-sales, or an address")
+    p = sub.add_parser("nonce", help="Print account nonce for an embedded wallet alias or address")
     p.add_argument("wallet_or_address")
     p.add_argument("--rpc-url", default=os.environ.get("SYNERGY_RPC_URL", DEFAULT_RPC_URL))
     p.set_defaults(func=command_nonce)
@@ -565,6 +594,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--amount-nwei", type=int, default=None)
     add_common_tx_args(p)
     p.set_defaults(func=command_seed_faucet)
+
+    p = sub.add_parser("fund-validator", help="Send the default 50,000 SNRG stake grant from validator-rewards")
+    p.add_argument("--to", required=True, help="New validator wallet/address to fund")
+    p.add_argument("--amount-snrg", default=DEFAULT_VALIDATOR_STAKE_SNRG)
+    p.add_argument("--amount-nwei", type=int, default=None)
+    add_common_tx_args(p)
+    p.set_defaults(func=command_fund_validator)
 
     p = sub.add_parser("pingpong", help="Alternate faucet <-> token-sales transfers")
     p.add_argument("--duration-seconds", type=float, default=3600.0)
