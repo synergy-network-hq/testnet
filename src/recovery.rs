@@ -796,7 +796,9 @@ fn read_block_hash_at(root: &Path, data_dir: &Path, height: u64) -> Option<Strin
                 .map(|block| block.hash.clone());
         }
     }
-    read_rpc_block(root.join(format!("rpc/block_{height}.json"))).map(|block| block.hash)
+    read_rpc_block(root.join(format!("rpc/block_{height}.json")))
+        .map(|block| block.hash)
+        .or_else(|| read_canonical_lock_hash_at(data_dir, height))
 }
 
 fn read_rpc_block(path: PathBuf) -> Option<BlockSummary> {
@@ -818,6 +820,12 @@ fn read_canonical_lock(data_dir: &Path) -> Option<LockSummary> {
     let entry = object.get(&height.to_string())?;
     let hash = get_string(entry, &["hash", "block_hash"])?;
     Some(LockSummary { height, hash })
+}
+
+fn read_canonical_lock_hash_at(data_dir: &Path, height: u64) -> Option<String> {
+    let value = read_json(&data_dir.join("canonical_locks.json")).ok()?;
+    let entry = value.as_object()?.get(&height.to_string())?;
+    get_string(entry, &["hash", "block_hash"])
 }
 
 fn load_recovery_proof(source_dir: &Path) -> Result<RecoveryProof, String> {
@@ -1780,6 +1788,24 @@ mod tests {
         write_proof(&source, &qc, &set, &cluster);
         let plan = build_plan(base_input(&target, &source));
         (target, source, plan)
+    }
+
+    #[test]
+    fn plan_uses_canonical_lock_for_conflict_hash_when_block_missing() {
+        let target = temp_root("lock-only-target");
+        let source = temp_root("lock-only-source");
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        write_proof(&source, &qc, &set, &cluster);
+
+        let plan = build_plan(base_input(&target, &source));
+
+        assert_eq!(plan.target_canonical_lock_hash, "minority-hash");
+        assert!(plan.failure_reason.is_none());
+        assert!(!plan.operator_approval_required);
     }
 
     #[test]
