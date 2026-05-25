@@ -388,6 +388,16 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
         .source_canonical_lock_hash
         .or(source.canonical_lock_hash.clone())
         .unwrap_or_default();
+    if qc_summary.verified
+        && !qc_summary.hash.is_empty()
+        && !source_canonical_lock_hash.is_empty()
+        && qc_summary.hash != source_canonical_lock_hash
+    {
+        failures.push(format!(
+            "verified source QC hash {} does not match source canonical lock hash {}",
+            qc_summary.hash, source_canonical_lock_hash
+        ));
+    }
 
     if let Some(expected) = input.expected_target_conflict_hash.as_ref() {
         if target.conflict_hash.as_deref() != Some(expected.as_str()) {
@@ -442,6 +452,16 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
     failures.extend(file_failures);
 
     let flags = mutation_flags(&files_to_mutate);
+    failures.extend(validate_source_state_consistency(
+        &recovery_type,
+        &source_dir,
+        &files_to_read,
+        target.latest_height.unwrap_or_default(),
+        target.canonical_lock_height.unwrap_or_default(),
+        source_common_height,
+        source_canonical_lock_height,
+        qc_summary.height,
+    ));
     let mut preconditions = vec![
         "chain_id=1264".to_string(),
         "network_id=synergy-testnet-v2".to_string(),
@@ -1314,6 +1334,120 @@ fn build_file_plan(
     (files_to_read, files_to_backup, files_to_mutate, failures)
 }
 
+fn validate_source_state_consistency(
+    recovery_type: &RecoveryType,
+    source_dir: &Path,
+    files_to_read: &[String],
+    target_current_height: u64,
+    target_canonical_lock_height: u64,
+    source_common_height: u64,
+    source_canonical_lock_height: u64,
+    source_committed_qc_height: u64,
+) -> Vec<String> {
+    if *recovery_type == RecoveryType::NoAction {
+        return Vec::new();
+    }
+
+    let mut failures = Vec::new();
+    let source_data_dir = data_dir(source_dir);
+    let has_source_chain = files_to_read.iter().any(|path| {
+        Path::new(path).file_name().and_then(|name| name.to_str()) == Some("chain.json")
+    });
+    let source_advances_target = source_common_height > target_current_height
+        || source_canonical_lock_height > target_current_height
+        || source_committed_qc_height > target_current_height;
+
+    if source_advances_target && !has_source_chain {
+        failures.push(
+            "source chain.json is required when recovery advances the target beyond its current height; proof-only bundles are not valid mutation sources"
+                .to_string(),
+        );
+    }
+
+    if has_source_chain {
+        match chain_latest_height(&source_data_dir) {
+            Ok(Some(height)) => {
+                let required = source_common_height
+                    .max(source_canonical_lock_height)
+                    .max(source_committed_qc_height);
+                if height < required {
+                    failures.push(format!(
+                        "source chain.json latest height {height} is below required recovery height {required}"
+                    ));
+                }
+            }
+            Ok(None) => failures.push("source chain.json has no blocks".to_string()),
+            Err(error) => failures.push(format!("source chain.json rejected: {error}")),
+        }
+    }
+
+    let reads_committed_qcs_jsonl = files_to_read.iter().any(|path| {
+        Path::new(path).file_name().and_then(|name| name.to_str()) == Some("committed_qcs.jsonl")
+    });
+    if reads_committed_qcs_jsonl {
+        match committed_qc_span(&source_data_dir) {
+            Ok(span) => {
+                let bridge_from = target_current_height.min(target_canonical_lock_height);
+                if span.first_height > bridge_from.saturating_add(1) {
+                    failures.push(format!(
+                        "source committed_qcs.jsonl begins at height {}, which cannot bridge target height {}; provide a complete committed-QC source, not a tail",
+                        span.first_height, bridge_from
+                    ));
+                }
+                if span.last_height < source_committed_qc_height {
+                    failures.push(format!(
+                        "source committed_qcs.jsonl latest height {} is below verified source QC height {}",
+                        span.last_height, source_committed_qc_height
+                    ));
+                }
+            }
+            Err(error) => failures.push(format!("source committed_qcs.jsonl rejected: {error}")),
+        }
+    }
+
+    failures
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CommittedQcSpan {
+    first_height: u64,
+    last_height: u64,
+}
+
+fn chain_latest_height(data_dir: &Path) -> Result<Option<u64>, String> {
+    let path = data_dir.join("chain.json");
+    let content =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let blocks = serde_json::from_str::<Vec<Block>>(&content)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    Ok(blocks.last().map(|block| block.block_index))
+}
+
+fn committed_qc_span(data_dir: &Path) -> Result<CommittedQcSpan, String> {
+    let path = data_dir.join("committed_qcs.jsonl");
+    let file =
+        fs::File::open(&path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut first_height = None;
+    let mut last_height = None;
+    for line in reader.lines() {
+        let line = line.map_err(|error| format!("read {}: {error}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<LegacyCommittedQcLogEntry>(&line)
+            .map_err(|error| format!("parse committed QC entry: {error}"))?;
+        let height = legacy_qc_height(&entry.qc)?;
+        first_height.get_or_insert(height);
+        last_height = Some(height);
+    }
+    Ok(CommittedQcSpan {
+        first_height: first_height
+            .ok_or_else(|| format!("{} has no committed QC entries", path.display()))?,
+        last_height: last_height.unwrap_or_default(),
+    })
+}
+
 fn validate_source_nodes(nodes: &[String]) -> Vec<String> {
     let mut failures = Vec::new();
     if nodes.len() < REQUIRED_QUORUM {
@@ -1787,6 +1921,7 @@ mod tests {
         write_chain(&source, &[("majority-hash", 10)]);
         write_lock(&source, 10, "majority-hash");
         write_recoverable_files(&source);
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
         let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
         write_proof(&source, &qc, &set, &cluster);
         let plan = build_plan(base_input(&target, &source));
@@ -1797,10 +1932,12 @@ mod tests {
     fn plan_uses_canonical_lock_for_conflict_hash_when_block_missing() {
         let target = temp_root("lock-only-target");
         let source = temp_root("lock-only-source");
+        write_chain(&target, &[("old-target-tip", 9)]);
         write_lock(&target, 10, "minority-hash");
         write_chain(&source, &[("majority-hash", 10)]);
         write_lock(&source, 10, "majority-hash");
         write_recoverable_files(&source);
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
         let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
         write_proof(&source, &qc, &set, &cluster);
 
@@ -1820,6 +1957,7 @@ mod tests {
         write_chain(&source, &[("majority-hash", 10)]);
         write_lock(&source, 10, "majority-hash");
         write_recoverable_files(&source);
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
         let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
         write_proof(&source, &qc, &set, &cluster);
 
@@ -2013,6 +2151,63 @@ mod tests {
         assert!(verification.errors.is_empty(), "{:?}", verification.errors);
         assert!(plan.source_qc_aegis_pqc_verified);
         assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn validator_recovery_rejects_proof_only_source_when_advancing_target() {
+        let target = temp_root("proof-only-target");
+        let source = temp_root("proof-only-source");
+        write_chain(&target, &[("minority-hash", 5)]);
+        write_lock(&target, 5, "minority-hash");
+        write_lock(&source, 10, "majority-hash");
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        write_proof(&source, &qc, &set, &cluster);
+
+        let mut input = base_input(&target, &source);
+        input.source_common_height = Some(10);
+        input.source_common_hash = Some("majority-hash".to_string());
+        input.source_canonical_lock_height = Some(10);
+        input.source_canonical_lock_hash = Some("majority-hash".to_string());
+        input.expected_target_conflict_hash = None;
+        input.expected_source_conflict_hash = None;
+        let plan = build_plan(input);
+
+        let failure = plan.failure_reason.unwrap_or_default();
+        assert!(
+            failure.contains("source chain.json is required"),
+            "{failure}"
+        );
+        assert!(plan.operator_approval_required);
+    }
+
+    #[test]
+    fn validator_recovery_rejects_committed_qc_tail_that_cannot_bridge_target() {
+        let target = temp_root("qc-tail-target");
+        let source = temp_root("qc-tail-source");
+        write_chain(&target, &[("target-tip", 5)]);
+        write_lock(&target, 5, "target-tip");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        write_proof(&source, &qc, &set, &cluster);
+
+        let mut input = base_input(&target, &source);
+        input.source_common_height = Some(10);
+        input.source_common_hash = Some("majority-hash".to_string());
+        input.source_canonical_lock_height = Some(10);
+        input.source_canonical_lock_hash = Some("majority-hash".to_string());
+        input.expected_target_conflict_hash = None;
+        input.expected_source_conflict_hash = None;
+        let plan = build_plan(input);
+
+        let failure = plan.failure_reason.unwrap_or_default();
+        assert!(
+            failure.contains("cannot bridge target height 5"),
+            "{failure}"
+        );
+        assert!(plan.operator_approval_required);
     }
 
     #[test]
