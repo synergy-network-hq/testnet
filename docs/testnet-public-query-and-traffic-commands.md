@@ -17,7 +17,7 @@ Network values:
 - RPC: `https://testnet-core-rpc.synergy-network.io`
 - Atlas API: `https://testnet-atlas.synergy-network.io/api/v1`
 
-Any `testbeta` endpoint is wrong for this package and should be treated as a critical configuration fault.
+Any `testnet` endpoint is wrong for this package and should be treated as a critical configuration fault.
 
 Included binaries:
 

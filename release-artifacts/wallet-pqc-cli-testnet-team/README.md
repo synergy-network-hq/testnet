@@ -11,7 +11,7 @@ Do not use this embedded-key pattern for mainnet or any wallet with real value.
 - RPC: `https://testnet-core-rpc.synergy-network.io`
 - Atlas API: `https://testnet-atlas.synergy-network.io/api/v1`
 
-Any `testbeta` endpoint is wrong for this package.
+Any `testnet` endpoint is wrong for this package.
 
 ## Included platforms
 

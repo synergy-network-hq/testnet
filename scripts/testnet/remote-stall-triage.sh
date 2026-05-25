@@ -283,8 +283,6 @@ for method in [
     methods[method] = rpc(port, method)
 
 binary = workspace / "bin/synergy-testnet-linux-amd64"
-if not binary.exists():
-    binary = workspace / "bin/synergy-testbeta-linux-amd64"
 processes, deleted_inode = process_state()
 listeners = sh(f"ss -ltnp 2>/dev/null | grep -E ':({port}|{os.environ.get('SYNERGY_WS_PORT', '5660')}|{os.environ.get('SYNERGY_METRICS_PORT', '6030')})\\b' || true")
 package_version = sh("dpkg-query -W -f='${Package} ${Version}\\n' 'synergy*' 2>/dev/null || true").strip().splitlines()[:20]

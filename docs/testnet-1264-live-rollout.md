@@ -113,7 +113,7 @@ Final v12.2.19 observation evidence:
 - Final short cadence sample observed 18 blocks in 34.842 seconds.
 - Atlas DB was reset and reindexed for chain 1264.
 - Atlas DAG tables/API were empty after reset because no valid post-reset signed DAG transactions had been submitted; do not inject demo DAG data.
-- Inactive pre-v12.2.19 `synergy-testbeta` service-host build directories were moved to a retired-builds archive after current-process checks proved the active services were running the v12.2.19 binary.
+- Inactive pre-v12.2.19 `synergy-testnet` service-host build directories were moved to a retired-builds archive after current-process checks proved the active services were running the v12.2.19 binary.
 
 ## Live Service Routing
 
@@ -160,4 +160,4 @@ Do not describe a future rollout as complete until the final report proves:
 - block cadence is near 2 seconds over latest 50/120/300 blocks
 - release package and live runtime checksums match
 - no direct public-node-to-validator peers exist
-- no active deployable `Testnet-Beta`, `testnet-beta`, `testbeta`, chain 1262, or chain 1263 identity material remains
+- no active deployable `Testnet`, `testnet`, `testnet`, chain 1262, or chain 1263 identity material remains

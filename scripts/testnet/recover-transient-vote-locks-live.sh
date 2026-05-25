@@ -71,7 +71,7 @@ fi
 if [[ -x "$workspace/nodectl.sh" ]]; then
   (cd "$workspace" && ./nodectl.sh stop) || true
 fi
-for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbeta-linux-amd64 start --config" || true); do
+for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config" || true); do
   proc_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   proc_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
   if [[ "$proc_cwd" == "$workspace" || "$proc_exe" == "$workspace"/bin/* ]]; then
@@ -79,7 +79,7 @@ for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbe
   fi
 done
 sleep 2
-for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbeta-linux-amd64 start --config" || true); do
+for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config" || true); do
   proc_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   proc_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
   if [[ "$proc_cwd" == "$workspace" || "$proc_exe" == "$workspace"/bin/* ]]; then

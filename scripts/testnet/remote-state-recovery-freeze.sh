@@ -45,8 +45,7 @@ runtime_sha=""
 runtime_path=""
 for binary in \
   "$workspace/bin/synergy-rpc-gateway-node-linux-amd64" \
-  "$workspace/bin/synergy-testnet-linux-amd64" \
-  "$workspace/bin/synergy-testbeta-linux-amd64"; do
+  "$workspace/bin/synergy-testnet-linux-amd64"; do
   if [[ -f "$binary" ]]; then
     runtime_path="$binary"
     runtime_sha="$(sha256sum "$binary" | awk '{print $1}')"
@@ -90,7 +89,7 @@ fi
   echo "runtime_checksum_expected=$runtime_sha_expected"
   echo "date_utc=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   echo "processes:"
-  pgrep -af "synergy-testnet|synergy-testbeta|synergy-rpc-gateway" || true
+  pgrep -af "synergy-testnet|synergy-rpc-gateway" || true
   echo "listeners:"
   ss -ltnp 2>/dev/null | grep -E ":(${SYNERGY_QRPC_PORT:-5640}|${SYNERGY_WS_PORT:-5660}|${SYNERGY_METRICS_PORT:-6030})\\b" || true
 } > "$evidence_dir/manifest.txt"

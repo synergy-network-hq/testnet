@@ -501,7 +501,7 @@ mod tests {
 
         let mut wrong_network =
             signed_stake_tx(&mut signer, &key_id, REQUIRED_VALIDATOR_STAKE_NWEI);
-        wrong_network.network_id = NetworkId("synergy-testnet-beta".to_string());
+        wrong_network.network_id = NetworkId("synergy-invalid-testnet".to_string());
         assert!(manager
             .submit_stake(
                 "validator-1",

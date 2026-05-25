@@ -26,7 +26,7 @@ backup_root="$HOME/synergy-testnet-state-backups"
 backup="$backup_root/${ts}-${node// /_}-runtime"
 mkdir -p "$backup/bin" "$backup/process"
 
-pgrep -af "synergy-testnet|synergy-testbeta" > "$backup/process/before.txt" || true
+pgrep -af "synergy-testnet" > "$backup/process/before.txt" || true
 if [[ -f "$binary" ]]; then
   cp -p "$binary" "$backup/bin/synergy-testnet-linux-amd64"
 fi
@@ -34,7 +34,7 @@ fi
 if [[ -x "$workspace/nodectl.sh" ]]; then
   (cd "$workspace" && ./nodectl.sh stop) || true
 fi
-for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbeta-linux-amd64 start --config" || true); do
+for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config" || true); do
   proc_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   proc_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
   if [[ "$proc_cwd" == "$workspace" || "$proc_exe" == "$workspace"/bin/* ]]; then
@@ -42,7 +42,7 @@ for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbe
   fi
 done
 sleep 2
-for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config|synergy-testbeta-linux-amd64 start --config" || true); do
+for pid in $(pgrep -f "synergy-testnet-linux-amd64 start --config" || true); do
   proc_cwd="$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   proc_exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
   if [[ "$proc_cwd" == "$workspace" || "$proc_exe" == "$workspace"/bin/* ]]; then
@@ -67,6 +67,6 @@ if [[ "$start_after" == "true" ]]; then
   fi
 fi
 sleep 2
-pgrep -af "synergy-testnet|synergy-testbeta" > "$backup/process/after.txt" || true
+pgrep -af "synergy-testnet" > "$backup/process/after.txt" || true
 
 echo "spreadsheet_row_used=true row=$row node=$node workspace=$workspace backup=$backup installed_runtime_sha=$installed_sha start_after=$start_after"

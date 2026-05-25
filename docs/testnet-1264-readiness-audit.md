@@ -107,7 +107,7 @@ Post-reset evidence observed during rollout:
 Resolved live cadence finding:
 - v12.2.19 changed committed QC persistence to append-only `data/committed_qcs.jsonl`, kept compatibility with legacy `committed_qcs.json`, skipped duplicate appends, and avoided persisting P2P QCs before a block was appended to the canonical tip.
 - This fix was deployed from the trusted GitHub Actions release artifact, not an ad hoc local binary.
-- Bootstrap/seed deleted-inode drift was corrected during rollout by replacing retired `synergy-testbeta` process launch paths with the current Testnet runtime and moving old inactive builds to a retired-builds archive on the service host.
+- Bootstrap/seed deleted-inode drift was corrected during rollout by replacing retired `synergy-testnet` process launch paths with the current Testnet runtime and moving old inactive builds to a retired-builds archive on the service host.
 
 ## Implementation Status
 

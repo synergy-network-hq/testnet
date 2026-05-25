@@ -8,7 +8,7 @@ No live reset, restart, deployment, firewall change, topology change, or release
 
 Node repository:
 - canonical repo: `synergy-network-hq/testnet`
-- local path: `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta`
+- local path: `/Users/devpup/Desktop/Testnet/synergy-testnet`
 - current `main`: `e65a43aa2321aaac31847a429ec24e0e4043727e`
 - node release tag: `v12.2.13` at `d13ae83a7442fb8c619cb98ca9ccb3274a913137`
 - GitHub Actions run: `26082478522`
@@ -23,7 +23,7 @@ Node release checksums:
 
 Control-panel repository:
 - canonical repo: `synergy-network-hq/synergy-node-control-panel`
-- local path: `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel`
+- local path: `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel`
 - current release commit: `f74b51351ffdf160448bc792bbbd4929bcea9cdb`
 - release tag: `v12.2.13`
 - GitHub Actions run: `26090031815`
@@ -32,7 +32,7 @@ Control-panel repository:
 
 Atlas repository:
 - canonical repo: `synergy-network-hq/synergy-atlas`
-- local path: `/Users/devpup/Desktop/Testnet-Beta/explorer-app`
+- local path: `/Users/devpup/Desktop/Testnet/explorer-app`
 - current commit observed earlier: `3e87c36`
 
 ## Validator Plane
@@ -77,17 +77,17 @@ Relayer 1:
 - height/hash: `1817` / `fb6462d6105d0b51f9424313ea619f0385fe90be36c33a58d0c5fc497333a211`
 - peers: 8
 - includes private validator peers `10.69.0.1-10.69.0.5`, observer `10.69.0.250`, and public support peers on `74.208.227.23`
-- process: `/opt/synergy/testnet/relayer/bin/synergy-testbeta-linux-amd64`
+- process: `/opt/synergy/testnet/relayer/bin/synergy-testnet-linux-amd64`
 - checksum: `9d24a29ed5812daff3761ea5a153a3475a35dc5fa379ca68cc80c92f4e8508a3`
-- finding: active binary name is stale `testbeta` material and must be replaced by the trusted Testnet release
+- finding: active binary name is stale `testnet` material and must be replaced by the trusted Testnet release
 
 Relayer 2:
 - height/hash: `1817` / `fb6462d6105d0b51f9424313ea619f0385fe90be36c33a58d0c5fc497333a211`
 - peers: 8
 - includes private validator peers `10.69.0.1-10.69.0.5`, observer `10.69.0.250`, and public support peers on `74.208.227.23`
-- process: `/opt/synergy/testnet/relayer/bin/synergy-testbeta-linux-amd64`
+- process: `/opt/synergy/testnet/relayer/bin/synergy-testnet-linux-amd64`
 - checksum: `9d24a29ed5812daff3761ea5a153a3475a35dc5fa379ca68cc80c92f4e8508a3`
-- finding: active binary name is stale `testbeta` material and must be replaced by the trusted Testnet release
+- finding: active binary name is stale `testnet` material and must be replaced by the trusted Testnet release
 
 Public RPC:
 - URL: `https://testnet-core-rpc.synergy-network.io`
@@ -156,7 +156,7 @@ Required mutation plan after the installer workflow is green:
 
 1. Install the trusted `v12.2.13` control-panel package on validators and support hosts where applicable.
 2. Replace stale live runtime binaries with the CI-built Testnet runtime from the trusted package.
-3. Remove/retire active `synergy-testbeta-linux-amd64` launch paths from relayers and other support roles.
+3. Remove/retire active `synergy-testnet-linux-amd64` launch paths from relayers and other support roles.
 4. Preserve keys, configs, logs, evidence, WireGuard state, and service credentials.
 5. Perform a controlled chain-state reset only after trusted artifacts are installed everywhere, clearing stale chain/QC/canonical-lock/proposal/cache/indexer state as documented in `docs/testnet-1264-live-rollout.md`.
 6. Start in the documented order: bootnodes, validators, relayers, RPC/Explorer, Atlas/indexer, observer.

@@ -1,6 +1,6 @@
 # Chain Stall Incident Log
 
-This file is the authoritative incident log for every Testnet-Beta chain stall
+This file is the authoritative incident log for every Testnet chain stall
 starting on 2026-04-26.
 
 Rules for this log:
@@ -60,9 +60,9 @@ Rules for this log:
     - that wallet was not funded by the canonical genesis bundled into the runtime
     - validators aborted during startup with `Failed to preload deterministic launch block-1 transaction ... has insufficient SNRG balance`
   - exact control-plane source-of-truth split that caused the failed restart:
-    - canonical runtime genesis owner: `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/config/genesis.json`
-    - launch-transaction signer before the fix: local generated network-profile wallet under `~/.synergy/testnet-beta/network/profile.json`
-    - runtime-shipped private keys available for launch-time signing: validator and service identities under `node-control-panel/testbeta/runtime/keys/`
+    - canonical runtime genesis owner: `/Users/devpup/Desktop/Testnet/synergy-testnet/config/genesis.json`
+    - launch-transaction signer before the fix: local generated network-profile wallet under `~/.synergy/testnet/network/profile.json`
+    - runtime-shipped private keys available for launch-time signing: validator and service identities under `node-control-panel/testnet/runtime/keys/`
 - Fix implemented:
   - replaced the launch block-1 transaction signer source so it no longer depends on the generated local network profile
   - `send-launch-block1-transaction.sh` now:
@@ -81,7 +81,7 @@ Rules for this log:
 - Reset to genesis: yes
 - Block 1 transaction handling:
   - required transaction was pre-generated into each genesis-validator installer bundle at:
-    - `testbeta/runtime/installers/GenVal-0*/config/launch-block1-transaction.json`
+    - `testnet/runtime/installers/GenVal-0*/config/launch-block1-transaction.json`
   - verified live in block `1` after restart:
     - hash: `syntxn-46fa7f453bd6ba150a62ac10070269ec5aec3761979ba89e082fefab95bde984`
     - from: `synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra`
@@ -130,7 +130,7 @@ Rules for this log:
 
 ### Incident 1 Working Notes
 
-- 2026-04-26: incident log created in the Testnet-Beta root before recovery work began
+- 2026-04-26: incident log created in the Testnet root before recovery work began
 - 2026-04-26: current recovery target is the real control-panel-managed runtime, not ad hoc standalone node instances
 - 2026-04-26: confirmed public/service-side stall at height `15282`
   - repeated public `synergy_blockNumber` samples stayed pinned at `15282` across seven samples over about `31s`
@@ -179,7 +179,7 @@ Rules for this log:
     - `Failed to preload deterministic launch block-1 transaction: ... has insufficient SNRG balance`
   - the failed envelope had been signed by a locally generated network-profile treasury wallet that was not funded in canonical genesis
   - that failure was not a consensus regression; it was a launch-artifact source-of-truth split between:
-    - local `~/.synergy/testnet-beta/network/profile.json`
+    - local `~/.synergy/testnet/network/profile.json`
     - canonical bundled genesis `config/genesis.json`
     - runtime-shipped validator/service identity keys
 - 2026-04-27: the corrected reset path funded `GenVal-01` directly in canonical genesis and regenerated all copied genesis artifacts plus validator setup-package genesis payloads
@@ -240,7 +240,7 @@ Rules for this log:
     - `GenVal-01`
     - `GenVal-02`
     - `GenVal-04`
-  - changed `clean-launch-testbeta.sh launch-quorum` to regenerate and redeploy a fresh block-1 transaction immediately before quorum launch
+  - changed `clean-launch-testnet.sh launch-quorum` to regenerate and redeploy a fresh block-1 transaction immediately before quorum launch
 - Reset to genesis: no
 - Block 1 transaction handling:
   - no new genesis reset was performed for this incident
@@ -250,8 +250,8 @@ Rules for this log:
   - fixed Linux runtime deployed to validator workspaces:
     - `6f971ce5525cbc5f422630fda5083d6f0b2f8b649979f038b92742cb38478a22`
 - Repo commit(s):
-  - `synergy-testnet-beta`: `e8eb659` (`Stabilize validator recovery and launch preload`), tag `v9.0.11`
-  - `synergy-testnet-beta/node-control-panel`: `5ccb4bc` (`Release control panel v9.0.11`), tag `v9.0.11`
+  - `synergy-testnet`: `e8eb659` (`Stabilize validator recovery and launch preload`), tag `v9.0.11`
+  - `synergy-testnet/node-control-panel`: `5ccb4bc` (`Release control panel v9.0.11`), tag `v9.0.11`
 - Restart / rollout scope:
   - deployed and restarted through the control-panel-managed workspaces
   - `GenVal-03` was deployed and started first because it was stopped
@@ -324,11 +324,11 @@ Rules for this log:
   - fixed Linux runtime deployed to `Node-RPC`, `Relayer-1`, `Relayer-2`, and all five validator workspaces:
     - `efbe76acb9fc24273c2b08778196321563d05000714994d5e141308bf33cc5b2`
 - Repo commit(s):
-  - `synergy-testnet-beta`: `6b62af1` (`Fix service-plane block sync overlap`), tag `v9.0.12`
+  - `synergy-testnet`: `6b62af1` (`Fix service-plane block sync overlap`), tag `v9.0.12`
 - Restart / rollout scope:
   - `Node-RPC` restarted from `/opt/synergy/Node-RPC`
-  - `Relayer-1` restarted from `/opt/synergy/testbeta/relayer`
-  - `Relayer-2` started from `/opt/synergy/testbeta/relayer`
+  - `Relayer-1` restarted from `/opt/synergy/testnet/relayer`
+  - `Relayer-2` started from `/opt/synergy/testnet/relayer`
   - validators restarted one at a time through their control-panel-managed workspaces:
     - `GenVal-01`
     - `GenVal-02`
@@ -415,8 +415,8 @@ Rules for this log:
   - fixed Linux runtime deployed to all five validators, `Node-RPC`, `Node-EXP`, `Relayer-1`, and `Relayer-2`:
     - `cd6757c717cf6811398913438dec38f44ebe013e522be4a19753cc12a75b8003`
 - Repo commit(s):
-  - `synergy-testnet-beta`: commit `967a611` (`Stabilize vote request recovery`), tag `v9.0.13`
-  - `synergy-testnet-beta/node-control-panel`: commit `902044c` (`Release control panel v9.0.13`), tag `v9.0.13`
+  - `synergy-testnet`: commit `967a611` (`Stabilize vote request recovery`), tag `v9.0.13`
+  - `synergy-testnet/node-control-panel`: commit `902044c` (`Release control panel v9.0.13`), tag `v9.0.13`
 - Restart / rollout scope:
   - validators restarted through their control-panel-managed workspaces:
     - `GenVal-01`
@@ -427,8 +427,8 @@ Rules for this log:
   - service-plane nodes restarted or started:
     - `Node-RPC` from `/opt/synergy/Node-RPC`
     - `Node-EXP` from `/opt/synergy/Node-EXP`
-    - `Relayer-1` from `/opt/synergy/testbeta/relayer`
-    - `Relayer-2` from `/opt/synergy/testbeta/relayer`
+    - `Relayer-1` from `/opt/synergy/testnet/relayer`
+    - `Relayer-2` from `/opt/synergy/testnet/relayer`
 - Final verification:
   - validator chain advanced past the stall:
     - `21200 -> 21212`
@@ -530,7 +530,7 @@ Rules for this log:
   - fixed Linux runtime deployed to all five validators, `Node-RPC`, `Node-EXP`, both relayers, observer, bootnodes, and seed services:
     - `f516ed8348e09d63306ca14ee3e8c448fd2138f99de7c4d7b142c3b1e76dfe40`
 - Repo commit(s):
-  - `synergy-testnet-beta`: commit `657f459` (`Stabilize leader proposal retries`), tag `v9.0.15`
+  - `synergy-testnet`: commit `657f459` (`Stabilize leader proposal retries`), tag `v9.0.15`
 - Restart / rollout scope:
   - validators restarted together through their control-panel-managed validator workspaces:
     - `GenVal-01`
@@ -576,8 +576,8 @@ Rules for this log:
   - public auto-registering validators must complete sync before self-registration or consensus starts
   - static genesis validators are not put into that public-join gate, preserving the private genesis validator restart path
 - Source commits/tags:
-  - `synergy-testnet-beta`: `bc1bb3d` (`Enforce validator sync before public join`), tag `v9.0.16`
-  - `synergy-testnet-beta/node-control-panel`: `0b20408` (`Release control panel v9.0.16`), tag `v9.0.16`
+  - `synergy-testnet`: `bc1bb3d` (`Enforce validator sync before public join`), tag `v9.0.16`
+  - `synergy-testnet/node-control-panel`: `0b20408` (`Release control panel v9.0.16`), tag `v9.0.16`
 - Control Panel release:
   - cancelled in-flight `v9.0.15` before publication
   - published `v9.0.16` successfully
@@ -632,7 +632,7 @@ Rules for this log:
     - `config/node.toml`
     - `config/peers.toml`
   - the stale control-panel monitor runtime on `GenVal-04` still contained `f838...` in:
-    - `/home/node/.synergy-node-control-panel/monitor-workspace/testbeta/runtime/configs/genesis/genesis.json`
+    - `/home/node/.synergy-node-control-panel/monitor-workspace/testnet/runtime/configs/genesis/genesis.json`
     - several installer genesis/setup-package artifacts
   - the same monitor runtime also had a mixed artifact state where the `GenVal-04` installer genesis was already `a3d02...`, but the global runtime genesis and most other installer genesis files were still `f838...`
   - conclusion: a control-panel/runtime refresh copied or regenerated active workspace config from a stale/mixed monitor runtime cache without first checking persisted `data/chain.json` genesis compatibility
@@ -656,7 +656,7 @@ Rules for this log:
     - `fee19feed415f083262daecdc5d3567bf79bcab19d0566063eff449b9f61a40d`
 - Repo commit(s):
   - source patch currently applied in working tree:
-    - `synergy-testnet-beta/src/consensus/dual_quorum.rs`
+    - `synergy-testnet/src/consensus/dual_quorum.rs`
   - not committed/tagged yet during live recovery
 - Restart / rollout scope:
   - deploy patched runtime to all five genesis validators through their existing control-panel-managed validator workspaces
@@ -664,7 +664,7 @@ Rules for this log:
   - restart validators through `./nodectl.sh`, not by launching ad hoc processes
 - Final verification:
   - targeted Rust vote tests passed locally on macOS:
-    - `cargo test --manifest-path synergy-testnet-beta/src/Cargo.toml vote -- --nocapture`
+    - `cargo test --manifest-path synergy-testnet/src/Cargo.toml vote -- --nocapture`
     - result: `14 passed; 0 failed`
   - targeted Rust vote tests passed on the Linux build host before release build:
     - `cargo test --manifest-path src/Cargo.toml vote -- --nocapture`
@@ -751,7 +751,7 @@ Rules for this log:
   - removed the stale `Node-RPC` launch-block1 artifact and restarted public RPC successfully
   - reset Atlas through `POST /v1/admin/reindex-from-genesis`
   - reseeded Atlas genesis contract metadata/ABI records with `backend/scripts/seed-genesis-contracts.ts`
-  - patched `node-control-panel/control-service/src/testnet_beta.rs` so start/sync only writes private validator mesh peers for canonical genesis validators; public non-genesis validators keep public sentry/bootstrap peers
+  - patched `node-control-panel/control-service/src/testnet.rs` so start/sync only writes private validator mesh peers for canonical genesis validators; public non-genesis validators keep public sentry/bootstrap peers
 - Reset to genesis: yes
 - Block 1 transaction handling:
   - verified reset-chain block `1` contains one transaction:
@@ -761,9 +761,9 @@ Rules for this log:
     - `c81aa2e99281b66e35d33403dd23dff5c927bde029049c88a3a6477603dfa244`
 - Repo commit(s):
   - working tree patch, not committed yet:
-    - `synergy-testnet-beta/node-control-panel/control-service/src/testnet_beta.rs`
+    - `synergy-testnet/node-control-panel/control-service/src/testnet.rs`
 - Restart / rollout scope:
-  - validators restarted through existing control-panel-managed `~/.synergy/testnet-beta/nodes/validator-workspace/nodectl.sh`
+  - validators restarted through existing control-panel-managed `~/.synergy/testnet/nodes/validator-workspace/nodectl.sh`
   - service nodes restarted through existing `/opt/synergy/.../nodectl.sh` workspaces
   - no ad hoc validator processes were started
 - Final verification:
@@ -840,7 +840,7 @@ Rules for this log:
 - Detection surface: user report during new non-genesis validator sync retry plus live genesis validator logs
 - Symptom:
   - Atlas remained at `latestBlock = 24375` / `24376` while the user reported that a new validator sync attempt caused the existing validators to stop producing blocks
-  - all five genesis validators still had running `synergy-testbeta-linux-amd64` processes, but their logs stopped around `2026-05-07T16:06:27Z` / `2026-05-07T16:06:28Z`
+  - all five genesis validators still had running `synergy-testnet-linux-amd64` processes, but their logs stopped around `2026-05-07T16:06:27Z` / `2026-05-07T16:06:28Z`
 - Confirmation evidence:
   - `GenVal-04` committed block `24376` at `2026-05-07T16:06:28Z`
   - immediately before log silence, validators handled large catch-up block requests such as:

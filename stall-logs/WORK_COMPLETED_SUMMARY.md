@@ -11,8 +11,8 @@
 - Built and deployed Linux runtime checksum:
   - `cd6757c717cf6811398913438dec38f44ebe013e522be4a19753cc12a75b8003`
 - Source release:
-  - `synergy-testnet-beta`: commit `967a611`, tag `v9.0.13`
-  - `synergy-testnet-beta/node-control-panel`: commit `902044c`, tag `v9.0.13`
+  - `synergy-testnet`: commit `967a611`, tag `v9.0.13`
+  - `synergy-testnet/node-control-panel`: commit `902044c`, tag `v9.0.13`
 - Restarted all five genesis validators through their control-panel-managed workspaces.
 - Rolled the same runtime to `Node-RPC`, `Node-EXP`, `Relayer-1`, and `Relayer-2`.
 - Started `Node-EXP`, which was stopped at stale height `10304`; it caught up to height `21250`.
@@ -55,7 +55,7 @@
 - Removed stale committed `launch-block1-transaction.json` files from validator installer bundles.
 - Added a `.gitignore` rule so generated launch envelopes remain launch artifacts.
 - Updated launch helpers so default block-1 transaction outputs target only the initial quorum validators (`GenVal-01`, `GenVal-02`, `GenVal-04`).
-- Updated `clean-launch-testbeta.sh launch-quorum` so it regenerates and redeploys the fresh block-1 transaction immediately before quorum launch.
+- Updated `clean-launch-testnet.sh launch-quorum` so it regenerates and redeploys the fresh block-1 transaction immediately before quorum launch.
 
 ### 4. Validator rollout
 - Built and bundled Linux runtime checksum:
@@ -90,7 +90,7 @@
 
 ### 0.1 Readiness tracker and RPC manual corrections
 - Updated:
-  - `/Users/devpup/Desktop/Testnet-Beta/dApp_Connection_Missing_Features_Checklist.md`
+  - `/Users/devpup/Desktop/Testnet/dApp_Connection_Missing_Features_Checklist.md`
   - `/Users/devpup/Desktop/Synergy Docs Formatting/new docs/Synergy_Network_RPC_Specification_Part_1_Core_and_Security_Controlled_Interfaces.docx`
   - `/Users/devpup/Desktop/Synergy Docs Formatting/new docs/Synergy_Network_RPC_Specification_Part_2_Runtime_Governance_Cross_Chain_and_Operations.docx`
 - Corrected the readiness tracker so it no longer falsely marks the sustained sub-`5s` block-time goal as complete.
@@ -107,16 +107,16 @@
   - `synergy_reverseResolveSynID`
   - `synergy_resetChainHead`
 - Corrected the `synergy_getChainId` manual entry to the canonical hex return form:
-  - `0x52acf` on Testnet-Beta
+  - `0x52acf` on Testnet
 - Rebuilt the Linux runtime after the final P2P genesis-gating patch and resynced the bundled control-panel assets:
   - runtime checksum: `6bb16da4798cf6b09038badf9d398fe9dc8b3c9d68ac15f9ef0f1b2b942bc2e0`
 - Committed and pushed both repos cleanly on `main`:
-  - `testnet-beta`: `07914be`
+  - `testnet`: `07914be`
   - `synergy-node-control-panel`: `885038c`
 
 ### 1. Chain stall incident recovery and genesis reset
 - Created the authoritative incident log:
-  - `/Users/devpup/Desktop/Testnet-Beta/CHAIN_STALL_INCIDENT_LOG.md`
+  - `/Users/devpup/Desktop/Testnet/CHAIN_STALL_INCIDENT_LOG.md`
 - Confirmed the stall shape before reset:
   - public/service plane pinned at block `15282`
   - validator-side consensus continued briefly into the `15316-15322` range
@@ -130,8 +130,8 @@
   - validators aborted during startup before consensus with:
     - `Failed to preload deterministic launch block-1 transaction ... has insufficient SNRG balance`
 - Patched:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/scripts/testbeta/send-launch-block1-transaction.sh`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/scripts/testbeta/generate-testbeta-genesis.sh`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/scripts/testnet/send-launch-block1-transaction.sh`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/scripts/testnet/generate-testnet-genesis.sh`
 - The launch-transaction path now:
   - signs with the shipped `GenVal-01` runtime identity key
   - derives the default recipient from canonical genesis (`Faucet`)
@@ -139,7 +139,7 @@
 
 ### 3. Canonical genesis correction for the block-1 sponsor
 - Updated canonical genesis owner:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/config/genesis.json`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/config/genesis.json`
 - Funded the shipped `GenVal-01` validator address:
   - `synv114cvu472rkdgpmzvkj70zk9tu8cqqlu4x9ra`
   - amount: `2000000000` nWei
@@ -148,7 +148,7 @@
   - `f838a1ff39d9dcac47c3b22492f1636d88cc9238f9034706db3f5144d3cd96c9`
 
 ### 4. Canonical genesis propagation fix
-- Expanded `generate-testbeta-genesis.sh` so canonical genesis is propagated to:
+- Expanded `generate-testnet-genesis.sh` so canonical genesis is propagated to:
   - runtime genesis copy
   - installer `config/genesis.json` copies
   - bootstrap-bundle `config/genesis.json` copies
@@ -157,11 +157,11 @@
 
 ### 5. Required block-1 transaction verification
 - Generated the required launch transaction envelopes in:
-  - `testbeta/runtime/installers/GenVal-01/config/launch-block1-transaction.json`
-  - `testbeta/runtime/installers/GenVal-02/config/launch-block1-transaction.json`
-  - `testbeta/runtime/installers/GenVal-03/config/launch-block1-transaction.json`
-  - `testbeta/runtime/installers/GenVal-04/config/launch-block1-transaction.json`
-  - `testbeta/runtime/installers/GenVal-05/config/launch-block1-transaction.json`
+  - `testnet/runtime/installers/GenVal-01/config/launch-block1-transaction.json`
+  - `testnet/runtime/installers/GenVal-02/config/launch-block1-transaction.json`
+  - `testnet/runtime/installers/GenVal-03/config/launch-block1-transaction.json`
+  - `testnet/runtime/installers/GenVal-04/config/launch-block1-transaction.json`
+  - `testnet/runtime/installers/GenVal-05/config/launch-block1-transaction.json`
 - Live verified after restart:
   - block `1` exists
   - block `1` transaction count is `1`
@@ -225,7 +225,7 @@
   5. that created a false self-conflict and burned another leader window
 
 ### 2. Consensus fixes implemented
-- Patched `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/consensus/dual_quorum.rs`.
+- Patched `/Users/devpup/Desktop/Testnet/synergy-testnet/src/consensus/dual_quorum.rs`.
 - Restored proper equivocation detection semantics:
   - exact replay of the same vote is idempotent
   - same validator + same height + same round + different block hash is treated as a conflict
@@ -236,14 +236,14 @@
 
 ### 3. Consensus verification
 - Ran:
-  - `cargo test -p synergy-testbeta consensus::dual_quorum -- --nocapture`
+  - `cargo test -p synergy-testnet consensus::dual_quorum -- --nocapture`
 - Result after the final patch:
   - `10 passed`
   - `0 failed`
 
 ### 4. Final release artifact
 - Built the final Linux runtime with:
-  - `cargo zigbuild --release -p synergy-testbeta --target x86_64-unknown-linux-gnu`
+  - `cargo zigbuild --release -p synergy-testnet --target x86_64-unknown-linux-gnu`
 - Final checksum:
   - `96ee5e06e0efda835a1eec5110089b1cca1be2f9410cb4e759f9a11a0d59468b`
 
@@ -259,7 +259,7 @@
   - `96ee5e06e0efda835a1eec5110089b1cca1be2f9410cb4e759f9a11a0d59468b`
 
 ### 6. Public RPC / WebSocket implementation and rollout
-- Patched `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/rpc/rpc_server.rs` and `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/role_runtime.rs`.
+- Patched `/Users/devpup/Desktop/Testnet/synergy-testnet/src/rpc/rpc_server.rs` and `/Users/devpup/Desktop/Testnet/synergy-testnet/src/role_runtime.rs`.
 - Implemented and verified:
   - `synergy_simulateTransaction`
   - `synergy_subscribe` / `synergy_unsubscribe`
@@ -288,10 +288,10 @@
 
 ### 8. Control-panel bundle sync
 - Updated the nested control-panel bundled Linux runtime:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/binaries/synergy-testbeta-linux-amd64`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/binaries/synergy-testnet-linux-amd64`
 - Regenerated and revalidated bundled metadata:
-  - `testbeta/runtime/workspace-manifest.json`
-  - `binaries/synergy-testbeta-linux-amd64.sha256`
+  - `testnet/runtime/workspace-manifest.json`
+  - `binaries/synergy-testnet-linux-amd64.sha256`
 - Synced the same final runtime into the local monitor workspace:
   - `/Users/devpup/.synergy-node-control-panel/monitor-workspace`
 
@@ -305,17 +305,17 @@
 - Diagnosed the live `GenVal-02` failure as a divergent local chain at height `9608`, not a simple behind-tip delay.
 - Confirmed the local hash at height `9608` did not match the healthy validator chain.
 - Patched:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/consensus/consensus_algorithm.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/sync/manager.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/p2p/networking.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/block.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/consensus/consensus_algorithm.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/sync/manager.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/p2p/networking.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/block.rs`
 - The catch-up fix included:
   - wiring `SyncManager` into the normal validator behind-tip path
   - dropping chain/pool guards before sleep paths so block application is not blocked by a sleeping validator thread
   - requesting overlapping sync windows so divergent peers can reconcile
   - rolling back to the highest common ancestor before replaying forward
 - Added a regression test for rollback/replay in:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/p2p/networking.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/p2p/networking.rs`
 - Built the follow-on Linux runtime with checksum:
   - `238c7cb79ba021ca75d0529f7a8dab98832d83346fcafd2b8aecf12c95810f59`
 - Verified the new runtime could sync `GenVal-02` from the divergent state back to live tip, then restarted it through the control-panel-managed workspace and confirmed it rejoined the network.
@@ -339,12 +339,12 @@
 
 ### 12. Control-panel bundle and local monitor alignment
 - Updated the nested control-panel bundled Linux runtime to:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/binaries/synergy-testbeta-linux-amd64`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/binaries/synergy-testnet-linux-amd64`
 - Updated the bundled installer copies and `BINARY_STATUS.txt` files under:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/testbeta/runtime/installers`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/testnet/runtime/installers`
 - Regenerated and revalidated:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/testbeta/runtime/workspace-manifest.json`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/binaries/synergy-testbeta-linux-amd64.sha256`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/testnet/runtime/workspace-manifest.json`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/binaries/synergy-testnet-linux-amd64.sha256`
 - Synced the same bundle state into the local monitor workspace:
   - `/Users/devpup/.synergy-node-control-panel/monitor-workspace`
 
@@ -356,7 +356,7 @@
     - the settings button
     - the sidebar link directly above the first node slot
 - Patched:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/node-control-panel/src/components/control-panel/ControlPanelOperationsPage.jsx`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/node-control-panel/src/components/control-panel/ControlPanelOperationsPage.jsx`
 - Rebuilt the nested control-panel frontend successfully with `npm run build`.
 
 ### 14. Post-rollout public verification
@@ -369,8 +369,8 @@
 
 ### 15. Tracking artifacts updated
 - Updated:
-  - `/Users/devpup/Desktop/Testnet-Beta/dApp_Connection_Missing_Features_Checklist.md`
-  - `/Users/devpup/Desktop/Testnet-Beta/WORK_COMPLETED_SUMMARY.md`
+  - `/Users/devpup/Desktop/Testnet/dApp_Connection_Missing_Features_Checklist.md`
+  - `/Users/devpup/Desktop/Testnet/WORK_COMPLETED_SUMMARY.md`
 
 ### 16. Observer / Grafana audit findings
 - Confirmed the observer host is running:
@@ -402,8 +402,8 @@
 
 ### 17. Catch-up transport and retry-path hardening
 - Patched:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/p2p/networking.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/sync/manager.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/p2p/networking.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/sync/manager.rs`
 - Removed the remaining validator catch-up request storm and queue contention by:
   - routing sync-critical `Block`, `Blocks`, and `GetBlocks` traffic around the shared background queue
   - pausing the bootstrap loop's missing-block requests while `SyncManager` is actively catching up
@@ -414,14 +414,14 @@
   - suppression of background block-request storms during active sync
   - sync poll interval behavior while `SyncManager` is active
 - Verified with:
-  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/Cargo.toml -p synergy-testbeta p2p::networking -- --nocapture`
+  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet/synergy-testnet/src/Cargo.toml -p synergy-testnet p2p::networking -- --nocapture`
 - Result:
   - `41 passed`
   - `0 failed`
 
 ### 18. Final validator-runtime rollout and live block-speed verification
 - Built the current Linux runtime with:
-  - `cargo zigbuild --manifest-path /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/Cargo.toml --release -p synergy-testbeta --target x86_64-unknown-linux-gnu`
+  - `cargo zigbuild --manifest-path /Users/devpup/Desktop/Testnet/synergy-testnet/src/Cargo.toml --release -p synergy-testnet --target x86_64-unknown-linux-gnu`
 - Final checksum:
   - `7c80a5df14072732a7d9ec8ca771ab96478a5183e3bd628a520df28e87f0e808`
 - Rolled that runtime sequentially through the live control-panel-managed validator workspaces:
@@ -438,11 +438,11 @@
 
 ### 19. Observer, Prometheus, and Grafana rebuild
 - Added canonical source-of-truth ops files in:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/README.md`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/observability/prometheus.observer.yml`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/nginx/testnet-core-rpc.synergy-network.io.conf`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/nginx/testbeta-explorer.conf`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/observability/grafana/public-edge-and-bootstrap.json`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/README.md`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/observability/prometheus.observer.yml`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/nginx/testnet-core-rpc.synergy-network.io.conf`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/nginx/testnet-explorer.conf`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/observability/grafana/public-edge-and-bootstrap.json`
 - Updated the shared public service host nginx config so the observer can scrape:
   - `https://testnet-core-rpc.synergy-network.io/metrics/node-rpc`
   - `https://testnet-core-rpc.synergy-network.io/metrics/node-exporter`
@@ -470,9 +470,9 @@
 
 ### 20. Public RPC/WSS exposure-policy enforcement
 - Patched:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/rpc/rpc_server.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/role_runtime.rs`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/ops/nginx/testnet-core-rpc.synergy-network.io.conf`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/rpc/rpc_server.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/src/role_runtime.rs`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/ops/nginx/testnet-core-rpc.synergy-network.io.conf`
 - Implemented method-tier enforcement so the public edge now behaves correctly by role and transport:
   - public read methods remain available
   - canonical client pipeline methods such as `synergy_estimateGas`, `synergy_simulateTransaction`, and `synergy_sendTransaction` remain available on the RPC gateway
@@ -486,7 +486,7 @@
   - allowance of canonical client methods on the service-access gateway
   - allowance of non-public methods on loopback-only access
 - Verified with:
-  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/Cargo.toml -p synergy-testbeta rpc::rpc_server -- --nocapture`
+  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet/synergy-testnet/src/Cargo.toml -p synergy-testnet rpc::rpc_server -- --nocapture`
 - Result:
   - `9 passed`
   - `0 failed`
@@ -514,8 +514,8 @@
   - `/opt/synergy/Node-RPC`
   - `/opt/synergy/Node-EXP`
 - Updated the nested control-panel bundle and local monitor workspace to the same checksum and regenerated:
-  - `binaries/synergy-testbeta-linux-amd64.sha256`
-  - `testbeta/runtime/workspace-manifest.json`
+  - `binaries/synergy-testnet-linux-amd64.sha256`
+  - `testnet/runtime/workspace-manifest.json`
 - Live verification after the final rollout:
   - validators `1-5`, `Node-RPC`, and `Node-EXP` all read back checksum `858c5aa89696f4e6fb3483edd024eec3cdad8f097d326470eeeb424a6fd2d37c`
   - public HTTPS RPC still allows canonical client methods and denies non-public writes
@@ -533,13 +533,13 @@
 
 ### 22. GenVal-03 / GenVal-05 recovery and Node Control Panel v9.0.11
 - Diagnosed and documented the 2026-04-28 validator stall in:
-  - `/Users/devpup/Desktop/Testnet-Beta/CHAIN_STALL_INCIDENT_LOG.md`
+  - `/Users/devpup/Desktop/Testnet/CHAIN_STALL_INCIDENT_LOG.md`
 - Root cause:
   - `GenVal-03` had a zero-byte `data/chain.json` caused by non-atomic chain-state writes
   - after fallback to genesis-only local state, the normal runtime still treated the old launch block-1 transaction envelope as mandatory even though the live chain was already past genesis
   - that stale envelope failed startup with `Transaction timestamp is too old`
   - `GenVal-05` was caught in the same stall window and lost `GenVal-03` as a consensus peer
-- Fixed the validator runtime in `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta`:
+- Fixed the validator runtime in `/Users/devpup/Desktop/Testnet/synergy-testnet`:
   - chain-state persistence now writes to a temporary file, syncs, and atomically renames over `data/chain.json`
   - launch block-1 preload now skips a historical launch envelope when fallback RPC shows the live network is already past genesis
   - malformed or stale launch envelopes still fail hard before network launch
@@ -548,8 +548,8 @@
 - Current fixed runtime checksum:
   - `6f971ce5525cbc5f422630fda5083d6f0b2f8b649979f038b92742cb38478a22`
 - Source release:
-  - `synergy-testnet-beta`: commit `e8eb659`, tag `v9.0.11`
-  - `synergy-testnet-beta/node-control-panel`: commit `5ccb4bc`, tag `v9.0.11`
+  - `synergy-testnet`: commit `e8eb659`, tag `v9.0.11`
+  - `synergy-testnet/node-control-panel`: commit `5ccb4bc`, tag `v9.0.11`
 - Fixed the Node Control Panel setup path for community non-genesis validators:
   - standard setup now includes validators in the public-endpoint review flow
   - setup chat now shows actionable choice controls for role selection, device review, endpoint review, folder review, package import, and final provisioning
@@ -591,14 +591,14 @@
   - when the service-plane tip had diverged, the returned batch did not include a common ancestor
   - `apply_block_batch` could not roll back/replay without that ancestor, so the node repeated ineffective `GetBlocks` requests forever
   - `Relayer-2` was also stopped, reducing redundancy in the public path
-- Fixed `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/p2p/networking.rs`:
+- Fixed `/Users/devpup/Desktop/Testnet/synergy-testnet/src/p2p/networking.rs`:
   - added a 512-block reconciliation lookback for block-sync requests
   - status-driven catch-up now requests an overlapping range
   - background bootstrap catch-up now requests the same overlapping range
   - added regression coverage for the service-plane stuck height case
 - Verified locally:
-  - `cargo fmt --manifest-path /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/Cargo.toml --all`
-  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/Cargo.toml -p synergy-testbeta p2p::networking::tests -- --nocapture`
+  - `cargo fmt --manifest-path /Users/devpup/Desktop/Testnet/synergy-testnet/src/Cargo.toml --all`
+  - `cargo test --manifest-path /Users/devpup/Desktop/Testnet/synergy-testnet/src/Cargo.toml -p synergy-testnet p2p::networking::tests -- --nocapture`
   - result: `44 passed`, `0 failed`
   - `git diff --check`
 - Built and deployed Linux runtime checksum:
@@ -620,7 +620,7 @@
   - all five validators reported `synergy_best_peer_height_delta 0`, `synergy_live_validators 5`, and `synergy_status_ready_validators 5`
   - both relayers reported the fixed checksum, `peer_count: 6`, and `sync_status: synced`
 - Source release:
-  - `synergy-testnet-beta`: commit `6b62af1`, tag `v9.0.12`
+  - `synergy-testnet`: commit `6b62af1`, tag `v9.0.12`
 - Remaining sequence:
   - update and publish the Node Control Panel bundle with the `v9.0.12` runtime so new community validator installs inherit the service-plane catch-up fix
   - continue the missed-leader / proposal-timeout work needed for sustained sub-`5s` block cadence
@@ -632,7 +632,7 @@
   - the same-height anti-equivocation vote lock was correct, but leader retries were rebuilding a new block proposal for the same height, parent hash, and leader
   - each retry could produce a different proposal hash because the block timestamp and transaction snapshot were regenerated
   - after the validator had already locked a local vote for one height-`773` hash, later retry hashes were correctly refused as self-conflicts
-- Fixed `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/consensus/consensus_algorithm.rs`:
+- Fixed `/Users/devpup/Desktop/Testnet/synergy-testnet/src/consensus/consensus_algorithm.rs`:
   - added a persistent local proposal cache under `data/consensus_proposals`
   - reused the exact same signed block proposal when the same leader retries the same height on the same parent
   - validated cached proposals by recalculating block hash and transaction root before reuse
@@ -640,9 +640,9 @@
   - pruned cached proposal files after the corresponding height is committed
   - added regression coverage for same-height leader retry reuse
 - Verified locally:
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta leader_reuses_cached_proposal_for_same_height_retry -- --nocapture`
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta dual_quorum::tests:: -- --nocapture`
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta consensus::consensus_algorithm::tests:: -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet leader_reuses_cached_proposal_for_same_height_retry -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet dual_quorum::tests:: -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet consensus::consensus_algorithm::tests:: -- --nocapture`
   - `git diff --check`
 - Built and deployed Linux runtime checksum:
   - `f516ed8348e09d63306ca14ee3e8c448fd2138f99de7c4d7b142c3b1e76dfe40`
@@ -665,7 +665,7 @@
     - `37dd91ab8ecf6c731870ddcda06baa24e94f77b8b2ed6ddf997df64667ab07b6`
   - Atlas API reported fresh-chain latest block `1364`, total transactions `1`, and active validators `5`
 - Source release:
-  - `synergy-testnet-beta`: commit `657f459`, tag `v9.0.15`
+  - `synergy-testnet`: commit `657f459`, tag `v9.0.15`
 - Control Panel update prepared:
   - bumped Synergy Node Control Panel to `9.0.15`
   - non-genesis public-IP validator setup now keeps bootnodes, seed services, and dnsaddr bootstrap enabled while also pinning `relay1.synergynode.xyz:5622` and `relay2.synergynode.xyz:5622` as persistent upstreams
@@ -681,20 +681,20 @@
 
 ### 25. Public validator join hardening and Node Control Panel v9.0.16 release
 - Cancelled the in-flight `v9.0.15` control-panel release before publication because one runtime contract was still incomplete.
-- Fixed `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/config/mod.rs` and `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/src/role_runtime.rs`:
+- Fixed `/Users/devpup/Desktop/Testnet/synergy-testnet/src/config/mod.rs` and `/Users/devpup/Desktop/Testnet/synergy-testnet/src/role_runtime.rs`:
   - parsed the `[validator] state_sync_before_join` control-panel setting in the runtime config
   - enforced state sync before self-registration and consensus for public, auto-registering validators
   - kept static genesis validators out of that public-join gate so the private genesis mesh does not deadlock during normal restarts
   - retrying sync now delays registration/consensus instead of allowing an unsynced public validator to join
 - Verified runtime changes with:
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta parses_validator_state_sync_before_join -- --nocapture`
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta state_sync -- --nocapture`
-  - `cargo test --manifest-path src/Cargo.toml -p synergy-testbeta static_genesis_validator_does_not_block_on_public_join_sync_gate -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet parses_validator_state_sync_before_join -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet state_sync -- --nocapture`
+  - `cargo test --manifest-path src/Cargo.toml -p synergy-testnet static_genesis_validator_does_not_block_on_public_join_sync_gate -- --nocapture`
   - `git diff --check`
 - Source release:
-  - `synergy-testnet-beta`: commit `bc1bb3d` (`Enforce validator sync before public join`), tag `v9.0.16`
+  - `synergy-testnet`: commit `bc1bb3d` (`Enforce validator sync before public join`), tag `v9.0.16`
 - Published Synergy Node Control Panel `v9.0.16`:
-  - `synergy-testnet-beta/node-control-panel`: commit `0b20408` (`Release control panel v9.0.16`), tag `v9.0.16`
+  - `synergy-testnet/node-control-panel`: commit `0b20408` (`Release control panel v9.0.16`), tag `v9.0.16`
   - GitHub Actions release run: `https://github.com/synergy-network-hq/synergy-node-control-panel/actions/runs/25088451551`
   - verified release: `https://github.com/synergy-network-hq/synergy-node-control-panel-releases/releases/tag/v9.0.16`
   - verified release assets:
@@ -707,8 +707,8 @@
     - `latest-mac.yml`
     - `latest-linux.yml`
 - Added a signed transaction runner for manual test transactions:
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/scripts/testbeta/run-signed-load.sh`
-  - `/Users/devpup/Desktop/Testnet-Beta/synergy-testnet-beta/scripts/testbeta/signed-transaction-runner.py`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/scripts/testnet/run-signed-load.sh`
+  - `/Users/devpup/Desktop/Testnet/synergy-testnet/scripts/testnet/signed-transaction-runner.py`
   - the runner requires an explicit sender and private-key file; no validator private-key path is hardcoded
   - verified with `bash -n`, `python3 -m py_compile`, help output, and `git diff --check`
   - committed as `0723218` (`Add signed transaction runner`)

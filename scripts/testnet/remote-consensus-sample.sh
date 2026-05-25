@@ -192,7 +192,6 @@ def process_state():
             name in parts[0]
             for name in (
                 "synergy-testnet-linux-amd64",
-                "synergy-testbeta-linux-amd64",
                 "synergy-rpc-gateway-node-linux-amd64",
             )
         ):
@@ -282,7 +281,6 @@ if os.environ.get("SYNERGY_NODE") == "RPC Gateway" or workspace.name == "Node-RP
 binary_candidates.extend(
     [
         workspace / "bin/synergy-testnet-linux-amd64",
-        workspace / "bin/synergy-testbeta-linux-amd64",
     ]
 )
 binary = next((candidate for candidate in binary_candidates if candidate.exists()), binary_candidates[0])

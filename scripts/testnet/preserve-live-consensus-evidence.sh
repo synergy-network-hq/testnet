@@ -47,19 +47,17 @@ rpc_call() {
   echo "qrpc_port=$qrpc_port"
   echo
   echo "processes:"
-  pgrep -af "synergy-testnet|synergy-testbeta|node-control-panel|atlas|explorer" || true
+  pgrep -af "synergy-testnet|node-control-panel|atlas|explorer" || true
   echo
   echo "process_exe:"
-  for pid in $(pgrep -f "synergy-testnet|synergy-testbeta" || true); do
+  for pid in $(pgrep -f "synergy-testnet" || true); do
     echo "pid=$pid exe=$(readlink "/proc/$pid/exe" 2>/dev/null || true) cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)"
   done
   echo
   echo "runtime_checksums:"
   for binary in \
     "$workspace/bin/synergy-testnet-linux-amd64" \
-    "$workspace/bin/synergy-testbeta-linux-amd64" \
-    "$workspace/synergy-testnet-linux-amd64" \
-    "$workspace/synergy-testbeta-linux-amd64"; do
+    "$workspace/synergy-testnet-linux-amd64"; do
     [[ -f "$binary" ]] && sha256sum "$binary"
   done
   echo
