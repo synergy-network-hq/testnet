@@ -16,6 +16,7 @@ pub mod genesis;
 pub mod logging;
 pub mod node;
 pub mod p2p;
+pub mod recovery;
 pub mod rewards;
 pub mod role_profiles;
 pub mod role_runtime;

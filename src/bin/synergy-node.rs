@@ -16,6 +16,7 @@ fn run() -> Result<(), String> {
     match command {
         "tx" => run_tx_command(&args)?,
         "dag" => run_dag_command(&args)?,
+        "recovery" => run_recovery_command(&args)?,
         "diagnose-sync-target" => {
             require_testnet_args(&args)?;
             let rpc_url = arg_value(&args, "--rpc-url")
@@ -91,6 +92,13 @@ fn run() -> Result<(), String> {
             println!("  synergy-node tx sign-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
             println!("  synergy-node tx submit-aegis --chain-id 1264 --network-id synergy-testnet-v2 [tx options]");
             println!("  synergy-node dag submit-test-fixture --real-aegis-pqvm --chain-id 1264 --network-id synergy-testnet-v2");
+            println!(
+                "  synergy-node recovery status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!("  synergy-node recovery inspect-divergence --target-node-id <id> --target-role validator|relayer|rpc|archive --target-data-dir <dir> --source-state-dir <dir> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery build-plan --target-node-id <id> --target-role validator|relayer|rpc|archive --target-data-dir <dir> --source-state-dir <dir> --source-node <validator-id>... --evidence-path <dir> --rollback-path <dir> --output <plan.json> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery verify-plan --plan <plan.json> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery apply-plan --plan <plan.json> --confirm-target-stopped --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node diagnose-sync-target --rpc-url <url> --chain-id 1264 --network-id synergy-testnet-v2 [--expected-genesis-hash <hash>]");
             println!("  synergy-node diagnose-consensus-stall --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node diagnose-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>]");
@@ -105,6 +113,180 @@ fn run() -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+fn run_recovery_command(args: &[String]) -> Result<(), String> {
+    let subcommand = args.get(1).map(String::as_str).unwrap_or("help");
+    match subcommand {
+        "status" => {
+            require_testnet_args(args)?;
+            print_json(synergy_testnet::recovery::status())?;
+        }
+        "inspect-divergence" => {
+            require_testnet_args(args)?;
+            let input = recovery_build_input_from_args(args)?;
+            print_json(synergy_testnet::recovery::inspect_divergence(&input))?;
+        }
+        "build-plan" => {
+            require_testnet_args(args)?;
+            let input = recovery_build_input_from_args(args)?;
+            let plan = synergy_testnet::recovery::build_plan(input);
+            if let Some(output) = arg_value(args, "--output") {
+                synergy_testnet::recovery::write_plan(&plan, std::path::Path::new(&output))?;
+            }
+            print_json(
+                serde_json::to_value(&plan)
+                    .map_err(|error| format!("serialize recovery plan: {error}"))?,
+            )?;
+        }
+        "verify-plan" => {
+            require_testnet_args(args)?;
+            let plan_path = arg_value(args, "--plan")
+                .ok_or_else(|| "recovery verify-plan requires --plan <plan.json>".to_string())?;
+            let content = std::fs::read_to_string(&plan_path)
+                .map_err(|error| format!("read recovery plan {plan_path}: {error}"))?;
+            let plan: synergy_testnet::recovery::RecoveryPlan = serde_json::from_str(&content)
+                .map_err(|error| format!("parse recovery plan {plan_path}: {error}"))?;
+            let verification = synergy_testnet::recovery::verify_plan(&plan);
+            print_json(
+                serde_json::to_value(&verification)
+                    .map_err(|error| format!("serialize recovery verification: {error}"))?,
+            )?;
+            if !verification.valid_for_apply {
+                return Err("recovery plan is not valid for apply".to_string());
+            }
+        }
+        "apply-plan" => {
+            require_testnet_args(args)?;
+            let plan_path = arg_value(args, "--plan")
+                .ok_or_else(|| "recovery apply-plan requires --plan <plan.json>".to_string())?;
+            let result =
+                synergy_testnet::recovery::apply_plan(synergy_testnet::recovery::ApplyPlanInput {
+                    plan_path: std::path::PathBuf::from(plan_path),
+                    confirm_target_stopped: args.iter().any(|arg| {
+                        arg == "--confirm-target-stopped" || arg == "--confirm-target-quarantined"
+                    }),
+                })?;
+            print_json(
+                serde_json::to_value(&result)
+                    .map_err(|error| format!("serialize recovery apply result: {error}"))?,
+            )?;
+        }
+        _ => {
+            println!("Recovery commands:");
+            println!(
+                "  synergy-node recovery status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!("  synergy-node recovery inspect-divergence --target-node-id <id> --target-role validator|relayer|rpc|archive --target-data-dir <dir> --source-state-dir <dir> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery build-plan --target-node-id <id> --target-role validator|relayer|rpc|archive --target-data-dir <dir> --source-state-dir <dir> --source-node <validator-id>... --evidence-path <dir> --rollback-path <dir> --output <plan.json> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery verify-plan --plan <plan.json> --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node recovery apply-plan --plan <plan.json> --confirm-target-stopped --chain-id 1264 --network-id synergy-testnet-v2");
+        }
+    }
+    Ok(())
+}
+
+fn recovery_build_input_from_args(
+    args: &[String],
+) -> Result<synergy_testnet::recovery::BuildPlanInput, String> {
+    let target_node_id = arg_value(args, "--target-node-id")
+        .ok_or_else(|| "missing --target-node-id <id>".to_string())?;
+    let target_role = parse_recovery_target_role(
+        &arg_value(args, "--target-role")
+            .ok_or_else(|| "missing --target-role validator|relayer|rpc|archive".to_string())?,
+    )?;
+    let chain_id = arg_value(args, "--chain-id")
+        .ok_or_else(|| "missing --chain-id 1264".to_string())?
+        .parse::<u64>()
+        .map_err(|error| format!("invalid --chain-id: {error}"))?;
+    let network_id = arg_value(args, "--network-id")
+        .ok_or_else(|| "missing --network-id synergy-testnet-v2".to_string())?;
+    let target_data_dir = std::path::PathBuf::from(
+        arg_value(args, "--target-data-dir").unwrap_or_else(|| "data".to_string()),
+    );
+    let source_state_dir = arg_value(args, "--source-state-dir").map(std::path::PathBuf::from);
+    let source_evidence_dirs = arg_values(args, "--source-evidence-dir")
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
+    let evidence_path =
+        std::path::PathBuf::from(arg_value(args, "--evidence-path").unwrap_or_else(|| {
+            format!(
+                "data/recovery-evidence/{}",
+                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+            )
+        }));
+    let rollback_path =
+        std::path::PathBuf::from(arg_value(args, "--rollback-path").unwrap_or_else(|| {
+            format!(
+                "data/recovery-rollback/{}",
+                chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+            )
+        }));
+    Ok(synergy_testnet::recovery::BuildPlanInput {
+        target_node_id,
+        target_role,
+        chain_id,
+        network_id,
+        genesis_hash: arg_value(args, "--expected-genesis-hash")
+            .unwrap_or_else(|| synergy_testnet::recovery::EXPECTED_GENESIS_HASH.to_string()),
+        target_data_dir,
+        source_state_dir,
+        source_evidence_dirs,
+        source_nodes_used: arg_values(args, "--source-node"),
+        source_common_height: optional_u64_arg(args, "--source-common-height")?,
+        source_common_hash: arg_value(args, "--source-common-hash"),
+        source_canonical_lock_height: optional_u64_arg(args, "--source-canonical-lock-height")?,
+        source_canonical_lock_hash: arg_value(args, "--source-canonical-lock-hash"),
+        target_runtime_sha256: arg_value(args, "--target-runtime-sha256").unwrap_or_default(),
+        evidence_path,
+        rollback_path,
+        recovery_type: arg_value(args, "--recovery-type")
+            .map(|value| parse_recovery_type(&value))
+            .transpose()?,
+        conflict_height: optional_u64_arg(args, "--conflict-height")?,
+        expected_target_conflict_hash: arg_value(args, "--expected-target-conflict-hash"),
+        expected_source_conflict_hash: arg_value(args, "--expected-source-conflict-hash"),
+        target_stopped_or_quarantined: args.iter().any(|arg| {
+            arg == "--target-stopped-or-quarantined"
+                || arg == "--target-stopped"
+                || arg == "--target-quarantined"
+        }),
+    })
+}
+
+fn parse_recovery_target_role(
+    value: &str,
+) -> Result<synergy_testnet::recovery::TargetRole, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "validator" => Ok(synergy_testnet::recovery::TargetRole::Validator),
+        "relayer" => Ok(synergy_testnet::recovery::TargetRole::Relayer),
+        "rpc" | "rpc-gateway" | "rpc_gateway" => Ok(synergy_testnet::recovery::TargetRole::Rpc),
+        "archive" => Ok(synergy_testnet::recovery::TargetRole::Archive),
+        other => Err(format!("unsupported --target-role {other}")),
+    }
+}
+
+fn parse_recovery_type(value: &str) -> Result<synergy_testnet::recovery::RecoveryType, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "no_action" | "no-action" => Ok(synergy_testnet::recovery::RecoveryType::NoAction),
+        "transient_cache_prune" | "transient-cache-prune" => {
+            Ok(synergy_testnet::recovery::RecoveryType::TransientCachePrune)
+        }
+        "canonical_state_reconcile" | "canonical-state-reconcile" => {
+            Ok(synergy_testnet::recovery::RecoveryType::CanonicalStateReconcile)
+        }
+        "support_chain_fast_sync" | "support-chain-fast-sync" => {
+            Ok(synergy_testnet::recovery::RecoveryType::SupportChainFastSync)
+        }
+        "archive_snapshot_restore" | "archive-snapshot-restore" => {
+            Ok(synergy_testnet::recovery::RecoveryType::ArchiveSnapshotRestore)
+        }
+        "unsafe_requires_operator_approval" | "unsafe-requires-operator-approval" => {
+            Ok(synergy_testnet::recovery::RecoveryType::UnsafeRequiresOperatorApproval)
+        }
+        other => Err(format!("unsupported --recovery-type {other}")),
+    }
 }
 
 fn run_tx_command(args: &[String]) -> Result<(), String> {

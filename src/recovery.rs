@@ -1,0 +1,1666 @@
+use crate::block::Block;
+use crate::crypto::aegis_pqvm::{AegisPqvmKeyRegistry, AegisPqvmVerifier};
+use crate::crypto::pqc::{PQCAlgorithm, PQCPublicKey};
+#[cfg(not(test))]
+use crate::genesis::canonical_genesis;
+use crate::synergy_types::{
+    AegisPqKeyRole, ClusterMap, QuorumCertificate as AegisQuorumCertificate, ValidatorSet,
+    ValidatorStatus, SYNERGY_TESTNET_V2_CHAIN_ID, SYNERGY_TESTNET_V2_NETWORK_ID,
+};
+use base64::{engine::general_purpose, Engine as _};
+use chrono::Utc;
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+use sha3::{Digest, Sha3_256};
+use std::collections::BTreeSet;
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+
+pub const EXPECTED_GENESIS_HASH: &str =
+    "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789";
+pub const GENESIS_VALIDATOR_COUNT: usize = 5;
+pub const REQUIRED_QUORUM: usize = 4;
+
+const ALLOWED_STATE_FILES: &[&str] = &[
+    "chain.json",
+    "canonical_locks.json",
+    "committed_qcs.json",
+    "committed_qcs.jsonl",
+    "dag_state.json",
+    "validator_registry.json",
+    "token_state.json",
+];
+
+const FILES_NEVER_TO_TOUCH: &[&str] = &[
+    "config/",
+    "node.env",
+    ".env",
+    "validator.key",
+    "private.key",
+    "private_key",
+    "consensus.private.key",
+    "consensus_private.key",
+    "identity",
+    "wireguard",
+    "wg0",
+    "tls",
+    "credential",
+    "spreadsheet",
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetRole {
+    Validator,
+    Relayer,
+    Rpc,
+    Archive,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RecoveryType {
+    NoAction,
+    TransientCachePrune,
+    CanonicalStateReconcile,
+    SupportChainFastSync,
+    ArchiveSnapshotRestore,
+    UnsafeRequiresOperatorApproval,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RecoveryPlan {
+    pub plan_id: String,
+    pub created_at: String,
+    pub target_node_id: String,
+    pub target_role: TargetRole,
+    pub chain_id: u64,
+    pub network_id: String,
+    pub genesis_hash: String,
+    pub target_current_height: u64,
+    pub target_current_hash: String,
+    pub target_canonical_lock_height: u64,
+    pub target_canonical_lock_hash: String,
+    pub target_runtime_sha256: String,
+    pub source_nodes_used: Vec<String>,
+    pub source_common_height: u64,
+    pub source_common_hash: String,
+    pub source_canonical_lock_height: u64,
+    pub source_canonical_lock_hash: String,
+    pub source_committed_qc_height: u64,
+    pub source_committed_qc_hash: String,
+    pub source_qc_vote_count: u64,
+    pub source_qc_signers: Vec<String>,
+    pub source_qc_aegis_pqc_verified: bool,
+    pub majority_branch_proven: bool,
+    pub target_is_minority_or_lagged: bool,
+    pub recovery_type: RecoveryType,
+    pub files_to_read: Vec<String>,
+    pub files_to_backup: Vec<String>,
+    pub files_to_mutate: Vec<String>,
+    pub files_never_to_touch: Vec<String>,
+    pub keys_or_configs_copied: bool,
+    pub canonical_locks_mutated: bool,
+    pub committed_qcs_mutated: bool,
+    pub chain_state_mutated: bool,
+    pub dag_state_mutated: bool,
+    pub registry_state_mutated: bool,
+    pub token_state_mutated: bool,
+    pub evidence_path: String,
+    pub rollback_path: String,
+    pub preconditions: Vec<String>,
+    pub postconditions: Vec<String>,
+    pub failure_reason: Option<String>,
+    pub operator_approval_required: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct BuildPlanInput {
+    pub target_node_id: String,
+    pub target_role: TargetRole,
+    pub chain_id: u64,
+    pub network_id: String,
+    pub genesis_hash: String,
+    pub target_data_dir: PathBuf,
+    pub source_state_dir: Option<PathBuf>,
+    pub source_evidence_dirs: Vec<PathBuf>,
+    pub source_nodes_used: Vec<String>,
+    pub source_common_height: Option<u64>,
+    pub source_common_hash: Option<String>,
+    pub source_canonical_lock_height: Option<u64>,
+    pub source_canonical_lock_hash: Option<String>,
+    pub target_runtime_sha256: String,
+    pub evidence_path: PathBuf,
+    pub rollback_path: PathBuf,
+    pub recovery_type: Option<RecoveryType>,
+    pub conflict_height: Option<u64>,
+    pub expected_target_conflict_hash: Option<String>,
+    pub expected_source_conflict_hash: Option<String>,
+    pub target_stopped_or_quarantined: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ApplyPlanInput {
+    pub plan_path: PathBuf,
+    pub confirm_target_stopped: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecoveryVerification {
+    pub valid_for_apply: bool,
+    pub fail_closed: bool,
+    pub errors: Vec<String>,
+    pub warnings: Vec<String>,
+    pub mutation_flags: MutationFlags,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationFlags {
+    pub keys_or_configs_copied: bool,
+    pub canonical_locks_mutated: bool,
+    pub committed_qcs_mutated: bool,
+    pub chain_state_mutated: bool,
+    pub dag_state_mutated: bool,
+    pub registry_state_mutated: bool,
+    pub token_state_mutated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ApplyPlanResult {
+    pub plan_id: String,
+    pub applied: bool,
+    pub fail_closed: bool,
+    pub evidence_path: String,
+    pub rollback_path: String,
+    pub files_backed_up: Vec<String>,
+    pub files_mutated: Vec<String>,
+    pub mutation_flags: MutationFlags,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct RecoveryProof {
+    #[serde(default)]
+    chain_id: u64,
+    #[serde(default)]
+    network_id: String,
+    #[serde(default)]
+    genesis_hash: String,
+    #[serde(default)]
+    source_nodes_used: Vec<String>,
+    #[serde(default)]
+    source_common_height: u64,
+    #[serde(default)]
+    source_common_hash: String,
+    #[serde(default)]
+    source_canonical_lock_height: u64,
+    #[serde(default)]
+    source_canonical_lock_hash: String,
+    qc: AegisQuorumCertificate,
+    validator_set: ValidatorSet,
+    cluster_map: ClusterMap,
+}
+
+#[derive(Debug, Clone)]
+struct QcProofSummary {
+    height: u64,
+    hash: String,
+    vote_count: u64,
+    signers: Vec<String>,
+    verified: bool,
+    failure: Option<String>,
+}
+
+pub fn status() -> Value {
+    json!({
+        "status": "idle",
+        "fail_closed": true,
+        "commands": [
+            "recovery inspect-divergence",
+            "recovery build-plan",
+            "recovery verify-plan",
+            "recovery apply-plan",
+            "recovery status"
+        ],
+        "chain_id": SYNERGY_TESTNET_V2_CHAIN_ID,
+        "network_id": SYNERGY_TESTNET_V2_NETWORK_ID,
+        "genesis_hash": EXPECTED_GENESIS_HASH,
+        "quorum": {
+            "required": REQUIRED_QUORUM,
+            "genesis_validators": GENESIS_VALIDATOR_COUNT,
+            "relayers_rpc_archive_count_toward_quorum": false
+        },
+        "mutation_policy": {
+            "preserve_evidence_before_mutation": true,
+            "copy_keys": false,
+            "copy_configs": false,
+            "lower_quorum": false,
+            "require_aegis_pqvm_qc": true
+        }
+    })
+}
+
+pub fn inspect_divergence(input: &BuildPlanInput) -> Value {
+    let target = read_node_state(&input.target_data_dir, input.conflict_height);
+    let source_dir = input
+        .source_state_dir
+        .as_deref()
+        .or_else(|| input.source_evidence_dirs.first().map(PathBuf::as_path));
+    let source = source_dir.map(|path| read_node_state(path, input.conflict_height));
+    json!({
+        "chain_id": input.chain_id,
+        "network_id": input.network_id,
+        "genesis_hash": input.genesis_hash,
+        "target_node_id": input.target_node_id,
+        "target_role": input.target_role,
+        "target": target,
+        "source": source,
+        "fail_closed": true,
+        "note": "inspection is read-only and does not choose a branch without verified quorum/QC evidence"
+    })
+}
+
+pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
+    let mut failures = Vec::new();
+    if input.chain_id != SYNERGY_TESTNET_V2_CHAIN_ID {
+        failures.push(format!(
+            "wrong chain_id {}; expected {}",
+            input.chain_id, SYNERGY_TESTNET_V2_CHAIN_ID
+        ));
+    }
+    if input.network_id != SYNERGY_TESTNET_V2_NETWORK_ID {
+        failures.push(format!(
+            "wrong network_id {}; expected {}",
+            input.network_id, SYNERGY_TESTNET_V2_NETWORK_ID
+        ));
+    }
+    if !input
+        .genesis_hash
+        .eq_ignore_ascii_case(EXPECTED_GENESIS_HASH)
+    {
+        failures.push(format!(
+            "wrong genesis_hash {}; expected {}",
+            input.genesis_hash, EXPECTED_GENESIS_HASH
+        ));
+    }
+
+    let target = read_node_state(&input.target_data_dir, input.conflict_height);
+    failures.extend(target.errors.iter().cloned());
+
+    let source_dir = input.source_state_dir.clone().unwrap_or_else(|| {
+        input
+            .source_evidence_dirs
+            .first()
+            .cloned()
+            .unwrap_or_default()
+    });
+    if source_dir.as_os_str().is_empty() {
+        failures.push("missing --source-state-dir or --source-evidence-dir".to_string());
+    }
+    let source = read_node_state(&source_dir, input.conflict_height);
+    failures.extend(source.errors.iter().cloned());
+
+    let proof = load_recovery_proof(&source_dir);
+    let qc_summary = match proof {
+        Ok(proof) => verify_recovery_proof(&proof),
+        Err(error) => QcProofSummary {
+            height: 0,
+            hash: String::new(),
+            vote_count: 0,
+            signers: Vec::new(),
+            verified: false,
+            failure: Some(error),
+        },
+    };
+    if let Some(error) = qc_summary.failure.as_ref() {
+        failures.push(format!("QC proof rejected: {error}"));
+    }
+
+    let source_nodes_raw = if input.source_nodes_used.is_empty() {
+        qc_summary.signers.clone()
+    } else {
+        input.source_nodes_used.clone()
+    };
+    let source_node_check = validate_source_nodes(&source_nodes_raw);
+    let mut source_nodes_used = source_nodes_raw;
+    source_nodes_used.sort();
+    source_nodes_used.dedup();
+    failures.extend(source_node_check.iter().cloned());
+
+    let source_common_height = input
+        .source_common_height
+        .or(source.latest_height)
+        .unwrap_or_default();
+    let source_common_hash = input
+        .source_common_hash
+        .or(source.latest_hash.clone())
+        .unwrap_or_default();
+    let source_canonical_lock_height = input
+        .source_canonical_lock_height
+        .or(source.canonical_lock_height)
+        .unwrap_or_default();
+    let source_canonical_lock_hash = input
+        .source_canonical_lock_hash
+        .or(source.canonical_lock_hash.clone())
+        .unwrap_or_default();
+
+    if let Some(expected) = input.expected_target_conflict_hash.as_ref() {
+        if target.conflict_hash.as_deref() != Some(expected.as_str()) {
+            failures.push(format!(
+                "target conflict hash mismatch: expected {expected}, found {}",
+                target.conflict_hash.clone().unwrap_or_default()
+            ));
+        }
+    }
+    if let Some(expected) = input.expected_source_conflict_hash.as_ref() {
+        if source.conflict_hash.as_deref() != Some(expected.as_str()) {
+            failures.push(format!(
+                "source conflict hash mismatch: expected {expected}, found {}",
+                source.conflict_hash.clone().unwrap_or_default()
+            ));
+        }
+    }
+
+    let target_is_minority_or_lagged = source_common_height
+        > target.latest_height.unwrap_or_default()
+        || conflict_hashes_diverge(&target, &source)
+        || target.canonical_lock_hash != Some(source_canonical_lock_hash.clone());
+
+    let mut majority_branch_proven = qc_summary.verified
+        && qc_summary.vote_count >= REQUIRED_QUORUM as u64
+        && source_nodes_used.len() >= REQUIRED_QUORUM
+        && source_node_check.is_empty();
+    if source_common_height == 0 || source_common_hash.is_empty() {
+        majority_branch_proven = false;
+    }
+    if !majority_branch_proven {
+        failures.push("majority branch is not proven by 4-of-5 active genesis validators and a verified Aegis/PQVM QC".to_string());
+    }
+    if !target_is_minority_or_lagged {
+        failures.push("target is not proven minority or lagged relative to source".to_string());
+    }
+
+    let recovery_type = input.recovery_type.unwrap_or_else(|| {
+        if !target_is_minority_or_lagged {
+            RecoveryType::NoAction
+        } else if matches!(input.target_role, TargetRole::Relayer | TargetRole::Rpc) {
+            RecoveryType::SupportChainFastSync
+        } else if matches!(input.target_role, TargetRole::Validator) {
+            RecoveryType::CanonicalStateReconcile
+        } else {
+            RecoveryType::ArchiveSnapshotRestore
+        }
+    });
+
+    let (files_to_read, files_to_backup, files_to_mutate, file_failures) =
+        build_file_plan(&input.target_data_dir, &source_dir, &recovery_type);
+    failures.extend(file_failures);
+
+    let flags = mutation_flags(&files_to_mutate);
+    let mut preconditions = vec![
+        "chain_id=1264".to_string(),
+        "network_id=synergy-testnet-v2".to_string(),
+        "genesis_hash_matches_canonical".to_string(),
+        "source_qc_aegis_pqc_verified=true".to_string(),
+        "source_signers_are_active_genesis_validators=true".to_string(),
+        "keys_or_configs_copied=false".to_string(),
+        "evidence_preserved_before_mutation=true".to_string(),
+        "rollback_backup_written_before_mutation=true".to_string(),
+    ];
+    if matches!(input.target_role, TargetRole::Validator) {
+        preconditions.push(format!(
+            "target_stopped_or_quarantined={}",
+            input.target_stopped_or_quarantined
+        ));
+    }
+
+    let mut operator_approval_required = !failures.is_empty()
+        || !majority_branch_proven
+        || matches!(recovery_type, RecoveryType::UnsafeRequiresOperatorApproval);
+    if has_forbidden_mutation_path(&files_to_mutate) || flags.keys_or_configs_copied {
+        operator_approval_required = true;
+        failures.push("plan would touch keys/configs/secrets; refused".to_string());
+    }
+
+    let mut plan = RecoveryPlan {
+        plan_id: String::new(),
+        created_at: Utc::now().to_rfc3339(),
+        target_node_id: input.target_node_id,
+        target_role: input.target_role,
+        chain_id: input.chain_id,
+        network_id: input.network_id,
+        genesis_hash: input.genesis_hash,
+        target_current_height: target.latest_height.unwrap_or_default(),
+        target_current_hash: target.latest_hash.unwrap_or_default(),
+        target_canonical_lock_height: target.canonical_lock_height.unwrap_or_default(),
+        target_canonical_lock_hash: target.canonical_lock_hash.unwrap_or_default(),
+        target_runtime_sha256: input.target_runtime_sha256,
+        source_nodes_used,
+        source_common_height,
+        source_common_hash,
+        source_canonical_lock_height,
+        source_canonical_lock_hash,
+        source_committed_qc_height: qc_summary.height,
+        source_committed_qc_hash: qc_summary.hash,
+        source_qc_vote_count: qc_summary.vote_count,
+        source_qc_signers: qc_summary.signers,
+        source_qc_aegis_pqc_verified: qc_summary.verified,
+        majority_branch_proven,
+        target_is_minority_or_lagged,
+        recovery_type,
+        files_to_read,
+        files_to_backup,
+        files_to_mutate,
+        files_never_to_touch: FILES_NEVER_TO_TOUCH
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+        keys_or_configs_copied: flags.keys_or_configs_copied,
+        canonical_locks_mutated: flags.canonical_locks_mutated,
+        committed_qcs_mutated: flags.committed_qcs_mutated,
+        chain_state_mutated: flags.chain_state_mutated,
+        dag_state_mutated: flags.dag_state_mutated,
+        registry_state_mutated: flags.registry_state_mutated,
+        token_state_mutated: flags.token_state_mutated,
+        evidence_path: input.evidence_path.to_string_lossy().to_string(),
+        rollback_path: input.rollback_path.to_string_lossy().to_string(),
+        preconditions,
+        postconditions: vec![
+            "exact_common_height_match_required_before_rejoin".to_string(),
+            "qc_vote_count_must_remain_at_least_4".to_string(),
+            "keys_or_configs_copied=false".to_string(),
+            "no_quarantine_marker_after_rejoin".to_string(),
+            "no_vote_locks_above_canonical_or_finalized_height".to_string(),
+        ],
+        failure_reason: (!failures.is_empty()).then(|| failures.join("; ")),
+        operator_approval_required,
+    };
+    plan.plan_id = plan_id(&plan);
+    plan
+}
+
+pub fn verify_plan(plan: &RecoveryPlan) -> RecoveryVerification {
+    let mut errors = Vec::new();
+    let mut warnings = Vec::new();
+    if plan.chain_id != SYNERGY_TESTNET_V2_CHAIN_ID {
+        errors.push(format!(
+            "wrong chain_id {}; expected {}",
+            plan.chain_id, SYNERGY_TESTNET_V2_CHAIN_ID
+        ));
+    }
+    if plan.network_id != SYNERGY_TESTNET_V2_NETWORK_ID {
+        errors.push(format!(
+            "wrong network_id {}; expected {}",
+            plan.network_id, SYNERGY_TESTNET_V2_NETWORK_ID
+        ));
+    }
+    if !plan
+        .genesis_hash
+        .eq_ignore_ascii_case(EXPECTED_GENESIS_HASH)
+    {
+        errors.push("wrong genesis_hash".to_string());
+    }
+    if !plan.source_qc_aegis_pqc_verified {
+        errors.push("source QC is not verified through Aegis/PQVM".to_string());
+    }
+    if plan.source_qc_vote_count < REQUIRED_QUORUM as u64 {
+        errors.push(format!(
+            "source QC vote_count {} is below {REQUIRED_QUORUM}-of-{GENESIS_VALIDATOR_COUNT}",
+            plan.source_qc_vote_count
+        ));
+    }
+    errors.extend(validate_source_nodes(&plan.source_qc_signers));
+    errors.extend(validate_source_nodes(&plan.source_nodes_used));
+    if has_duplicates(&plan.source_qc_signers) {
+        errors.push("source QC contains duplicate signer".to_string());
+    }
+    if !plan.majority_branch_proven {
+        errors.push("majority_branch_proven is false".to_string());
+    }
+    if !plan.target_is_minority_or_lagged && plan.recovery_type != RecoveryType::NoAction {
+        errors.push("target_is_minority_or_lagged is false".to_string());
+    }
+    if has_forbidden_mutation_path(&plan.files_to_mutate) || plan.keys_or_configs_copied {
+        errors.push("plan would copy or mutate keys/configs/secrets".to_string());
+    }
+    if plan.evidence_path.trim().is_empty() {
+        errors.push("evidence_path is empty".to_string());
+    }
+    if plan.rollback_path.trim().is_empty() {
+        errors.push("rollback_path is empty".to_string());
+    }
+    if plan.operator_approval_required {
+        errors.push("operator_approval_required is true".to_string());
+    }
+    if plan.failure_reason.is_some() {
+        errors.push(format!(
+            "plan failure_reason is set: {}",
+            plan.failure_reason.clone().unwrap_or_default()
+        ));
+    }
+    if matches!(plan.target_role, TargetRole::Validator)
+        && !plan
+            .preconditions
+            .iter()
+            .any(|item| item == "target_stopped_or_quarantined=true")
+        && plan.recovery_type != RecoveryType::NoAction
+    {
+        warnings.push(
+            "validator apply will be refused until target_stopped_or_quarantined=true".to_string(),
+        );
+    }
+
+    RecoveryVerification {
+        valid_for_apply: errors.is_empty() && warnings.is_empty(),
+        fail_closed: !errors.is_empty() || !warnings.is_empty(),
+        errors,
+        warnings,
+        mutation_flags: MutationFlags {
+            keys_or_configs_copied: plan.keys_or_configs_copied,
+            canonical_locks_mutated: plan.canonical_locks_mutated,
+            committed_qcs_mutated: plan.committed_qcs_mutated,
+            chain_state_mutated: plan.chain_state_mutated,
+            dag_state_mutated: plan.dag_state_mutated,
+            registry_state_mutated: plan.registry_state_mutated,
+            token_state_mutated: plan.token_state_mutated,
+        },
+    }
+}
+
+pub fn apply_plan(input: ApplyPlanInput) -> Result<ApplyPlanResult, String> {
+    let content = fs::read_to_string(&input.plan_path)
+        .map_err(|error| format!("read recovery plan {}: {error}", input.plan_path.display()))?;
+    let mut plan: RecoveryPlan =
+        serde_json::from_str(&content).map_err(|error| format!("parse recovery plan: {error}"))?;
+    if input.confirm_target_stopped
+        && !plan
+            .preconditions
+            .iter()
+            .any(|item| item == "target_stopped_or_quarantined=true")
+    {
+        plan.preconditions
+            .push("target_stopped_or_quarantined=true".to_string());
+    }
+    let verification = verify_plan(&plan);
+    if !verification.valid_for_apply {
+        let mut reasons = verification.errors;
+        reasons.extend(verification.warnings);
+        return Err(format!(
+            "recovery plan refused fail-closed: {}",
+            reasons.join("; ")
+        ));
+    }
+
+    let evidence_root = PathBuf::from(&plan.evidence_path);
+    let rollback_root = PathBuf::from(&plan.rollback_path);
+    fs::create_dir_all(evidence_root.join("target-before"))
+        .map_err(|error| format!("create evidence directory: {error}"))?;
+    fs::create_dir_all(&rollback_root)
+        .map_err(|error| format!("create rollback directory: {error}"))?;
+
+    let mut files_backed_up = Vec::new();
+    for target in &plan.files_to_backup {
+        let target_path = PathBuf::from(target);
+        if target_path.exists() {
+            let evidence_copy = evidence_root
+                .join("target-before")
+                .join(file_name(&target_path)?);
+            let rollback_copy = rollback_root.join(file_name(&target_path)?);
+            copy_file(&target_path, &evidence_copy)?;
+            copy_file(&target_path, &rollback_copy)?;
+            files_backed_up.push(target_path.to_string_lossy().to_string());
+        }
+    }
+    if plan.recovery_type == RecoveryType::NoAction {
+        return Ok(ApplyPlanResult {
+            plan_id: plan.plan_id,
+            applied: false,
+            fail_closed: false,
+            evidence_path: plan.evidence_path,
+            rollback_path: plan.rollback_path,
+            files_backed_up,
+            files_mutated: Vec::new(),
+            mutation_flags: verification.mutation_flags,
+        });
+    }
+
+    let mut files_mutated = Vec::new();
+    for target in &plan.files_to_mutate {
+        let target_path = PathBuf::from(target);
+        let Some(source) = matching_source_for_target(&plan.files_to_read, &target_path) else {
+            return Err(format!(
+                "missing source file for target mutation {}",
+                target_path.display()
+            ));
+        };
+        atomic_copy(&source, &target_path)?;
+        files_mutated.push(target_path.to_string_lossy().to_string());
+    }
+
+    Ok(ApplyPlanResult {
+        plan_id: plan.plan_id,
+        applied: true,
+        fail_closed: false,
+        evidence_path: plan.evidence_path,
+        rollback_path: plan.rollback_path,
+        files_backed_up,
+        files_mutated,
+        mutation_flags: verification.mutation_flags,
+    })
+}
+
+pub fn write_plan(plan: &RecoveryPlan, path: &Path) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create plan directory {}: {error}", parent.display()))?;
+    }
+    let data = serde_json::to_vec_pretty(plan)
+        .map_err(|error| format!("serialize recovery plan: {error}"))?;
+    let temp = path.with_extension("json.tmp");
+    fs::write(&temp, data)
+        .map_err(|error| format!("write temp plan {}: {error}", temp.display()))?;
+    fs::rename(&temp, path)
+        .map_err(|error| format!("replace recovery plan {}: {error}", path.display()))
+}
+
+fn read_node_state(path: &Path, conflict_height: Option<u64>) -> NodeState {
+    let data_dir = data_dir(path);
+    let latest = read_latest_block(path, &data_dir);
+    let canonical = read_canonical_lock(&data_dir);
+    let conflict_hash =
+        conflict_height.and_then(|height| read_block_hash_at(path, &data_dir, height));
+    NodeState {
+        latest_height: latest.as_ref().map(|block| block.height),
+        latest_hash: latest.as_ref().map(|block| block.hash.clone()),
+        canonical_lock_height: canonical.as_ref().map(|lock| lock.height),
+        canonical_lock_hash: canonical.as_ref().map(|lock| lock.hash.clone()),
+        conflict_hash,
+        errors: Vec::new(),
+    }
+}
+
+#[derive(Debug, Clone)]
+struct NodeState {
+    latest_height: Option<u64>,
+    latest_hash: Option<String>,
+    canonical_lock_height: Option<u64>,
+    canonical_lock_hash: Option<String>,
+    conflict_hash: Option<String>,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BlockSummary {
+    height: u64,
+    hash: String,
+}
+
+#[derive(Debug, Clone)]
+struct LockSummary {
+    height: u64,
+    hash: String,
+}
+
+impl Serialize for NodeState {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        json!({
+            "latest_height": self.latest_height,
+            "latest_hash": self.latest_hash,
+            "canonical_lock_height": self.canonical_lock_height,
+            "canonical_lock_hash": self.canonical_lock_hash,
+            "conflict_hash": self.conflict_hash,
+            "errors": self.errors,
+        })
+        .serialize(serializer)
+    }
+}
+
+fn data_dir(path: &Path) -> PathBuf {
+    if path.join("data").is_dir() {
+        path.join("data")
+    } else {
+        path.to_path_buf()
+    }
+}
+
+fn read_latest_block(root: &Path, data_dir: &Path) -> Option<BlockSummary> {
+    let chain_path = data_dir.join("chain.json");
+    if let Ok(content) = fs::read_to_string(chain_path) {
+        if let Ok(blocks) = serde_json::from_str::<Vec<Block>>(&content) {
+            if let Some(block) = blocks.last() {
+                return Some(BlockSummary {
+                    height: block.block_index,
+                    hash: block.hash.clone(),
+                });
+            }
+        }
+    }
+    read_rpc_block(root.join("rpc/latest_block.json"))
+}
+
+fn read_block_hash_at(root: &Path, data_dir: &Path, height: u64) -> Option<String> {
+    let chain_path = data_dir.join("chain.json");
+    if let Ok(content) = fs::read_to_string(chain_path) {
+        if let Ok(blocks) = serde_json::from_str::<Vec<Block>>(&content) {
+            return blocks
+                .iter()
+                .find(|block| block.block_index == height)
+                .map(|block| block.hash.clone());
+        }
+    }
+    read_rpc_block(root.join(format!("rpc/block_{height}.json"))).map(|block| block.hash)
+}
+
+fn read_rpc_block(path: PathBuf) -> Option<BlockSummary> {
+    let value = read_json(&path).ok()?;
+    let value = unwrap_rpc(&value);
+    let block = value.get("block").unwrap_or(value);
+    let height = get_u64(block, &["height", "number", "block_number", "block_index"])?;
+    let hash = get_string(block, &["hash", "block_hash"])?;
+    Some(BlockSummary { height, hash })
+}
+
+fn read_canonical_lock(data_dir: &Path) -> Option<LockSummary> {
+    let value = read_json(&data_dir.join("canonical_locks.json")).ok()?;
+    let object = value.as_object()?;
+    let height = object
+        .keys()
+        .filter_map(|key| key.parse::<u64>().ok())
+        .max()?;
+    let entry = object.get(&height.to_string())?;
+    let hash = get_string(entry, &["hash", "block_hash"])?;
+    Some(LockSummary { height, hash })
+}
+
+fn load_recovery_proof(source_dir: &Path) -> Result<RecoveryProof, String> {
+    for candidate in [
+        "recovery-proof.json",
+        "recovery_proof.json",
+        "aegis_qc_proof.json",
+        "data/recovery-proof.json",
+        "data/aegis_qc_proof.json",
+    ] {
+        let path = source_dir.join(candidate);
+        if path.exists() {
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("read recovery proof {}: {error}", path.display()))?;
+            let proof = serde_json::from_str::<RecoveryProof>(&content)
+                .map_err(|error| format!("parse recovery proof {}: {error}", path.display()))?;
+            return Ok(proof);
+        }
+    }
+    Err(
+        "missing recovery-proof.json with Aegis/PQVM QC, validator_set, and cluster_map"
+            .to_string(),
+    )
+}
+
+fn verify_recovery_proof(proof: &RecoveryProof) -> QcProofSummary {
+    let mut failure = Vec::new();
+    if proof.chain_id != 0 && proof.chain_id != SYNERGY_TESTNET_V2_CHAIN_ID {
+        failure.push(format!("proof chain_id {} is not 1264", proof.chain_id));
+    }
+    if !proof.network_id.is_empty() && proof.network_id != SYNERGY_TESTNET_V2_NETWORK_ID {
+        failure.push(format!(
+            "proof network_id {} is not canonical",
+            proof.network_id
+        ));
+    }
+    if !proof.genesis_hash.is_empty()
+        && !proof
+            .genesis_hash
+            .eq_ignore_ascii_case(EXPECTED_GENESIS_HASH)
+    {
+        failure.push("proof genesis_hash mismatch".to_string());
+    }
+    let signers = match qc_signers(&proof.qc, &proof.validator_set) {
+        Ok(signers) => signers,
+        Err(error) => {
+            failure.push(error);
+            Vec::new()
+        }
+    };
+    if let Err(error) = validate_validator_set_against_canonical_genesis(&proof.validator_set) {
+        failure.push(error);
+    }
+    let verified = if failure.is_empty() {
+        match verifier_from_validator_set(&proof.validator_set).and_then(|verifier| {
+            verifier
+                .verify_qc_checked(&proof.qc, &proof.validator_set, &proof.cluster_map)
+                .map_err(|error| error.to_string())
+        }) {
+            Ok(()) => true,
+            Err(error) => {
+                failure.push(error);
+                false
+            }
+        }
+    } else {
+        false
+    };
+    QcProofSummary {
+        height: proof.qc.height.0,
+        hash: proof.qc.block_id.0.clone(),
+        vote_count: proof.qc.aegis_pq_key_ids.len() as u64,
+        signers,
+        verified,
+        failure: (!failure.is_empty()).then(|| failure.join("; ")),
+    }
+}
+
+#[cfg(not(test))]
+fn validate_validator_set_against_canonical_genesis(
+    validator_set: &ValidatorSet,
+) -> Result<(), String> {
+    let genesis = canonical_genesis()?;
+    if validator_set.validators.len() != GENESIS_VALIDATOR_COUNT {
+        return Err(format!(
+            "validator set has {} validators, expected canonical {GENESIS_VALIDATOR_COUNT}",
+            validator_set.validators.len()
+        ));
+    }
+    for validator in &validator_set.validators {
+        if validator.status != ValidatorStatus::Active {
+            return Err(format!(
+                "validator {} is not ACTIVE in recovery proof",
+                validator.validator_id.0
+            ));
+        }
+        let Some(genesis_validator) = genesis
+            .validators()
+            .iter()
+            .find(|entry| entry.validator_id == validator.validator_id.0)
+        else {
+            return Err(format!(
+                "validator {} is not a canonical genesis validator",
+                validator.validator_id.0
+            ));
+        };
+        let expected_key = general_purpose::STANDARD
+            .decode(genesis_validator.consensus_public_key.trim())
+            .map_err(|error| {
+                format!(
+                    "canonical genesis consensus public key for {} is invalid: {error}",
+                    genesis_validator.validator_id
+                )
+            })?;
+        if validator.consensus_public_key.key_bytes != expected_key {
+            return Err(format!(
+                "validator {} consensus public key does not match canonical genesis",
+                validator.validator_id.0
+            ));
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+fn validate_validator_set_against_canonical_genesis(
+    validator_set: &ValidatorSet,
+) -> Result<(), String> {
+    if validator_set.validators.len() != GENESIS_VALIDATOR_COUNT {
+        return Err(format!(
+            "validator set has {} validators, expected canonical {GENESIS_VALIDATOR_COUNT}",
+            validator_set.validators.len()
+        ));
+    }
+    if validator_set
+        .validators
+        .iter()
+        .any(|validator| validator.status != ValidatorStatus::Active)
+    {
+        return Err("proof validator set contains non-ACTIVE validator".to_string());
+    }
+    Ok(())
+}
+
+fn verifier_from_validator_set(validator_set: &ValidatorSet) -> Result<AegisPqvmVerifier, String> {
+    let mut registry = AegisPqvmKeyRegistry::default();
+    for validator in &validator_set.validators {
+        if validator.status != ValidatorStatus::Active {
+            continue;
+        }
+        let public_key = PQCPublicKey {
+            algorithm: parse_algorithm(&validator.consensus_public_key.algorithm)?,
+            key_data: validator.consensus_public_key.key_bytes.clone(),
+            key_id: validator.consensus_public_key.key_id.0.clone(),
+            created_at: 0,
+        };
+        registry.register_public_key(
+            &validator.validator_uma_id.0,
+            public_key,
+            vec![AegisPqKeyRole::ConsensusVote],
+            validator.activation_epoch,
+        );
+    }
+    AegisPqvmVerifier::initialize_required(registry).map_err(|error| error.to_string())
+}
+
+fn qc_signers(
+    qc: &AegisQuorumCertificate,
+    validator_set: &ValidatorSet,
+) -> Result<Vec<String>, String> {
+    let validators = validator_set.canonicalized().validators;
+    let indexes = bitmap_signer_indexes(&qc.signer_bitmap, validators.len())?;
+    if indexes.len() != qc.aegis_pq_key_ids.len() {
+        return Err("QC signer bitmap/key count mismatch".to_string());
+    }
+    let mut out = Vec::new();
+    for index in indexes {
+        let validator = validators
+            .get(index)
+            .ok_or_else(|| "QC signer bitmap references missing validator".to_string())?;
+        out.push(validator.validator_id.0.clone());
+    }
+    Ok(out)
+}
+
+fn bitmap_signer_indexes(bitmap: &[u8], validator_count: usize) -> Result<Vec<usize>, String> {
+    let mut indexes = Vec::new();
+    for index in 0..validator_count {
+        let byte = index / 8;
+        let bit = index % 8;
+        let Some(value) = bitmap.get(byte) else {
+            continue;
+        };
+        if value & (1 << bit) != 0 {
+            indexes.push(index);
+        }
+    }
+    if indexes.is_empty() {
+        return Err("QC signer bitmap is empty".to_string());
+    }
+    Ok(indexes)
+}
+
+fn parse_algorithm(value: &str) -> Result<PQCAlgorithm, String> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "fndsa" | "fn-dsa" | "fn-dsa-1024" => Ok(PQCAlgorithm::FNDSA),
+        "mldsa" | "ml-dsa" | "ml-dsa-65" | "ml-dsa-87" => Ok(PQCAlgorithm::MLDSA),
+        "slhdsa" | "slh-dsa" => Ok(PQCAlgorithm::SLHDSA),
+        other => Err(format!("unsupported Aegis PQC algorithm: {other}")),
+    }
+}
+
+fn build_file_plan(
+    target_data_dir: &Path,
+    source_dir: &Path,
+    recovery_type: &RecoveryType,
+) -> (Vec<String>, Vec<String>, Vec<String>, Vec<String>) {
+    if *recovery_type == RecoveryType::NoAction {
+        return (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    }
+    let target_data_dir = data_dir(target_data_dir);
+    let source_data_dir = data_dir(source_dir);
+    let mut files_to_read = Vec::new();
+    let mut files_to_backup = Vec::new();
+    let mut files_to_mutate = Vec::new();
+    let mut failures = Vec::new();
+    for file in ALLOWED_STATE_FILES {
+        let source = source_data_dir.join(file);
+        let target = target_data_dir.join(file);
+        if source.exists() {
+            files_to_read.push(source.to_string_lossy().to_string());
+            files_to_backup.push(target.to_string_lossy().to_string());
+            files_to_mutate.push(target.to_string_lossy().to_string());
+        }
+    }
+    if files_to_mutate.is_empty() {
+        failures.push(
+            "source state directory contains no approved recoverable state files".to_string(),
+        );
+    }
+    (files_to_read, files_to_backup, files_to_mutate, failures)
+}
+
+fn validate_source_nodes(nodes: &[String]) -> Vec<String> {
+    let mut failures = Vec::new();
+    if nodes.len() < REQUIRED_QUORUM {
+        failures.push(format!(
+            "source has {} signer/source node(s), {REQUIRED_QUORUM} required",
+            nodes.len()
+        ));
+    }
+    if has_duplicates(nodes) {
+        failures.push("duplicate signer/source node detected".to_string());
+    }
+    for node in nodes {
+        let normalized = node.trim().to_ascii_lowercase();
+        if normalized.contains("relayer")
+            || normalized.contains("rpc")
+            || normalized.contains("archive")
+            || normalized.contains("observer")
+            || normalized.contains("boot")
+            || normalized.contains("seed")
+            || normalized.contains("shadow")
+        {
+            failures.push(format!(
+                "non-validator source {node} cannot count toward quorum"
+            ));
+        }
+    }
+    failures
+}
+
+fn mutation_flags(files_to_mutate: &[String]) -> MutationFlags {
+    MutationFlags {
+        keys_or_configs_copied: has_forbidden_mutation_path(files_to_mutate),
+        canonical_locks_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.ends_with("canonical_locks.json")),
+        committed_qcs_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.contains("committed_qcs")),
+        chain_state_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.ends_with("chain.json")),
+        dag_state_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.ends_with("dag_state.json")),
+        registry_state_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.ends_with("validator_registry.json")),
+        token_state_mutated: files_to_mutate
+            .iter()
+            .any(|path| path.ends_with("token_state.json")),
+    }
+}
+
+fn has_forbidden_mutation_path(paths: &[String]) -> bool {
+    paths.iter().any(|path| {
+        let normalized = path.to_ascii_lowercase();
+        FILES_NEVER_TO_TOUCH
+            .iter()
+            .any(|forbidden| normalized.contains(forbidden))
+    })
+}
+
+fn conflict_hashes_diverge(target: &NodeState, source: &NodeState) -> bool {
+    matches!(
+        (&target.conflict_hash, &source.conflict_hash),
+        (Some(target_hash), Some(source_hash)) if target_hash != source_hash
+    )
+}
+
+fn plan_id(plan: &RecoveryPlan) -> String {
+    let mut hasher = Sha3_256::new();
+    hasher.update(plan.created_at.as_bytes());
+    hasher.update(plan.target_node_id.as_bytes());
+    hasher.update(plan.source_common_hash.as_bytes());
+    hasher.update(plan.target_current_hash.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+fn read_json(path: &Path) -> Result<Value, String> {
+    let content =
+        fs::read_to_string(path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    serde_json::from_str(&content).map_err(|error| format!("parse {}: {error}", path.display()))
+}
+
+fn unwrap_rpc(value: &Value) -> &Value {
+    value.get("result").unwrap_or(value)
+}
+
+fn get_string(value: &Value, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            return Some(text.to_string());
+        }
+    }
+    None
+}
+
+fn get_u64(value: &Value, keys: &[&str]) -> Option<u64> {
+    for key in keys {
+        if let Some(number) = value.get(*key).and_then(Value::as_u64) {
+            return Some(number);
+        }
+        if let Some(text) = value.get(*key).and_then(Value::as_str) {
+            if let Ok(number) = text.parse::<u64>() {
+                return Some(number);
+            }
+        }
+    }
+    None
+}
+
+fn has_duplicates(values: &[String]) -> bool {
+    let mut seen = BTreeSet::new();
+    values
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .any(|value| !seen.insert(value))
+}
+
+fn copy_file(source: &Path, target: &Path) -> Result<(), String> {
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create directory {}: {error}", parent.display()))?;
+    }
+    fs::copy(source, target)
+        .map(|_| ())
+        .map_err(|error| format!("copy {} to {}: {error}", source.display(), target.display()))
+}
+
+fn atomic_copy(source: &Path, target: &Path) -> Result<(), String> {
+    if has_forbidden_mutation_path(&[target.to_string_lossy().to_string()]) {
+        return Err(format!(
+            "refusing forbidden target path {}",
+            target.display()
+        ));
+    }
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create directory {}: {error}", parent.display()))?;
+    }
+    let data =
+        fs::read(source).map_err(|error| format!("read source {}: {error}", source.display()))?;
+    let temp = target.with_extension("recovery.tmp");
+    let mut file = fs::File::create(&temp)
+        .map_err(|error| format!("create temp file {}: {error}", temp.display()))?;
+    file.write_all(&data)
+        .map_err(|error| format!("write temp file {}: {error}", temp.display()))?;
+    file.sync_all()
+        .map_err(|error| format!("sync temp file {}: {error}", temp.display()))?;
+    fs::rename(&temp, target)
+        .map_err(|error| format!("replace target {}: {error}", target.display()))
+}
+
+fn matching_source_for_target(files_to_read: &[String], target: &Path) -> Option<PathBuf> {
+    let target_name = target.file_name()?.to_string_lossy();
+    files_to_read.iter().find_map(|source| {
+        let source_path = PathBuf::from(source);
+        (source_path.file_name()?.to_string_lossy() == target_name).then_some(source_path)
+    })
+}
+
+fn file_name(path: &Path) -> Result<PathBuf, String> {
+    path.file_name()
+        .map(PathBuf::from)
+        .ok_or_else(|| format!("path has no file name: {}", path.display()))
+}
+
+#[allow(dead_code)]
+fn decode_base64_public_key(encoded: &str) -> Result<Vec<u8>, String> {
+    general_purpose::STANDARD
+        .decode(encoded.trim())
+        .map_err(|error| format!("decode public key: {error}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::crypto::aegis_pqvm::AegisPqvmSigner;
+    use crate::synergy_types::{
+        BlockId, ChainId, ClusterAssignment, ClusterId, Epoch, Height, NetworkId, Round, UmaId,
+        ValidatorId, Vote, VotePhase,
+    };
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_root(name: &str) -> PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "synergy-recovery-{name}-{}-{now}",
+            std::process::id()
+        ));
+        fs::create_dir_all(root.join("data")).unwrap();
+        root
+    }
+
+    fn write_chain(root: &Path, heights: &[(&str, u64)]) {
+        let mut previous = EXPECTED_GENESIS_HASH.to_string();
+        let blocks = heights
+            .iter()
+            .map(|(hash, height)| {
+                let mut block = Block::new_with_timestamp(
+                    *height,
+                    Vec::new(),
+                    previous.clone(),
+                    "validator-1".to_string(),
+                    *height,
+                    100 + height,
+                );
+                block.hash = (*hash).to_string();
+                previous = block.hash.clone();
+                block
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            root.join("data/chain.json"),
+            serde_json::to_string(&blocks).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_lock(root: &Path, height: u64, hash: &str) {
+        fs::write(
+            root.join("data/canonical_locks.json"),
+            json!({height.to_string(): {"block_hash": hash}}).to_string(),
+        )
+        .unwrap();
+    }
+
+    fn write_recoverable_files(root: &Path) {
+        for file in ALLOWED_STATE_FILES {
+            let path = root.join("data").join(file);
+            if !path.exists() {
+                fs::write(path, format!("{file}\n")).unwrap();
+            }
+        }
+    }
+
+    fn signed_qc_fixture(
+        signer_count: usize,
+    ) -> (
+        AegisPqvmSigner,
+        ValidatorSet,
+        ClusterMap,
+        AegisQuorumCertificate,
+    ) {
+        let mut signer = AegisPqvmSigner::initialize_required().unwrap();
+        let mut records = Vec::new();
+        let mut key_ids = Vec::new();
+        for index in 0..GENESIS_VALIDATOR_COUNT {
+            let uma = format!("uma-{index}");
+            let key_id = signer
+                .generate_and_register_key(&uma, vec![AegisPqKeyRole::ConsensusVote], Epoch(0))
+                .unwrap();
+            let public = signer.public_key_record(&key_id).unwrap();
+            records.push(crate::synergy_types::ValidatorRecord {
+                validator_id: ValidatorId(format!("validator-{}", index + 1)),
+                validator_uma_id: UmaId(uma),
+                consensus_public_key: public.clone(),
+                peer_public_key: public.clone(),
+                operator_public_key: public,
+                voting_weight: 1,
+                status: ValidatorStatus::Active,
+                cluster_id: ClusterId(0),
+                activation_epoch: Epoch(0),
+            });
+            key_ids.push(key_id);
+        }
+        let set = ValidatorSet {
+            epoch: Epoch(0),
+            validators: records.clone(),
+        };
+        let cluster = ClusterMap {
+            epoch: Epoch(0),
+            assignments: records
+                .iter()
+                .map(|record| ClusterAssignment {
+                    cluster_id: ClusterId(0),
+                    validator_id: record.validator_id.clone(),
+                })
+                .collect(),
+        };
+        let set_hash = set.hash().unwrap();
+        let cluster_hash = cluster.hash().unwrap();
+        let block_id = BlockId::from("majority-hash");
+        let votes = (0..signer_count)
+            .map(|index| {
+                let mut vote = Vote {
+                    chain_id: ChainId::synergy_testnet_v2(),
+                    network_id: NetworkId::synergy_testnet_v2(),
+                    height: Height(10),
+                    round: Round(0),
+                    epoch: Epoch(0),
+                    cluster_id: ClusterId(0),
+                    phase: VotePhase::Commit,
+                    block_id: block_id.clone(),
+                    validator_id: records[index].validator_id.clone(),
+                    validator_uma_id: records[index].validator_uma_id.clone(),
+                    key_id: key_ids[index].clone(),
+                    active_validator_set_hash: set_hash,
+                    cluster_map_hash: cluster_hash,
+                    aegis_pq_signature: crate::synergy_types::AegisPqSignature {
+                        algorithm: String::new(),
+                        signature_bytes: Vec::new(),
+                    },
+                };
+                vote.aegis_pq_signature = signer
+                    .sign_vote(&vote.signing_bytes().unwrap(), &key_ids[index])
+                    .unwrap();
+                vote
+            })
+            .collect::<Vec<_>>();
+        let qc = AegisQuorumCertificate {
+            qc_version: 1,
+            chain_id: ChainId::synergy_testnet_v2(),
+            network_id: NetworkId::synergy_testnet_v2(),
+            height: Height(10),
+            round: Round(0),
+            epoch: Epoch(0),
+            cluster_id: ClusterId(0),
+            phase: VotePhase::Commit,
+            block_id,
+            active_validator_set_hash: set_hash,
+            cluster_map_hash: cluster_hash,
+            threshold_weight_required: REQUIRED_QUORUM as u64,
+            signed_weight: signer_count as u64,
+            signer_bitmap: vec![((1u16 << signer_count) - 1) as u8],
+            aegis_pq_signatures: votes
+                .iter()
+                .map(|vote| vote.aegis_pq_signature.clone())
+                .collect(),
+            aegis_pq_key_ids: key_ids[0..signer_count].to_vec(),
+        };
+        (signer, set, cluster, qc)
+    }
+
+    fn write_proof(
+        root: &Path,
+        qc: &AegisQuorumCertificate,
+        set: &ValidatorSet,
+        cluster: &ClusterMap,
+    ) {
+        fs::write(
+            root.join("recovery-proof.json"),
+            serde_json::to_string(&json!({
+                "chain_id": SYNERGY_TESTNET_V2_CHAIN_ID,
+                "network_id": SYNERGY_TESTNET_V2_NETWORK_ID,
+                "genesis_hash": EXPECTED_GENESIS_HASH,
+                "source_nodes_used": ["validator-1", "validator-2", "validator-3", "validator-4"],
+                "source_common_height": 10,
+                "source_common_hash": "majority-hash",
+                "source_canonical_lock_height": 10,
+                "source_canonical_lock_hash": "majority-hash",
+                "qc": qc,
+                "validator_set": set,
+                "cluster_map": cluster,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn base_input(target: &Path, source: &Path) -> BuildPlanInput {
+        BuildPlanInput {
+            target_node_id: "Val1".to_string(),
+            target_role: TargetRole::Validator,
+            chain_id: SYNERGY_TESTNET_V2_CHAIN_ID,
+            network_id: SYNERGY_TESTNET_V2_NETWORK_ID.to_string(),
+            genesis_hash: EXPECTED_GENESIS_HASH.to_string(),
+            target_data_dir: target.to_path_buf(),
+            source_state_dir: Some(source.to_path_buf()),
+            source_evidence_dirs: Vec::new(),
+            source_nodes_used: vec![
+                "validator-1".to_string(),
+                "validator-2".to_string(),
+                "validator-3".to_string(),
+                "validator-4".to_string(),
+            ],
+            source_common_height: Some(10),
+            source_common_hash: Some("majority-hash".to_string()),
+            source_canonical_lock_height: Some(10),
+            source_canonical_lock_hash: Some("majority-hash".to_string()),
+            target_runtime_sha256: "runtime-sha".to_string(),
+            evidence_path: target.join("evidence"),
+            rollback_path: target.join("rollback"),
+            recovery_type: None,
+            conflict_height: Some(10),
+            expected_target_conflict_hash: Some("minority-hash".to_string()),
+            expected_source_conflict_hash: Some("majority-hash".to_string()),
+            target_stopped_or_quarantined: true,
+        }
+    }
+
+    fn prepare_plan() -> (PathBuf, PathBuf, RecoveryPlan) {
+        let target = temp_root("target");
+        let source = temp_root("source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        write_proof(&source, &qc, &set, &cluster);
+        let plan = build_plan(base_input(&target, &source));
+        (target, source, plan)
+    }
+
+    #[test]
+    fn plan_rejects_wrong_chain_id() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.chain_id = 1;
+        let plan = build_plan(input);
+        assert!(plan.failure_reason.unwrap().contains("wrong chain_id"));
+    }
+
+    #[test]
+    fn plan_rejects_wrong_network_id() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.network_id = "wrong".to_string();
+        let plan = build_plan(input);
+        assert!(plan.failure_reason.unwrap().contains("wrong network_id"));
+    }
+
+    #[test]
+    fn plan_rejects_wrong_genesis_hash() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.genesis_hash = "bad".to_string();
+        let plan = build_plan(input);
+        assert!(plan.failure_reason.unwrap().contains("wrong genesis_hash"));
+    }
+
+    #[test]
+    fn plan_rejects_qc_with_invalid_aegis_signature() {
+        let target = temp_root("invalid-sig-target");
+        let source = temp_root("invalid-sig-source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, set, cluster, mut qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        qc.aegis_pq_signatures[0].signature_bytes[0] ^= 1;
+        write_proof(&source, &qc, &set, &cluster);
+        let plan = build_plan(base_input(&target, &source));
+        assert!(!plan.source_qc_aegis_pqc_verified);
+        assert!(plan.operator_approval_required);
+    }
+
+    #[test]
+    fn plan_rejects_qc_with_duplicate_signer() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.source_nodes_used[1] = input.source_nodes_used[0].clone();
+        let plan = build_plan(input);
+        assert!(plan.failure_reason.unwrap().contains("duplicate"));
+    }
+
+    #[test]
+    fn plan_rejects_qc_below_4_of_5() {
+        let target = temp_root("below-target");
+        let source = temp_root("below-source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, set, cluster, qc) = signed_qc_fixture(3);
+        write_proof(&source, &qc, &set, &cluster);
+        let plan = build_plan(base_input(&target, &source));
+        assert!(verify_plan(&plan)
+            .errors
+            .iter()
+            .any(|error| error.contains("below")));
+    }
+
+    #[test]
+    fn plan_rejects_relayer_as_quorum_signer() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.source_nodes_used[3] = "Relayer-1".to_string();
+        let plan = build_plan(input);
+        assert!(plan
+            .failure_reason
+            .unwrap()
+            .contains("non-validator source"));
+    }
+
+    #[test]
+    fn plan_rejects_non_active_validator_as_quorum_signer() {
+        let target = temp_root("inactive-target");
+        let source = temp_root("inactive-source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let (_signer, mut set, cluster, qc) = signed_qc_fixture(REQUIRED_QUORUM);
+        set.validators[0].status = ValidatorStatus::Shadow;
+        write_proof(&source, &qc, &set, &cluster);
+        let plan = build_plan(base_input(&target, &source));
+        assert!(!plan.source_qc_aegis_pqc_verified);
+    }
+
+    #[test]
+    fn plan_preserves_keys_and_configs() {
+        let (_target, _source, plan) = prepare_plan();
+        assert!(plan
+            .files_never_to_touch
+            .iter()
+            .any(|file| file.contains("config")));
+        assert!(!plan
+            .files_to_mutate
+            .iter()
+            .any(|path| path.contains("config")));
+    }
+
+    #[test]
+    fn plan_reports_keys_or_configs_copied_false() {
+        let (_target, _source, plan) = prepare_plan();
+        assert!(!plan.keys_or_configs_copied);
+    }
+
+    #[test]
+    fn plan_reports_canonical_locks_mutated_flag() {
+        let (_target, _source, plan) = prepare_plan();
+        assert!(plan.canonical_locks_mutated);
+    }
+
+    #[test]
+    fn plan_reports_committed_qcs_mutated_flag() {
+        let (_target, _source, plan) = prepare_plan();
+        assert!(plan.committed_qcs_mutated);
+    }
+
+    #[test]
+    fn validator_recovery_requires_target_stopped_or_quarantined() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.target_stopped_or_quarantined = false;
+        let plan = build_plan(input);
+        let plan_path = target.join("plan.json");
+        write_plan(&plan, &plan_path).unwrap();
+        let error = apply_plan(ApplyPlanInput {
+            plan_path,
+            confirm_target_stopped: false,
+        })
+        .unwrap_err();
+        assert!(error.contains("target_stopped_or_quarantined"));
+    }
+
+    #[test]
+    fn validator_recovery_rejects_unproven_majority_branch() {
+        let target = temp_root("unproven-target");
+        let source = temp_root("unproven-source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        let plan = build_plan(base_input(&target, &source));
+        assert!(!plan.majority_branch_proven);
+        assert!(plan.operator_approval_required);
+    }
+
+    #[test]
+    fn validator_recovery_accepts_proven_majority_branch() {
+        let (_target, _source, plan) = prepare_plan();
+        let verification = verify_plan(&plan);
+        assert!(verification.errors.is_empty(), "{:?}", verification.errors);
+        assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn relayer_recovery_accepts_verified_support_snapshot() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.target_role = TargetRole::Relayer;
+        input.target_node_id = "Relayer-1".to_string();
+        let plan = build_plan(input);
+        assert_eq!(plan.recovery_type, RecoveryType::SupportChainFastSync);
+        assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn relayer_recovery_rejects_wrong_genesis_snapshot() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.target_role = TargetRole::Relayer;
+        input.genesis_hash = "wrong".to_string();
+        let plan = build_plan(input);
+        assert!(plan.failure_reason.unwrap().contains("wrong genesis_hash"));
+    }
+
+    #[test]
+    fn apply_plan_refuses_invalid_plan() {
+        let (target, source, _) = prepare_plan();
+        let mut input = base_input(&target, &source);
+        input.chain_id = 99;
+        let plan = build_plan(input);
+        let plan_path = target.join("invalid-plan.json");
+        write_plan(&plan, &plan_path).unwrap();
+        assert!(apply_plan(ApplyPlanInput {
+            plan_path,
+            confirm_target_stopped: true,
+        })
+        .is_err());
+    }
+
+    #[test]
+    fn apply_plan_writes_evidence_before_mutation() {
+        let (target, _source, plan) = prepare_plan();
+        let plan_path = target.join("plan.json");
+        write_plan(&plan, &plan_path).unwrap();
+        let result = apply_plan(ApplyPlanInput {
+            plan_path,
+            confirm_target_stopped: true,
+        })
+        .unwrap();
+        assert!(!result.files_backed_up.is_empty());
+        assert!(target.join("evidence/target-before/chain.json").exists());
+    }
+
+    #[test]
+    fn apply_plan_writes_rollback_backup() {
+        let (target, _source, plan) = prepare_plan();
+        let plan_path = target.join("plan.json");
+        write_plan(&plan, &plan_path).unwrap();
+        apply_plan(ApplyPlanInput {
+            plan_path,
+            confirm_target_stopped: true,
+        })
+        .unwrap();
+        assert!(target.join("rollback/chain.json").exists());
+    }
+
+    #[test]
+    fn recovered_validator_rejoin_requires_common_height_match() {
+        let (_target, _source, plan) = prepare_plan();
+        assert!(plan
+            .postconditions
+            .iter()
+            .any(|condition| condition == "exact_common_height_match_required_before_rejoin"));
+    }
+}
