@@ -1,6 +1,7 @@
 use crate::block::Block;
+use crate::consensus::validator_keys::parse_validator_public_key;
 use crate::crypto::aegis_pqvm::{AegisPqvmKeyRegistry, AegisPqvmVerifier};
-use crate::crypto::pqc::{PQCAlgorithm, PQCPublicKey};
+use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPublicKey, PQCSignature};
 #[cfg(not(test))]
 use crate::genesis::canonical_genesis;
 use crate::synergy_types::{
@@ -14,7 +15,7 @@ use serde_json::{json, Value};
 use sha3::{Digest, Sha3_256};
 use std::collections::BTreeSet;
 use std::fs;
-use std::io::Write;
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 pub const EXPECTED_GENESIS_HASH: &str =
@@ -211,6 +212,43 @@ struct QcProofSummary {
     failure: Option<String>,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyCommittedQcLogEntry {
+    #[allow(dead_code)]
+    block_hash: String,
+    qc: LegacyQuorumCertificate,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyQuorumCertificate {
+    block_hash: String,
+    epoch_number: u64,
+    round_number: u64,
+    aggregate_signature: Vec<u8>,
+    participant_bitmap: Vec<u8>,
+    cumulative_weight: f64,
+    validation_quorum_met: bool,
+    cooperation_quorum_met: bool,
+    votes: Vec<LegacyVote>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct LegacyVote {
+    validator_address: String,
+    block_hash: String,
+    block_index: u64,
+    epoch_number: u64,
+    round_number: u64,
+    signature: PQCSignature,
+    signer_public_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+struct LegacyValidator {
+    public_key: PQCPublicKey,
+    synergy_score: f64,
+}
+
 pub fn status() -> Value {
     json!({
         "status": "idle",
@@ -303,14 +341,21 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
     let proof = load_recovery_proof(&source_dir);
     let qc_summary = match proof {
         Ok(proof) => verify_recovery_proof(&proof),
-        Err(error) => QcProofSummary {
-            height: 0,
-            hash: String::new(),
-            vote_count: 0,
-            signers: Vec::new(),
-            verified: false,
-            failure: Some(error),
-        },
+        Err(sidecar_error) => {
+            match verify_legacy_committed_qc(&source_dir, input.conflict_height) {
+                Ok(summary) => summary,
+                Err(legacy_error) => QcProofSummary {
+                    height: 0,
+                    hash: String::new(),
+                    vote_count: 0,
+                    signers: Vec::new(),
+                    verified: false,
+                    failure: Some(format!(
+                        "{sidecar_error}; legacy committed QC rejected: {legacy_error}"
+                    )),
+                },
+            }
+        }
     };
     if let Some(error) = qc_summary.failure.as_ref() {
         failures.push(format!("QC proof rejected: {error}"));
@@ -796,6 +841,248 @@ fn load_recovery_proof(source_dir: &Path) -> Result<RecoveryProof, String> {
         "missing recovery-proof.json with Aegis/PQVM QC, validator_set, and cluster_map"
             .to_string(),
     )
+}
+
+fn verify_legacy_committed_qc(
+    source_dir: &Path,
+    min_height: Option<u64>,
+) -> Result<QcProofSummary, String> {
+    let data_dir = data_dir(source_dir);
+    let qc = latest_legacy_committed_qc(&data_dir, min_height)?;
+    verify_legacy_qc(&data_dir, qc)
+}
+
+fn latest_legacy_committed_qc(
+    data_dir: &Path,
+    min_height: Option<u64>,
+) -> Result<LegacyQuorumCertificate, String> {
+    let path = data_dir.join("committed_qcs.jsonl");
+    let file =
+        fs::File::open(&path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut last = None;
+    for line in reader.lines() {
+        let line = line.map_err(|error| format!("read {}: {error}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        last = Some(line);
+    }
+    let Some(line) = last else {
+        return Err(format!("{} has no committed QC entries", path.display()));
+    };
+    let entry = serde_json::from_str::<LegacyCommittedQcLogEntry>(&line)
+        .map_err(|error| format!("parse latest committed QC: {error}"))?;
+    let height = legacy_qc_height(&entry.qc)?;
+    if let Some(min_height) = min_height {
+        if height < min_height {
+            return Err(format!(
+                "latest committed QC height {height} is below required recovery height {min_height}"
+            ));
+        }
+    }
+    Ok(entry.qc)
+}
+
+fn verify_legacy_qc(
+    data_dir: &Path,
+    qc: LegacyQuorumCertificate,
+) -> Result<QcProofSummary, String> {
+    if qc.block_hash.trim().is_empty() {
+        return Err("committed QC block_hash is empty".to_string());
+    }
+    if qc.aggregate_signature.is_empty() {
+        return Err("committed QC aggregate signature is missing".to_string());
+    }
+    if qc.participant_bitmap.is_empty() {
+        return Err("committed QC participant bitmap is missing".to_string());
+    }
+    if !qc.validation_quorum_met || !qc.cooperation_quorum_met {
+        return Err(
+            "committed QC does not prove both validation and cooperation quorum".to_string(),
+        );
+    }
+    if qc.votes.len() < REQUIRED_QUORUM {
+        return Err(format!(
+            "committed QC has {} vote(s), {REQUIRED_QUORUM} required",
+            qc.votes.len()
+        ));
+    }
+
+    let validators = load_legacy_active_genesis_validators(data_dir)?;
+    let mut seen = BTreeSet::new();
+    let mut signed_weight = 0.0f64;
+    let height = legacy_qc_height(&qc)?;
+    let manager = PQCManager::new();
+    for vote in &qc.votes {
+        if vote.block_hash != qc.block_hash {
+            return Err("QC vote signs a different block hash".to_string());
+        }
+        if vote.block_index != height {
+            return Err("QC vote height does not match committed QC height".to_string());
+        }
+        if vote.epoch_number != qc.epoch_number || vote.round_number != qc.round_number {
+            return Err("QC vote epoch/round does not match committed QC".to_string());
+        }
+        if !seen.insert(vote.validator_address.clone()) {
+            return Err("committed QC contains duplicate signer".to_string());
+        }
+        let validator = validators.get(&vote.validator_address).ok_or_else(|| {
+            format!(
+                "committed QC signer {} is not an ACTIVE canonical genesis validator",
+                vote.validator_address
+            )
+        })?;
+        if vote.signer_public_key != validator.public_key.key_data {
+            return Err(format!(
+                "signer public key does not match canonical consensus key for validator {}",
+                vote.validator_address
+            ));
+        }
+        if vote.signature.algorithm != validator.public_key.algorithm {
+            return Err(format!(
+                "signature algorithm does not match canonical consensus key for validator {}",
+                vote.validator_address
+            ));
+        }
+        let payload = legacy_vote_signature_payload(vote);
+        let valid = manager
+            .verify(&validator.public_key, &vote.signature, payload.as_bytes())
+            .map_err(|error| format!("PQC vote signature verify error: {error}"))?;
+        if !valid {
+            return Err(format!(
+                "invalid PQC vote signature from validator {}",
+                vote.validator_address
+            ));
+        }
+        signed_weight += validator.synergy_score.max(0.0) / 100.0;
+    }
+
+    if seen.len() < REQUIRED_QUORUM {
+        return Err(format!(
+            "committed QC has {} unique signer(s), {REQUIRED_QUORUM} required",
+            seen.len()
+        ));
+    }
+    let total_weight = validators
+        .values()
+        .map(|validator| validator.synergy_score.max(0.0) / 100.0)
+        .sum::<f64>();
+    if total_weight <= 0.0 {
+        return Err("active canonical validator set has zero voting weight".to_string());
+    }
+    if signed_weight <= (total_weight * 2.0 / 3.0) {
+        return Err("committed QC signed weight is not greater than two thirds".to_string());
+    }
+    if qc.cumulative_weight > 0.0 && (qc.cumulative_weight - signed_weight).abs() > 0.000_001 {
+        return Err(format!(
+            "committed QC cumulative_weight mismatch: computed {signed_weight}, declared {}",
+            qc.cumulative_weight
+        ));
+    }
+
+    Ok(QcProofSummary {
+        height,
+        hash: qc.block_hash,
+        vote_count: seen.len() as u64,
+        signers: seen.into_iter().collect(),
+        verified: true,
+        failure: None,
+    })
+}
+
+fn legacy_qc_height(qc: &LegacyQuorumCertificate) -> Result<u64, String> {
+    let mut heights = qc.votes.iter().map(|vote| vote.block_index);
+    let Some(height) = heights.next() else {
+        return Err("committed QC has no votes".to_string());
+    };
+    if heights.any(|candidate| candidate != height) {
+        return Err("committed QC votes do not agree on height".to_string());
+    }
+    Ok(height)
+}
+
+fn legacy_vote_signature_payload(vote: &LegacyVote) -> String {
+    format!(
+        "{}:{}:{}:{}:{}",
+        vote.validator_address,
+        vote.block_index,
+        vote.round_number,
+        vote.block_hash,
+        vote.epoch_number
+    )
+}
+
+fn load_legacy_active_genesis_validators(
+    data_dir: &Path,
+) -> Result<std::collections::BTreeMap<String, LegacyValidator>, String> {
+    let value = read_json(&data_dir.join("validator_registry.json"))?;
+    let validators = value
+        .get("validators")
+        .and_then(Value::as_object)
+        .ok_or_else(|| "validator_registry.json missing validators object".to_string())?;
+    let canonical_keys = canonical_genesis_consensus_keys()?;
+    let mut active = std::collections::BTreeMap::new();
+    let mut seen_canonical_keys = BTreeSet::new();
+    for (address, record) in validators {
+        let status = get_string(record, &["status"]).unwrap_or_default();
+        if status != "Active" && status != "ACTIVE" {
+            continue;
+        }
+        let public_key_text = get_string(record, &["public_key", "consensus_public_key"])
+            .ok_or_else(|| format!("validator {address} is missing consensus public key"))?;
+        let public_key = parse_validator_public_key(address, &public_key_text)?;
+        if !canonical_keys.is_empty() && !canonical_keys.contains(&public_key.key_data) {
+            return Err(format!(
+                "active validator {address} consensus public key is not in canonical genesis"
+            ));
+        }
+        seen_canonical_keys.insert(public_key.key_data.clone());
+        let synergy_score = record
+            .get("synergy_score")
+            .and_then(Value::as_f64)
+            .unwrap_or(100.0);
+        active.insert(
+            address.clone(),
+            LegacyValidator {
+                public_key,
+                synergy_score,
+            },
+        );
+    }
+    if active.len() != GENESIS_VALIDATOR_COUNT {
+        return Err(format!(
+            "active validator registry has {} canonical validator(s), expected {GENESIS_VALIDATOR_COUNT}",
+            active.len()
+        ));
+    }
+    if seen_canonical_keys.len() != GENESIS_VALIDATOR_COUNT {
+        return Err(format!(
+            "active validator registry has {} unique canonical key(s), expected {GENESIS_VALIDATOR_COUNT}",
+            seen_canonical_keys.len()
+        ));
+    }
+    Ok(active)
+}
+
+fn canonical_genesis_consensus_keys() -> Result<BTreeSet<Vec<u8>>, String> {
+    #[cfg(not(test))]
+    {
+        let genesis = canonical_genesis()?;
+        let mut keys = BTreeSet::new();
+        for validator in genesis.validators() {
+            let public_key = parse_validator_public_key(
+                &validator.validator_id,
+                &validator.consensus_public_key,
+            )?;
+            keys.insert(public_key.key_data);
+        }
+        return Ok(keys);
+    }
+    #[cfg(test)]
+    {
+        Ok(BTreeSet::new())
+    }
 }
 
 fn verify_recovery_proof(proof: &RecoveryProof) -> QcProofSummary {
@@ -1379,6 +1666,77 @@ mod tests {
         .unwrap();
     }
 
+    fn write_legacy_qc_fixture(root: &Path, signer_count: usize) {
+        let mut manager = PQCManager::new();
+        let mut validators = serde_json::Map::new();
+        let mut keys = Vec::new();
+        for index in 0..GENESIS_VALIDATOR_COUNT {
+            let address = format!("synv11testvalidator{index}");
+            let (public_key, private_key) = manager.generate_keypair(PQCAlgorithm::FNDSA).unwrap();
+            validators.insert(
+                address.clone(),
+                json!({
+                    "address": address,
+                    "status": "Active",
+                    "public_key": format!(
+                        "fn-dsa:{}",
+                        general_purpose::STANDARD.encode(&public_key.key_data)
+                    ),
+                    "synergy_score": 100.0,
+                    "cluster_id": 0,
+                }),
+            );
+            keys.push((address, public_key, private_key));
+        }
+        fs::write(
+            root.join("data/validator_registry.json"),
+            json!({
+                "validators": validators,
+                "clusters": {"0": []},
+                "current_epoch": 0,
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let block_hash = "majority-hash";
+        let votes = keys
+            .iter()
+            .take(signer_count)
+            .map(|(address, public_key, private_key)| {
+                let payload = format!("{address}:10:0:{block_hash}:0");
+                let signature = manager.sign(private_key, payload.as_bytes()).unwrap();
+                json!({
+                    "validator_address": address,
+                    "block_hash": block_hash,
+                    "block_index": 10,
+                    "epoch_number": 0,
+                    "round_number": 0,
+                    "signature": signature,
+                    "signer_public_key": public_key.key_data,
+                    "timestamp": 100,
+                })
+            })
+            .collect::<Vec<_>>();
+        let qc = json!({
+            "block_hash": block_hash,
+            "epoch_number": 0,
+            "round_number": 0,
+            "aggregate_signature": [1, 2, 3, 4],
+            "participant_bitmap": [15],
+            "cumulative_weight": signer_count as f64,
+            "validation_quorum_met": true,
+            "cooperation_quorum_met": true,
+            "timestamp": 100,
+            "votes": votes,
+        });
+        fs::write(
+            root.join("data/committed_qcs.jsonl"),
+            serde_json::to_string(&json!({"block_hash": block_hash, "qc": qc})).unwrap() + "\n",
+        )
+        .unwrap();
+    }
+
     fn base_input(target: &Path, source: &Path) -> BuildPlanInput {
         BuildPlanInput {
             target_node_id: "Val1".to_string(),
@@ -1589,6 +1947,23 @@ mod tests {
         let (_target, _source, plan) = prepare_plan();
         let verification = verify_plan(&plan);
         assert!(verification.errors.is_empty(), "{:?}", verification.errors);
+        assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn validator_recovery_accepts_legacy_committed_qc_without_sidecar_proof() {
+        let target = temp_root("legacy-target");
+        let source = temp_root("legacy-source");
+        write_chain(&target, &[("minority-hash", 10)]);
+        write_lock(&target, 10, "minority-hash");
+        write_chain(&source, &[("majority-hash", 10)]);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
+        let plan = build_plan(base_input(&target, &source));
+        let verification = verify_plan(&plan);
+        assert!(verification.errors.is_empty(), "{:?}", verification.errors);
+        assert!(plan.source_qc_aegis_pqc_verified);
         assert!(plan.majority_branch_proven);
     }
 
