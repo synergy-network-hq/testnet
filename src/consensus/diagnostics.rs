@@ -1,10 +1,16 @@
 use crate::block::BlockChain;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
+use crate::consensus::self_realign::{
+    fail_closed_mutation_response, verify_signed_snapshot_manifest, RealignmentState,
+    SignedSnapshotManifest, SnapshotSchedule, SnapshotVerificationPolicy, ValidatorDutyGate,
+    DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -103,6 +109,51 @@ fn read_json_file(path: &str) -> Option<Value> {
     fs::read_to_string(path)
         .ok()
         .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+}
+
+fn read_json_file_raw(path: &Path) -> Option<Value> {
+    fs::read_to_string(path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
+}
+
+fn marker_recovery_state(marker_paths: &[String]) -> RealignmentState {
+    for marker_path in marker_paths {
+        let path = PathBuf::from(marker_path);
+        let Some(value) = read_json_file_raw(&path) else {
+            continue;
+        };
+        if let Some(state) = value
+            .get("recovery_state")
+            .or_else(|| value.get("status"))
+            .and_then(Value::as_str)
+        {
+            match state {
+                "ACTIVE" | "Active" | "active" => return RealignmentState::Active,
+                "SUSPECT" | "Suspect" | "suspect" => return RealignmentState::Suspect,
+                "EVIDENCE_PRESERVED" => return RealignmentState::EvidencePreserved,
+                "CHAIN_DATA_WIPE_READY" => return RealignmentState::ChainDataWipeReady,
+                "CHAIN_DATA_WIPED" => return RealignmentState::ChainDataWiped,
+                "SNAPSHOT_DISCOVERY" => return RealignmentState::SnapshotDiscovery,
+                "SNAPSHOT_DOWNLOADING" => return RealignmentState::SnapshotDownloading,
+                "SNAPSHOT_VERIFIED" => return RealignmentState::SnapshotVerified,
+                "SNAPSHOT_RESTORED" => return RealignmentState::SnapshotRestored,
+                "SPEED_SYNCING" => return RealignmentState::SpeedSyncing,
+                "CAUGHT_UP" => return RealignmentState::CaughtUp,
+                "SHADOW_OBSERVING" | "Shadow" => return RealignmentState::ShadowObserving,
+                "SHADOW_PASSED" => return RealignmentState::ShadowPassed,
+                "READY_TO_REJOIN" => return RealignmentState::ReadyToRejoin,
+                "PENDING_REACTIVATION" => return RealignmentState::PendingReactivation,
+                "FAILED_CLOSED" => return RealignmentState::FailedClosed,
+                _ => return RealignmentState::Quarantined,
+            }
+        }
+    }
+    if marker_paths.is_empty() {
+        RealignmentState::Active
+    } else {
+        RealignmentState::Quarantined
+    }
 }
 
 fn latest_canonical_lock_height() -> Option<u64> {
@@ -219,10 +270,16 @@ pub fn quarantine_status() -> Value {
     })
     .collect::<Vec<_>>();
 
+    let recovery_state = marker_recovery_state(&marker_paths);
+    let duty_gate = ValidatorDutyGate::for_state(recovery_state);
+
     json!({
         "chain": chain_identity(),
         "status": if marker_paths.is_empty() { "healthy" } else { "quarantined" },
         "quarantined": !marker_paths.is_empty(),
+        "recovery_state": recovery_state,
+        "duty_gate": duty_gate,
+        "rejoin_eligibility": recovery_state == RealignmentState::ReadyToRejoin,
         "marker_paths": marker_paths,
     })
 }
@@ -360,27 +417,216 @@ pub fn recover_transient_vote_locks(
 }
 
 pub fn self_heal_status() -> Value {
+    let quarantine = quarantine_status();
+    let recovery_state = quarantine
+        .get("recovery_state")
+        .cloned()
+        .unwrap_or_else(|| json!(RealignmentState::Active));
     json!({
         "chain": chain_identity(),
-        "status": "idle",
-        "automatic_archive_install": "fail_closed_until_quorum_or_archive_manifest_qc_verification_is_wired",
-        "quarantine": quarantine_status(),
+        "status": recovery_state,
+        "lifecycle": [
+            "ACTIVE",
+            "SUSPECT",
+            "QUARANTINED",
+            "EVIDENCE_PRESERVED",
+            "CHAIN_DATA_WIPE_READY",
+            "CHAIN_DATA_WIPED",
+            "SNAPSHOT_DISCOVERY",
+            "SNAPSHOT_DOWNLOADING",
+            "SNAPSHOT_VERIFIED",
+            "SNAPSHOT_RESTORED",
+            "SPEED_SYNCING",
+            "CAUGHT_UP",
+            "SHADOW_OBSERVING",
+            "SHADOW_PASSED",
+            "READY_TO_REJOIN",
+            "PENDING_REACTIVATION",
+            "ACTIVE"
+        ],
+        "snapshot_schedule": SnapshotSchedule::launch_default(),
+        "shadow_observation_required_blocks": DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+        "quarantine": quarantine,
+        "manual_state_surgery_allowed": false,
+        "fail_closed": true,
     })
 }
 
 pub fn start_self_heal() -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Err("self-heal state installation is not yet enabled: refusing to mutate chain state until quorum/archive source, manifest, state root, and every QC are verified through aegis-pqvm".to_string())
+    Ok(json!(fail_closed_mutation_response(
+        crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string()),
+        RealignmentState::Quarantined,
+        "self-heal requires a verified signed snapshot manifest; use synergy_selfHealFromSnapshot after snapshot verification",
+        "data/self-heal-evidence"
+    )))
 }
 
 pub fn sync_from_canonical_peer() -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Err("sync-from-canonical-peer is not yet enabled: refusing to copy state until a verified quorum source and QC/state-root checks are supplied".to_string())
+    Ok(json!(fail_closed_mutation_response(
+        crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string()),
+        RealignmentState::Quarantined,
+        "sync-from-canonical-peer requires a verified majority source, Aegis/PQC QC proof, and snapshot restore preconditions",
+        "data/self-heal-evidence"
+    )))
 }
 
 pub fn self_heal_from_archive() -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Err("self-heal-from-archive is not yet enabled: refusing archive state install until signed catalog, manifest, content root, state root, chunks, and every QC verify through aegis-pqvm".to_string())
+    Ok(json!(fail_closed_mutation_response(
+        crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string()),
+        RealignmentState::Quarantined,
+        "self-heal-from-archive has been superseded by signed snapshot self-heal; refusing archive install without verified snapshot manifest",
+        "data/self-heal-evidence"
+    )))
+}
+
+pub fn snapshot_catalog() -> Value {
+    let root = crate::utils::resolve_data_path("data/snapshots");
+    let mut snapshots = Vec::new();
+    if let Ok(entries) = fs::read_dir(&root) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let is_manifest = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| name.ends_with("manifest.json"))
+                .unwrap_or(false);
+            if is_manifest {
+                snapshots.push(json!({
+                    "path": path.to_string_lossy(),
+                    "metadata": read_json_file_raw(&path),
+                }));
+            }
+        }
+    }
+    json!({
+        "chain": chain_identity(),
+        "snapshot_root": root.to_string_lossy(),
+        "schedule": SnapshotSchedule::launch_default(),
+        "snapshots": snapshots,
+    })
+}
+
+pub fn list_snapshots() -> Value {
+    snapshot_catalog()
+}
+
+pub fn create_snapshot() -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    Ok(json!(fail_closed_mutation_response(
+        crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string()),
+        RealignmentState::Active,
+        "snapshot creation requires an initialized Aegis/PQC ArchiveSnapshotSigner key and finalized QC evidence; refusing unsigned snapshot creation",
+        "data/snapshots"
+    )))
+}
+
+pub fn verify_snapshot(manifest_path: &str, snapshot_root: Option<&str>) -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    let content = fs::read_to_string(manifest_path)
+        .map_err(|error| format!("read snapshot manifest {manifest_path}: {error}"))?;
+    let signed: SignedSnapshotManifest = serde_json::from_str(&content)
+        .map_err(|error| format!("parse snapshot manifest {manifest_path}: {error}"))?;
+    let snapshot_root = snapshot_root.map(PathBuf::from);
+    let report = verify_signed_snapshot_manifest(
+        &signed,
+        &SnapshotVerificationPolicy::default(),
+        snapshot_root.as_deref(),
+    );
+    Ok(json!(report))
+}
+
+pub fn self_heal_from_snapshot(
+    manifest_path: &str,
+    snapshot_root: Option<&str>,
+) -> Result<Value, String> {
+    let verification = verify_snapshot(manifest_path, snapshot_root)?;
+    let success = verification
+        .get("success")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !success {
+        return Ok(json!(fail_closed_mutation_response(
+            crate::config::resolve_runtime_validator_address()
+                .unwrap_or_else(|| "unknown-validator".to_string()),
+            RealignmentState::Quarantined,
+            "snapshot verification failed; self-heal remains quarantined",
+            "data/self-heal-evidence"
+        )));
+    }
+    Ok(json!({
+        "success": true,
+        "typed_status": "SNAPSHOT_VERIFIED",
+        "chain": chain_identity(),
+        "verification": verification,
+        "next_required_action": "preserve_evidence_then_wipe_only_chain_state_then_restore_snapshot",
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+        "chain_state_mutated": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+    }))
+}
+
+pub fn shadow_status() -> Value {
+    json!({
+        "chain": chain_identity(),
+        "quarantine": quarantine_status(),
+        "required_blocks": DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+        "shadow_signs_real_votes": false,
+        "status": "idle_or_not_started",
+        "fail_closed": true,
+    })
+}
+
+pub fn start_shadow_observe() -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    Ok(json!({
+        "success": false,
+        "typed_status": "FAILED_CLOSED",
+        "reason": "shadow observation requires a restored, caught-up quarantined validator and an observation window controller",
+        "chain": chain_identity(),
+        "previous_state": quarantine_status().get("recovery_state").cloned(),
+        "new_state": "QUARANTINED",
+        "shadow_signs_real_votes": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "next_required_action": "restore_verified_snapshot_and_speed_sync_before_shadow_observe",
+    }))
+}
+
+pub fn rejoin_eligibility() -> Value {
+    json!({
+        "chain": chain_identity(),
+        "eligible": false,
+        "fail_closed": true,
+        "quarantine": quarantine_status(),
+        "blocked_reasons": [
+            "rejoin requires SHADOW_PASSED",
+            "rejoin requires exact common-height hash match",
+            "rejoin requires latest finalized QC verified through Aegis/PQC",
+            "rejoin requires finalized safe boundary"
+        ],
+    })
+}
+
+pub fn request_rejoin() -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    Ok(json!(fail_closed_mutation_response(
+        crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string()),
+        RealignmentState::ReadyToRejoin,
+        "request rejoin is refused until shadow pass, QC verification, exact common-height match, and finalized safe-boundary proof are present",
+        "data/self-heal-evidence"
+    )))
 }
 
 #[cfg(test)]

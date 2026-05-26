@@ -40,9 +40,19 @@ fn run() -> Result<(), String> {
                 synergy_testnet::consensus::diagnostics::diagnose_vote_locks(finalized_height),
             )?;
         }
+        "divergence-status" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::divergence_status(
+                &synergy_testnet::rpc::rpc_server::SHARED_CHAIN,
+            ))?;
+        }
         "quarantine-status" => {
             require_testnet_args(&args)?;
             print_json(synergy_testnet::consensus::diagnostics::quarantine_status())?;
+        }
+        "self-heal-status" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::self_heal_status())?;
         }
         "self-heal" => {
             require_testnet_args(&args)?;
@@ -67,6 +77,63 @@ fn run() -> Result<(), String> {
         "sync-from-canonical-peer" => {
             require_testnet_args(&args)?;
             match synergy_testnet::consensus::diagnostics::sync_from_canonical_peer() {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
+        "create-snapshot" => {
+            require_testnet_args(&args)?;
+            match synergy_testnet::consensus::diagnostics::create_snapshot() {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
+        "list-snapshots" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::list_snapshots())?;
+        }
+        "verify-snapshot" => {
+            require_testnet_args(&args)?;
+            let manifest = arg_value(&args, "--manifest")
+                .or_else(|| arg_value(&args, "--manifest-path"))
+                .ok_or_else(|| "verify-snapshot requires --manifest <path>".to_string())?;
+            let snapshot_root = arg_value(&args, "--snapshot-root");
+            let report = synergy_testnet::consensus::diagnostics::verify_snapshot(
+                &manifest,
+                snapshot_root.as_deref(),
+            )?;
+            print_json(report)?;
+        }
+        "self-heal-from-snapshot" => {
+            require_testnet_args(&args)?;
+            let manifest = arg_value(&args, "--manifest")
+                .or_else(|| arg_value(&args, "--manifest-path"))
+                .ok_or_else(|| "self-heal-from-snapshot requires --manifest <path>".to_string())?;
+            let snapshot_root = arg_value(&args, "--snapshot-root");
+            let report = synergy_testnet::consensus::diagnostics::self_heal_from_snapshot(
+                &manifest,
+                snapshot_root.as_deref(),
+            )?;
+            print_json(report)?;
+        }
+        "start-shadow-observe" => {
+            require_testnet_args(&args)?;
+            match synergy_testnet::consensus::diagnostics::start_shadow_observe() {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
+        "shadow-status" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::shadow_status())?;
+        }
+        "rejoin-eligibility" => {
+            require_testnet_args(&args)?;
+            print_json(synergy_testnet::consensus::diagnostics::rejoin_eligibility())?;
+        }
+        "request-rejoin" => {
+            require_testnet_args(&args)?;
+            match synergy_testnet::consensus::diagnostics::request_rejoin() {
                 Ok(report) => print_json(report)?,
                 Err(error) => return Err(error),
             }
@@ -103,11 +170,35 @@ fn run() -> Result<(), String> {
             println!("  synergy-node diagnose-consensus-stall --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node diagnose-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>]");
             println!(
+                "  synergy-node divergence-status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!(
                 "  synergy-node quarantine-status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!(
+                "  synergy-node self-heal-status --chain-id 1264 --network-id synergy-testnet-v2"
             );
             println!("  synergy-node recover-transient-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>] [--min-age-secs <seconds>]");
             println!("  synergy-node self-heal --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2");
+            println!(
+                "  synergy-node create-snapshot --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!(
+                "  synergy-node list-snapshots --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!("  synergy-node verify-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
+            println!("  synergy-node self-heal-from-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
+            println!("  synergy-node start-shadow-observe --chain-id 1264 --network-id synergy-testnet-v2");
+            println!(
+                "  synergy-node shadow-status --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!(
+                "  synergy-node rejoin-eligibility --chain-id 1264 --network-id synergy-testnet-v2"
+            );
+            println!(
+                "  synergy-node request-rejoin --chain-id 1264 --network-id synergy-testnet-v2"
+            );
             println!("  synergy-node sync-from-archive --archive-url <url> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
             println!("  synergy-node self-heal-from-archive --archive-url <url> --divergence-height <height> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
         }

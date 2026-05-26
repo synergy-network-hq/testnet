@@ -11,6 +11,7 @@ pub mod diagnostics;
 pub mod dual_quorum;
 pub mod legacy_canonical_lock;
 pub mod posy;
+pub mod self_realign;
 pub mod synergy_score;
 #[cfg(test)]
 pub mod tests;

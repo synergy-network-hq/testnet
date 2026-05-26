@@ -13,6 +13,7 @@ bincode = { workspace = true }
 hex = { workspace = true }
 sha3 = { workspace = true }
 lazy_static = { workspace = true }
+sha2 = "0.10"
 
 # Additional dependencies
 md5 = "0.7.0"

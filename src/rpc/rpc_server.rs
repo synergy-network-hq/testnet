@@ -1257,6 +1257,33 @@ fn handle_json_rpc(
 
         "synergy_getSelfHealStatus" => crate::consensus::diagnostics::self_heal_status(),
 
+        "synergy_listSnapshots" => crate::consensus::diagnostics::list_snapshots(),
+
+        "synergy_getSnapshotCatalog" => crate::consensus::diagnostics::snapshot_catalog(),
+
+        "synergy_createSnapshot" => match crate::consensus::diagnostics::create_snapshot() {
+            Ok(report) => report,
+            Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+        },
+
+        "synergy_verifySnapshot" => {
+            let manifest_path = rpc_string_param(&params, "manifest_path", 0)
+                .or_else(|| rpc_string_param(&params, "manifest", 0))
+                .unwrap_or_default();
+            let snapshot_root = rpc_string_param(&params, "snapshot_root", 1);
+            if manifest_path.trim().is_empty() {
+                json!({"success": false, "fail_closed": true, "error": "synergy_verifySnapshot requires manifest_path"})
+            } else {
+                match crate::consensus::diagnostics::verify_snapshot(
+                    &manifest_path,
+                    snapshot_root.as_deref(),
+                ) {
+                    Ok(report) => report,
+                    Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+                }
+            }
+        }
+
         "synergy_diagnoseConsensusStall" => {
             crate::consensus::diagnostics::diagnose_consensus_stall(chain)
         }
@@ -1299,6 +1326,40 @@ fn handle_json_rpc(
                 Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
             }
         }
+
+        "synergy_selfHealFromSnapshot" => {
+            let manifest_path = rpc_string_param(&params, "manifest_path", 0)
+                .or_else(|| rpc_string_param(&params, "manifest", 0))
+                .unwrap_or_default();
+            let snapshot_root = rpc_string_param(&params, "snapshot_root", 1);
+            if manifest_path.trim().is_empty() {
+                json!({"success": false, "fail_closed": true, "error": "synergy_selfHealFromSnapshot requires manifest_path"})
+            } else {
+                match crate::consensus::diagnostics::self_heal_from_snapshot(
+                    &manifest_path,
+                    snapshot_root.as_deref(),
+                ) {
+                    Ok(report) => report,
+                    Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+                }
+            }
+        }
+
+        "synergy_getShadowStatus" => crate::consensus::diagnostics::shadow_status(),
+
+        "synergy_startShadowObserve" => {
+            match crate::consensus::diagnostics::start_shadow_observe() {
+                Ok(report) => report,
+                Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+            }
+        }
+
+        "synergy_getRejoinEligibility" => crate::consensus::diagnostics::rejoin_eligibility(),
+
+        "synergy_requestRejoin" => match crate::consensus::diagnostics::request_rejoin() {
+            Ok(report) => report,
+            Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+        },
 
         "synergy_getValidatorSet" => {
             let chain = chain.lock().unwrap();
@@ -4149,8 +4210,13 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_getQuarantineStatus"
         | "synergy_getReconciliationPlan"
         | "synergy_getSelfHealStatus"
+        | "synergy_listSnapshots"
+        | "synergy_getSnapshotCatalog"
+        | "synergy_verifySnapshot"
         | "synergy_diagnoseConsensusStall"
         | "synergy_diagnoseVoteLocks"
+        | "synergy_getShadowStatus"
+        | "synergy_getRejoinEligibility"
         | "synergy_getValidatorSet"
         | "synergy_getProtocolConfig"
         | "synergy_getAegisStatus"
@@ -4315,7 +4381,11 @@ fn rpc_method_exposure(method: &str) -> Option<RpcMethodExposure> {
         | "synergy_startSelfHeal"
         | "synergy_recoverTransientVoteLocks"
         | "synergy_syncFromCanonicalPeer"
-        | "synergy_selfHealFromArchive" => Some(RpcMethodExposure::Operator),
+        | "synergy_selfHealFromArchive"
+        | "synergy_createSnapshot"
+        | "synergy_selfHealFromSnapshot"
+        | "synergy_startShadowObserve"
+        | "synergy_requestRejoin" => Some(RpcMethodExposure::Operator),
         _ => None,
     }
 }
