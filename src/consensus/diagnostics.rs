@@ -301,6 +301,17 @@ fn read_block_at_height(height: u64) -> Result<BlockSummary, String> {
     value.ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
 }
 
+fn read_latest_block_summary() -> Result<BlockSummary, String> {
+    let path = crate::utils::resolve_data_path("data/chain.json");
+    let file = fs::File::open(&path)
+        .map_err(|error| format!("open chain state {}: {error}", path.display()))?;
+    let reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let value = serde::de::Deserializer::deserialize_seq(&mut deserializer, LatestBlockVisitor)
+        .map_err(|error| format!("stream parse chain state {}: {error}", path.display()))?;
+    value.ok_or_else(|| "chain state does not contain any persisted blocks".to_string())
+}
+
 struct BlockAtHeightVisitor {
     height: u64,
 }
@@ -322,6 +333,47 @@ impl<'de> Visitor<'de> for BlockAtHeightVisitor {
             }
         }
         Ok(None)
+    }
+}
+
+struct LatestBlockVisitor;
+
+impl<'de> Visitor<'de> for LatestBlockVisitor {
+    type Value = Option<BlockSummary>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a chain.json array of block objects")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        let mut latest = None;
+        while let Some(value) = seq.next_element::<Value>()? {
+            let candidate_height =
+                u64_field(&value, &["height", "number", "block_number", "block_index"]);
+            let Some(height) = candidate_height else {
+                continue;
+            };
+            let Some(hash) = string_field(&value, &["hash", "block_hash"]) else {
+                continue;
+            };
+            let parent_hash = string_field(&value, &["parent_hash", "previous_hash", "parentHash"])
+                .unwrap_or_default();
+            if latest
+                .as_ref()
+                .map(|block: &BlockSummary| height > block.height)
+                .unwrap_or(true)
+            {
+                latest = Some(BlockSummary {
+                    height,
+                    hash,
+                    parent_hash,
+                });
+            }
+        }
+        Ok(latest)
     }
 }
 
@@ -1115,7 +1167,14 @@ pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Va
             "missing canonical_locks.json finalized head; refusing snapshot creation".to_string()
         })?;
     let data_dir = crate::utils::resolve_data_path("data");
-    let qc = crate::recovery::verify_latest_committed_qc_in_state_dir(&data_dir, None)?;
+    let persisted_chain_tip = read_latest_block_summary()?;
+    let persisted_chain_tip_height = persisted_chain_tip.height;
+    let persisted_chain_tip_hash = persisted_chain_tip.hash.clone();
+    let qc = crate::recovery::verify_latest_committed_qc_in_state_dir_at_or_below(
+        &data_dir,
+        persisted_chain_tip_height,
+        None,
+    )?;
     if !qc.verified || qc.vote_count < 4 {
         return Err("latest committed QC is not verified through Aegis/PQC quorum".to_string());
     }
@@ -1126,7 +1185,11 @@ pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Va
             snapshot_height
         )
     })?;
-    let block = read_block_at_height(snapshot_height)?;
+    let block = if persisted_chain_tip.height == snapshot_height {
+        persisted_chain_tip
+    } else {
+        read_block_at_height(snapshot_height)?
+    };
     if block.hash != canonical_lock_hash {
         return Err(format!(
             "canonical lock hash {} does not match block hash {} at height {}",
@@ -1257,6 +1320,9 @@ pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Va
         "chain": chain_identity(),
         "snapshot_height": snapshot_height,
         "snapshot_hash": canonical_lock_hash,
+        "persisted_chain_tip_height": persisted_chain_tip_height,
+        "persisted_chain_tip_hash": persisted_chain_tip_hash,
+        "selected_committed_qc_height": qc.height,
         "latest_canonical_lock_height": latest_canonical_lock_height,
         "latest_canonical_lock_hash": latest_canonical_lock_hash,
         "snapshot_path": snapshot_dir,
@@ -1744,8 +1810,8 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
 mod tests {
     use super::{
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        read_block_at_height, request_rejoin_with_options, shadow_status,
-        start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
+        read_block_at_height, read_latest_block_summary, request_rejoin_with_options,
+        shadow_status, start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
         CreateSnapshotOptions, RejoinRequestOptions, StartShadowObserveOptions,
         SyncFromCanonicalPeerOptions, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
@@ -1924,6 +1990,34 @@ mod tests {
         .unwrap();
 
         let block = with_runtime_root(&root, || read_block_at_height(4095).unwrap());
+
+        assert_eq!(block.height, 4095);
+        assert_eq!(block.hash, "hash-4095");
+        assert_eq!(block.parent_hash, "hash-4094");
+    }
+
+    #[test]
+    fn read_latest_block_summary_streams_chain_array() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("stream-chain-latest");
+        let blocks: Vec<Value> = (0u64..4096)
+            .map(|height| {
+                json!({
+                    "block_index": height,
+                    "hash": format!("hash-{height}"),
+                    "previous_hash": format!("hash-{}", height.saturating_sub(1)),
+                })
+            })
+            .collect();
+        fs::write(
+            root.join("data/chain.json"),
+            serde_json::to_vec(&blocks).unwrap(),
+        )
+        .unwrap();
+
+        let block = with_runtime_root(&root, || read_latest_block_summary().unwrap());
 
         assert_eq!(block.height, 4095);
         assert_eq!(block.hash, "hash-4095");

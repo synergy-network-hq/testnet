@@ -890,6 +890,16 @@ pub fn verify_latest_committed_qc_in_state_dir(
     verify_legacy_committed_qc(source_dir, min_height)
 }
 
+pub fn verify_latest_committed_qc_in_state_dir_at_or_below(
+    source_dir: &Path,
+    max_height: u64,
+    min_height: Option<u64>,
+) -> Result<QcProofSummary, String> {
+    let data_dir = data_dir(source_dir);
+    let qc = latest_legacy_committed_qc_at_or_below(&data_dir, max_height, min_height)?;
+    verify_legacy_qc(&data_dir, qc)
+}
+
 fn latest_legacy_committed_qc(
     data_dir: &Path,
     min_height: Option<u64>,
@@ -920,6 +930,46 @@ fn latest_legacy_committed_qc(
         }
     }
     Ok(entry.qc)
+}
+
+fn latest_legacy_committed_qc_at_or_below(
+    data_dir: &Path,
+    max_height: u64,
+    min_height: Option<u64>,
+) -> Result<LegacyQuorumCertificate, String> {
+    let path = data_dir.join("committed_qcs.jsonl");
+    let file =
+        fs::File::open(&path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let reader = BufReader::new(file);
+    let mut candidate = None;
+    let mut latest_seen_height = None;
+    for line in reader.lines() {
+        let line = line.map_err(|error| format!("read {}: {error}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let entry = serde_json::from_str::<LegacyCommittedQcLogEntry>(&line)
+            .map_err(|error| format!("parse committed QC entry: {error}"))?;
+        let height = legacy_qc_height(&entry.qc)?;
+        latest_seen_height = Some(height);
+        if height > max_height {
+            continue;
+        }
+        if let Some(min_height) = min_height {
+            if height < min_height {
+                continue;
+            }
+        }
+        candidate = Some(entry.qc);
+    }
+    candidate.ok_or_else(|| {
+        let latest = latest_seen_height
+            .map(|height| height.to_string())
+            .unwrap_or_else(|| "none".to_string());
+        format!(
+            "no committed QC at or below persisted chain height {max_height}; latest committed QC height seen: {latest}"
+        )
+    })
 }
 
 fn verify_legacy_qc(
@@ -1819,6 +1869,14 @@ mod tests {
     }
 
     fn write_legacy_qc_fixture(root: &Path, signer_count: usize) {
+        write_legacy_qc_fixture_at_heights(root, signer_count, &[(10, "majority-hash")]);
+    }
+
+    fn write_legacy_qc_fixture_at_heights(
+        root: &Path,
+        signer_count: usize,
+        heights: &[(u64, &str)],
+    ) {
         let mut manager = PQCManager::new();
         let mut validators = serde_json::Map::new();
         let mut keys = Vec::new();
@@ -1851,42 +1909,61 @@ mod tests {
         )
         .unwrap();
 
-        let block_hash = "majority-hash";
-        let votes = keys
-            .iter()
-            .take(signer_count)
-            .map(|(address, public_key, private_key)| {
-                let payload = format!("{address}:10:0:{block_hash}:0");
-                let signature = manager.sign(private_key, payload.as_bytes()).unwrap();
-                json!({
-                    "validator_address": address,
-                    "block_hash": block_hash,
-                    "block_index": 10,
-                    "epoch_number": 0,
-                    "round_number": 0,
-                    "signature": signature,
-                    "signer_public_key": public_key.key_data,
-                    "timestamp": 100,
+        let mut lines = String::new();
+        for (height, block_hash) in heights {
+            let votes = keys
+                .iter()
+                .take(signer_count)
+                .map(|(address, public_key, private_key)| {
+                    let payload = format!("{address}:{height}:0:{block_hash}:0");
+                    let signature = manager.sign(private_key, payload.as_bytes()).unwrap();
+                    json!({
+                        "validator_address": address,
+                        "block_hash": block_hash,
+                        "block_index": height,
+                        "epoch_number": 0,
+                        "round_number": 0,
+                        "signature": signature,
+                        "signer_public_key": public_key.key_data,
+                        "timestamp": 100,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
-        let qc = json!({
-            "block_hash": block_hash,
-            "epoch_number": 0,
-            "round_number": 0,
-            "aggregate_signature": [1, 2, 3, 4],
-            "participant_bitmap": [15],
-            "cumulative_weight": signer_count as f64,
-            "validation_quorum_met": true,
-            "cooperation_quorum_met": true,
-            "timestamp": 100,
-            "votes": votes,
-        });
-        fs::write(
-            root.join("data/committed_qcs.jsonl"),
-            serde_json::to_string(&json!({"block_hash": block_hash, "qc": qc})).unwrap() + "\n",
-        )
-        .unwrap();
+                .collect::<Vec<_>>();
+            let qc = json!({
+                "block_hash": block_hash,
+                "epoch_number": 0,
+                "round_number": 0,
+                "aggregate_signature": [1, 2, 3, 4],
+                "participant_bitmap": [15],
+                "cumulative_weight": signer_count as f64,
+                "validation_quorum_met": true,
+                "cooperation_quorum_met": true,
+                "timestamp": 100,
+                "votes": votes,
+            });
+            lines.push_str(
+                &(serde_json::to_string(&json!({"block_hash": block_hash, "qc": qc})).unwrap()
+                    + "\n"),
+            );
+        }
+        fs::write(root.join("data/committed_qcs.jsonl"), lines).unwrap();
+    }
+
+    #[test]
+    fn committed_qc_selection_is_bounded_by_persisted_chain_tip() {
+        let root = temp_root("bounded-qc");
+        write_legacy_qc_fixture_at_heights(
+            &root,
+            REQUIRED_QUORUM,
+            &[(10, "hash-10"), (11, "hash-11"), (12, "hash-12")],
+        );
+
+        let summary = verify_latest_committed_qc_in_state_dir_at_or_below(&root, 11, None).unwrap();
+
+        assert!(summary.verified);
+        assert_eq!(summary.height, 11);
+        assert_eq!(summary.hash, "hash-11");
+        assert_eq!(summary.vote_count, REQUIRED_QUORUM as u64);
     }
 
     fn base_input(target: &Path, source: &Path) -> BuildPlanInput {
