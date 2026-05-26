@@ -2,12 +2,17 @@ use crate::block::BlockChain;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::consensus::self_realign::{
-    fail_closed_mutation_response, verify_signed_snapshot_manifest, RealignmentState,
-    SignedSnapshotManifest, SnapshotSchedule, SnapshotVerificationPolicy, ValidatorDutyGate,
-    DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+    apply_chain_state_wipe_plan, build_chain_state_wipe_plan, build_snapshot_restore_plan,
+    fail_closed_mutation_response, launch_snapshot_allowed_files, sign_snapshot_manifest,
+    verify_signed_snapshot_manifest, RealignmentState, SignedSnapshotManifest, SnapshotBuildInput,
+    SnapshotQcEvidence, SnapshotSchedule, SnapshotVerificationPolicy, ValidatorDutyGate,
+    WipeApplyPreconditions, DEFAULT_SHADOW_OBSERVATION_BLOCKS,
 };
+use crate::crypto::aegis_pqvm::AegisPqvmSigner;
+use crate::synergy_types::{AegisPqKeyRole, Epoch};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -40,6 +45,20 @@ struct VoteLockEntry {
     created_at: u64,
     #[serde(default)]
     updated_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CreateSnapshotOptions {
+    pub source_node_majority_branch_proven: bool,
+    pub source_role: Option<String>,
+    pub conflict_height_hash: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct BlockSummary {
+    height: u64,
+    hash: String,
+    parent_hash: String,
 }
 
 fn now_secs() -> u64 {
@@ -164,6 +183,24 @@ fn latest_canonical_lock_height() -> Option<u64> {
         .max()
 }
 
+fn latest_canonical_lock() -> Option<(u64, String)> {
+    let map = read_json_file("data/canonical_locks.json")?;
+    let object = map.as_object()?;
+    let height = object
+        .keys()
+        .filter_map(|key| key.parse::<u64>().ok())
+        .max()?;
+    let entry = object.get(&height.to_string())?;
+    let hash = string_field(entry, &["hash", "block_hash"])?;
+    Some((height, hash))
+}
+
+fn canonical_lock_at_height(height: u64) -> Option<String> {
+    let map = read_json_file("data/canonical_locks.json")?;
+    let entry = map.as_object()?.get(&height.to_string())?;
+    string_field(entry, &["hash", "block_hash"])
+}
+
 fn latest_committed_qc() -> Option<Value> {
     let path = crate::utils::resolve_data_path("data/committed_qcs.jsonl");
     let content = fs::read_to_string(path).ok()?;
@@ -172,6 +209,238 @@ fn latest_committed_qc() -> Option<Value> {
         .rev()
         .find(|line| !line.trim().is_empty())
         .and_then(|line| serde_json::from_str::<Value>(line).ok())
+}
+
+fn string_field(value: &Value, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(Value::as_str)
+        .map(str::to_string)
+}
+
+fn u64_field(value: &Value, keys: &[&str]) -> Option<u64> {
+    keys.iter()
+        .filter_map(|key| value.get(*key))
+        .find_map(|item| {
+            item.as_u64()
+                .or_else(|| item.as_str().and_then(|text| text.parse::<u64>().ok()))
+        })
+}
+
+fn find_block_at_height(value: &Value, height: u64) -> Option<BlockSummary> {
+    if let Some(object) = value.as_object() {
+        let candidate_height =
+            u64_field(value, &["height", "number", "block_number", "block_index"]);
+        if candidate_height == Some(height) {
+            let hash = string_field(value, &["hash", "block_hash"])?;
+            let parent_hash = string_field(value, &["parent_hash", "previous_hash", "parentHash"])
+                .unwrap_or_default();
+            return Some(BlockSummary {
+                height,
+                hash,
+                parent_hash,
+            });
+        }
+        for child in object.values() {
+            if let Some(found) = find_block_at_height(child, height) {
+                return Some(found);
+            }
+        }
+    } else if let Some(array) = value.as_array() {
+        for child in array {
+            if let Some(found) = find_block_at_height(child, height) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn read_block_at_height(height: u64) -> Result<BlockSummary, String> {
+    let path = crate::utils::resolve_data_path("data/chain.json");
+    let value = read_json_file_raw(&path)
+        .ok_or_else(|| format!("read or parse chain state {}", path.display()))?;
+    find_block_at_height(&value, height)
+        .ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
+}
+
+fn active_genesis_validator_addresses() -> Result<Vec<String>, String> {
+    let genesis = crate::genesis::load_canonical_genesis_for_runtime()?;
+    let validators = genesis
+        .validators()
+        .iter()
+        .map(|validator| {
+            if validator.operator_address.trim().is_empty() {
+                validator.validator_id.clone()
+            } else {
+                validator.operator_address.clone()
+            }
+        })
+        .collect::<Vec<_>>();
+    if validators.len() != 5 {
+        return Err(format!(
+            "active genesis validator set has {} validator(s); expected 5",
+            validators.len()
+        ));
+    }
+    Ok(validators)
+}
+
+fn env_truthy(name: &str) -> bool {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "y" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn copy_snapshot_state_files(data_dir: &Path, snapshot_dir: &Path) -> Result<usize, String> {
+    fs::create_dir_all(snapshot_dir).map_err(|error| {
+        format!(
+            "create snapshot state directory {}: {error}",
+            snapshot_dir.display()
+        )
+    })?;
+    let mut copied = 0usize;
+    for file_name in launch_snapshot_allowed_files() {
+        let source = data_dir.join(file_name);
+        if !source.is_file() {
+            continue;
+        }
+        let target = snapshot_dir.join(file_name);
+        fs::copy(&source, &target).map_err(|error| {
+            format!(
+                "copy launch-approved snapshot state {} -> {}: {error}",
+                source.display(),
+                target.display()
+            )
+        })?;
+        copied += 1;
+    }
+    if copied == 0 {
+        return Err("snapshot source contains no launch-approved chain/state files".to_string());
+    }
+    Ok(copied)
+}
+
+fn enforce_snapshot_retention(snapshot_root: &Path, retain_last: usize) -> Result<(), String> {
+    if retain_last == 0 || !snapshot_root.is_dir() {
+        return Ok(());
+    }
+    let mut snapshots = fs::read_dir(snapshot_root)
+        .map_err(|error| format!("read snapshot root {}: {error}", snapshot_root.display()))?
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+                && entry
+                    .file_name()
+                    .to_str()
+                    .map(|name| name.starts_with("snapshot-"))
+                    .unwrap_or(false)
+        })
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    snapshots.sort();
+    let stale_count = snapshots.len().saturating_sub(retain_last);
+    for path in snapshots.into_iter().take(stale_count) {
+        fs::remove_dir_all(&path)
+            .map_err(|error| format!("remove stale snapshot {}: {error}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn current_runtime_checksum() -> Result<String, String> {
+    let exe =
+        std::env::current_exe().map_err(|error| format!("resolve current runtime: {error}"))?;
+    let bytes = fs::read(&exe)
+        .map_err(|error| format!("read current runtime {}: {error}", exe.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(hex::encode(hasher.finalize()))
+}
+
+fn read_signed_snapshot_manifest(manifest_path: &Path) -> Result<SignedSnapshotManifest, String> {
+    let content = fs::read_to_string(manifest_path).map_err(|error| {
+        format!(
+            "read snapshot manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    serde_json::from_str(&content).map_err(|error| {
+        format!(
+            "parse snapshot manifest {}: {error}",
+            manifest_path.display()
+        )
+    })
+}
+
+fn resolved_snapshot_root(
+    manifest_path: &Path,
+    snapshot_root: Option<&str>,
+) -> Result<PathBuf, String> {
+    if let Some(root) = snapshot_root {
+        let root = PathBuf::from(root);
+        if root.is_dir() {
+            return Ok(root);
+        }
+        return Err(format!(
+            "snapshot_root {} is not a directory",
+            root.display()
+        ));
+    }
+    manifest_path
+        .parent()
+        .map(PathBuf::from)
+        .filter(|parent| parent.is_dir())
+        .ok_or_else(|| {
+            format!(
+                "snapshot_root is required because manifest parent is unavailable for {}",
+                manifest_path.display()
+            )
+        })
+}
+
+fn restore_snapshot_files(
+    signed: &SignedSnapshotManifest,
+    snapshot_root: &Path,
+    target_data_dir: &Path,
+) -> Result<Vec<String>, String> {
+    fs::create_dir_all(target_data_dir).map_err(|error| {
+        format!(
+            "create target data directory {}: {error}",
+            target_data_dir.display()
+        )
+    })?;
+    let mut restored = Vec::new();
+    for entry in &signed.manifest.files {
+        if !launch_snapshot_allowed_files()
+            .iter()
+            .any(|allowed| *allowed == entry.relative_path)
+        {
+            return Err(format!(
+                "snapshot restore refused non-launch-approved state file {}",
+                entry.relative_path
+            ));
+        }
+        let source = snapshot_root.join(&entry.relative_path);
+        let target = target_data_dir.join(&entry.relative_path);
+        fs::copy(&source, &target).map_err(|error| {
+            format!(
+                "restore snapshot state {} -> {}: {error}",
+                source.display(),
+                target.display()
+            )
+        })?;
+        restored.push(target.to_string_lossy().to_string());
+    }
+    Ok(restored)
 }
 
 fn vote_lock_entries() -> (String, Vec<VoteLockEntry>, Option<String>) {
@@ -491,16 +760,37 @@ pub fn snapshot_catalog() -> Value {
     if let Ok(entries) = fs::read_dir(&root) {
         for entry in entries.flatten() {
             let path = entry.path();
-            let is_manifest = path
-                .file_name()
-                .and_then(|name| name.to_str())
-                .map(|name| name.ends_with("manifest.json"))
-                .unwrap_or(false);
-            if is_manifest {
-                snapshots.push(json!({
-                    "path": path.to_string_lossy(),
-                    "metadata": read_json_file_raw(&path),
-                }));
+            if path.is_dir() {
+                if let Ok(children) = fs::read_dir(&path) {
+                    for child in children.flatten() {
+                        let manifest_path = child.path();
+                        let is_manifest = manifest_path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .map(|name| name.ends_with("manifest.json"))
+                            .unwrap_or(false);
+                        if is_manifest {
+                            snapshots.push(json!({
+                                "path": manifest_path.to_string_lossy(),
+                                "snapshot_root": path.to_string_lossy(),
+                                "metadata": read_json_file_raw(&manifest_path),
+                            }));
+                        }
+                    }
+                }
+            } else {
+                let is_manifest = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .map(|name| name.ends_with("manifest.json"))
+                    .unwrap_or(false);
+                if is_manifest {
+                    snapshots.push(json!({
+                        "path": path.to_string_lossy(),
+                        "snapshot_root": root.to_string_lossy(),
+                        "metadata": read_json_file_raw(&path),
+                    }));
+                }
             }
         }
     }
@@ -517,27 +807,205 @@ pub fn list_snapshots() -> Value {
 }
 
 pub fn create_snapshot() -> Result<Value, String> {
+    create_snapshot_with_options(CreateSnapshotOptions {
+        source_node_majority_branch_proven: env_truthy("SYNERGY_SNAPSHOT_MAJORITY_BRANCH_PROVEN"),
+        source_role: std::env::var("SYNERGY_SNAPSHOT_SOURCE_ROLE").ok(),
+        conflict_height_hash: std::env::var("SYNERGY_SNAPSHOT_CONFLICT_HEIGHT_HASH").ok(),
+    })
+}
+
+pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Ok(json!(fail_closed_mutation_response(
+    if !options.source_node_majority_branch_proven {
+        return Err("snapshot creation requires source_node_majority_branch_proven=true; refusing to sign a snapshot from unproven local state".to_string());
+    }
+    let quarantine = quarantine_status();
+    if quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Err("snapshot source is quarantined; refusing snapshot creation".to_string());
+    }
+
+    let (latest_canonical_lock_height, latest_canonical_lock_hash) = latest_canonical_lock()
+        .ok_or_else(|| {
+            "missing canonical_locks.json finalized head; refusing snapshot creation".to_string()
+        })?;
+    let data_dir = crate::utils::resolve_data_path("data");
+    let qc = crate::recovery::verify_latest_committed_qc_in_state_dir(&data_dir, None)?;
+    if !qc.verified || qc.vote_count < 4 {
+        return Err("latest committed QC is not verified through Aegis/PQC quorum".to_string());
+    }
+    let snapshot_height = qc.height;
+    let canonical_lock_hash = canonical_lock_at_height(snapshot_height).ok_or_else(|| {
+        format!(
+            "missing canonical lock at latest committed QC height {}; refusing snapshot creation",
+            snapshot_height
+        )
+    })?;
+    let block = read_block_at_height(snapshot_height)?;
+    if block.hash != canonical_lock_hash {
+        return Err(format!(
+            "canonical lock hash {} does not match block hash {} at height {}",
+            canonical_lock_hash, block.hash, snapshot_height
+        ));
+    }
+    if qc.hash != block.hash {
+        return Err(format!(
+            "latest committed QC hash {} does not match finalized block hash {} at height {}",
+            qc.hash, block.hash, snapshot_height
+        ));
+    }
+    let max_snapshot_lag = SnapshotSchedule::launch_default().interval_finalized_blocks;
+    if latest_canonical_lock_height.saturating_sub(snapshot_height) > max_snapshot_lag {
+        return Err(format!(
+            "latest committed QC height {} is more than {} block(s) behind canonical lock height {}; refusing stale snapshot",
+            snapshot_height, max_snapshot_lag, latest_canonical_lock_height
+        ));
+    }
+
+    let active_validator_set = active_genesis_validator_addresses()?;
+    let signer_set = qc.signers.clone();
+    let signer_set_unique = signer_set.iter().collect::<BTreeSet<_>>().len() == signer_set.len();
+    if !signer_set_unique {
+        return Err("latest committed QC contains duplicate signer".to_string());
+    }
+    if signer_set
+        .iter()
+        .any(|signer| !active_validator_set.iter().any(|active| active == signer))
+    {
+        return Err(
+            "latest committed QC includes a signer outside the ACTIVE genesis validator set"
+                .to_string(),
+        );
+    }
+
+    let snapshot_root = crate::utils::resolve_data_path("data/snapshots");
+    fs::create_dir_all(&snapshot_root)
+        .map_err(|error| format!("create snapshot root {}: {error}", snapshot_root.display()))?;
+    let created_at = now_secs();
+    let snapshot_dir = snapshot_root.join(format!("snapshot-{}-{}", snapshot_height, created_at));
+    fs::create_dir_all(&snapshot_dir).map_err(|error| {
+        format!(
+            "create snapshot directory {}: {error}",
+            snapshot_dir.display()
+        )
+    })?;
+    copy_snapshot_state_files(&data_dir, &snapshot_dir)?;
+
+    let mut signer = AegisPqvmSigner::initialize_required().map_err(|error| error.to_string())?;
+    let signer_uma = format!(
+        "snapshot-source:{}",
         crate::config::resolve_runtime_validator_address()
+            .unwrap_or_else(|| "unknown-validator".to_string())
+    );
+    let signing_key_id = signer
+        .generate_and_register_key(
+            &signer_uma,
+            vec![AegisPqKeyRole::ArchiveSnapshotSigner],
+            Epoch(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let signer_public_key = signer
+        .public_key_record(&signing_key_id)
+        .map_err(|error| error.to_string())?;
+    let manifest = crate::consensus::self_realign::create_snapshot_manifest(SnapshotBuildInput {
+        state_dir: snapshot_dir.clone(),
+        snapshot_height: block.height,
+        snapshot_block_hash: block.hash.clone(),
+        parent_hash: block.parent_hash.clone(),
+        state_root: None,
+        canonical_lock_height: snapshot_height,
+        canonical_lock_hash: canonical_lock_hash.clone(),
+        qc_evidence: SnapshotQcEvidence {
+            committed_qc_height: qc.height,
+            committed_qc_hash: qc.hash.clone(),
+            vote_count: qc.vote_count,
+            signer_set: signer_set.clone(),
+            aegis_pqc_verified: qc.verified,
+            duplicate_signer_check_passed: signer_set_unique,
+            active_validator_set_is_genesis_5: active_validator_set.len() == 5,
+            relayers_rpc_support_counted_toward_quorum: false,
+        },
+        active_validator_set: active_validator_set.clone(),
+        source_node_id: crate::config::resolve_runtime_validator_address()
             .unwrap_or_else(|| "unknown-validator".to_string()),
-        RealignmentState::Active,
-        "snapshot creation requires an initialized Aegis/PQC ArchiveSnapshotSigner key and finalized QC evidence; refusing unsigned snapshot creation",
-        "data/snapshots"
-    )))
+        source_role: options
+            .source_role
+            .unwrap_or_else(|| "GENESIS_VALIDATOR".to_string()),
+        runtime_checksum: current_runtime_checksum()?,
+        source_node_quarantined: false,
+        source_node_majority_branch: true,
+        conflict_height_hash: options.conflict_height_hash,
+        manifest_signer_uma_id: signer_uma,
+        manifest_signing_key_id: signing_key_id,
+        manifest_signer_public_key: signer_public_key,
+        manifest_signature_epoch: 0,
+        created_at,
+    })?;
+    let signed = sign_snapshot_manifest(&mut signer, manifest)?;
+    let manifest_path = snapshot_dir.join(format!("snapshot-{}-manifest.json", snapshot_height));
+    let manifest_bytes = serde_json::to_vec_pretty(&signed)
+        .map_err(|error| format!("serialize signed snapshot manifest: {error}"))?;
+    fs::write(&manifest_path, manifest_bytes).map_err(|error| {
+        format!(
+            "write snapshot manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let verification = verify_signed_snapshot_manifest(
+        &signed,
+        &SnapshotVerificationPolicy::default(),
+        Some(&snapshot_dir),
+    );
+    if !verification.success {
+        return Err(format!(
+            "created snapshot failed verification: {}",
+            verification.errors.join("; ")
+        ));
+    }
+    enforce_snapshot_retention(
+        &snapshot_root,
+        SnapshotSchedule::launch_default().retain_last,
+    )?;
+    Ok(json!({
+        "success": true,
+        "typed_status": "SNAPSHOT_CREATED",
+        "chain": chain_identity(),
+        "snapshot_height": snapshot_height,
+        "snapshot_hash": canonical_lock_hash,
+        "latest_canonical_lock_height": latest_canonical_lock_height,
+        "latest_canonical_lock_hash": latest_canonical_lock_hash,
+        "snapshot_path": snapshot_dir,
+        "manifest_path": manifest_path,
+        "manifest_hash": verification.manifest_hash,
+        "snapshot_artifact_hash": signed.manifest.full_archive_sha256,
+        "finalized_state_root": signed.manifest.state_root,
+        "source_qc_aegis_pqc_verified": true,
+        "qc_vote_count": qc.vote_count,
+        "qc_signers": signer_set,
+        "active_validator_set": active_validator_set,
+        "source_node_majority_branch_proven": true,
+        "schedule": SnapshotSchedule::launch_default(),
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "chain_state_mutated": false,
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+    }))
 }
 
 pub fn verify_snapshot(manifest_path: &str, snapshot_root: Option<&str>) -> Result<Value, String> {
     require_local_testnet_v2()?;
-    let content = fs::read_to_string(manifest_path)
-        .map_err(|error| format!("read snapshot manifest {manifest_path}: {error}"))?;
-    let signed: SignedSnapshotManifest = serde_json::from_str(&content)
-        .map_err(|error| format!("parse snapshot manifest {manifest_path}: {error}"))?;
-    let snapshot_root = snapshot_root.map(PathBuf::from);
+    let manifest_path = PathBuf::from(manifest_path);
+    let signed = read_signed_snapshot_manifest(&manifest_path)?;
+    let snapshot_root = resolved_snapshot_root(&manifest_path, snapshot_root)?;
     let report = verify_signed_snapshot_manifest(
         &signed,
         &SnapshotVerificationPolicy::default(),
-        snapshot_root.as_deref(),
+        Some(&snapshot_root),
     );
     Ok(json!(report))
 }
@@ -546,12 +1014,16 @@ pub fn self_heal_from_snapshot(
     manifest_path: &str,
     snapshot_root: Option<&str>,
 ) -> Result<Value, String> {
-    let verification = verify_snapshot(manifest_path, snapshot_root)?;
-    let success = verification
-        .get("success")
-        .and_then(Value::as_bool)
-        .unwrap_or(false);
-    if !success {
+    require_local_testnet_v2()?;
+    let manifest_path_buf = PathBuf::from(manifest_path);
+    let signed = read_signed_snapshot_manifest(&manifest_path_buf)?;
+    let snapshot_root = resolved_snapshot_root(&manifest_path_buf, snapshot_root)?;
+    let verification_report = verify_signed_snapshot_manifest(
+        &signed,
+        &SnapshotVerificationPolicy::default(),
+        Some(&snapshot_root),
+    );
+    if !verification_report.success {
         return Ok(json!(fail_closed_mutation_response(
             crate::config::resolve_runtime_validator_address()
                 .unwrap_or_else(|| "unknown-validator".to_string()),
@@ -560,15 +1032,93 @@ pub fn self_heal_from_snapshot(
             "data/self-heal-evidence"
         )));
     }
+    let quarantine = quarantine_status();
+    if !quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            crate::config::resolve_runtime_validator_address()
+                .unwrap_or_else(|| "unknown-validator".to_string()),
+            RealignmentState::Active,
+            "self-heal-from-snapshot requires local validator quarantine before chain data wipe/restore",
+            "data/self-heal-evidence"
+        )));
+    }
+
+    let validator_id = crate::config::resolve_runtime_validator_address()
+        .unwrap_or_else(|| "unknown-validator".to_string());
+    let target_data_dir = crate::utils::resolve_data_path("data");
+    let evidence_path = crate::utils::resolve_data_path(&format!(
+        "data/self-heal-evidence/{}-snapshot-restore",
+        now_secs()
+    ));
+    let wipe_plan = build_chain_state_wipe_plan(&validator_id, &target_data_dir, &evidence_path)?;
+    let wipe_result = apply_chain_state_wipe_plan(
+        &wipe_plan,
+        WipeApplyPreconditions {
+            validator_quarantined: true,
+            evidence_preserved: true,
+            snapshot_verified: true,
+        },
+    )?;
+    let restore_plan = build_snapshot_restore_plan(
+        &validator_id,
+        &signed,
+        snapshot_root.to_string_lossy().to_string(),
+        &target_data_dir,
+        &verification_report,
+    )?;
+    let restored_files = restore_snapshot_files(&signed, &snapshot_root, &target_data_dir)?;
+    let status_path = crate::utils::resolve_data_path("data/self_heal_status.json");
+    let status = json!({
+        "success": true,
+        "typed_status": "SNAPSHOT_RESTORED",
+        "chain": chain_identity(),
+        "validator_id": validator_id,
+        "previous_state": "QUARANTINED",
+        "new_state": "SNAPSHOT_RESTORED",
+        "snapshot_manifest_hash": verification_report.manifest_hash,
+        "snapshot_height": verification_report.snapshot_height,
+        "source_snapshot": snapshot_root,
+        "evidence_path": evidence_path,
+        "restore_plan": restore_plan,
+        "wipe_result": wipe_result,
+        "restored_files": restored_files,
+        "canonical_locks_mutated": true,
+        "committed_qcs_mutated": true,
+        "chain_state_mutated": true,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "aegis_pqc_verification_result": true,
+        "next_required_action": "restart_or_continue_quarantined_node_speed_sync_then_start_shadow_observe",
+    });
+    if let Some(parent) = status_path.parent() {
+        fs::create_dir_all(parent).map_err(|error| {
+            format!("create self-heal status dir {}: {error}", parent.display())
+        })?;
+    }
+    fs::write(
+        &status_path,
+        serde_json::to_vec_pretty(&status)
+            .map_err(|error| format!("serialize self-heal status: {error}"))?,
+    )
+    .map_err(|error| format!("write self-heal status {}: {error}", status_path.display()))?;
     Ok(json!({
         "success": true,
-        "typed_status": "SNAPSHOT_VERIFIED",
+        "typed_status": "SNAPSHOT_RESTORED",
         "chain": chain_identity(),
-        "verification": verification,
-        "next_required_action": "preserve_evidence_then_wipe_only_chain_state_then_restore_snapshot",
-        "canonical_locks_mutated": false,
-        "committed_qcs_mutated": false,
-        "chain_state_mutated": false,
+        "verification": verification_report,
+        "evidence_path": evidence_path,
+        "restore_plan": restore_plan,
+        "wipe_result": wipe_result,
+        "restored_files": restored_files,
+        "next_required_action": "restart_or_continue_quarantined_node_speed_sync_then_start_shadow_observe",
+        "canonical_locks_mutated": true,
+        "committed_qcs_mutated": true,
+        "chain_state_mutated": true,
         "keys_or_configs_copied": false,
         "genesis_mutated": false,
         "quorum_mutated": false,
@@ -631,7 +1181,10 @@ pub fn request_rejoin() -> Result<Value, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{diagnose_consensus_stall, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS};
+    use super::{
+        copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
+        CreateSnapshotOptions, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
+    };
     use crate::block::{Block, BlockChain};
     use serde_json::{json, Value};
     use std::fs;
@@ -657,6 +1210,15 @@ mod tests {
         fs::create_dir_all(root.join("config")).expect("test config dir should be created");
         fs::create_dir_all(root.join("data")).expect("test data dir should be created");
         root
+    }
+
+    fn install_test_genesis(root: &Path) {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let source = manifest_dir
+            .parent()
+            .unwrap_or(&manifest_dir)
+            .join("config/genesis.json");
+        fs::copy(source, root.join("config/genesis.json")).expect("test genesis should be copied");
     }
 
     fn write_vote_lock(root: &Path, updated_at: u64, second_hash: Option<&str>) {
@@ -710,6 +1272,41 @@ mod tests {
             .to_string(),
         )
         .expect("test canonical lock should be written");
+    }
+
+    #[test]
+    fn create_snapshot_requires_majority_branch_proof() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("snapshot-requires-proof");
+        install_test_genesis(&root);
+        let result = with_runtime_root(&root, || {
+            create_snapshot_with_options(CreateSnapshotOptions::default())
+        });
+        let error = result.expect_err("snapshot creation should fail closed without proof");
+        assert!(error.contains("source_node_majority_branch_proven"));
+    }
+
+    #[test]
+    fn snapshot_copy_excludes_keys_configs_and_runtime_material() {
+        let root = test_runtime_root("snapshot-copy");
+        let data_dir = root.join("data");
+        fs::write(data_dir.join("chain.json"), b"chain").unwrap();
+        fs::write(data_dir.join("canonical_locks.json"), b"locks").unwrap();
+        fs::write(data_dir.join("validator.key"), b"secret").unwrap();
+        fs::write(data_dir.join("node.env"), b"SECRET=value").unwrap();
+        fs::write(data_dir.join("runtime.bin"), b"binary").unwrap();
+        let snapshot_dir = root.join("snapshot");
+
+        let copied = copy_snapshot_state_files(&data_dir, &snapshot_dir).unwrap();
+
+        assert_eq!(copied, 2);
+        assert!(snapshot_dir.join("chain.json").exists());
+        assert!(snapshot_dir.join("canonical_locks.json").exists());
+        assert!(!snapshot_dir.join("validator.key").exists());
+        assert!(!snapshot_dir.join("node.env").exists());
+        assert!(!snapshot_dir.join("runtime.bin").exists());
     }
 
     fn advancing_chain() -> Arc<Mutex<BlockChain>> {

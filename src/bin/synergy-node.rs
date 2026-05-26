@@ -83,7 +83,15 @@ fn run() -> Result<(), String> {
         }
         "create-snapshot" => {
             require_testnet_args(&args)?;
-            match synergy_testnet::consensus::diagnostics::create_snapshot() {
+            let options = synergy_testnet::consensus::diagnostics::CreateSnapshotOptions {
+                source_node_majority_branch_proven: arg_flag(
+                    &args,
+                    "--source-node-majority-branch-proven",
+                ),
+                source_role: arg_value(&args, "--source-role"),
+                conflict_height_hash: arg_value(&args, "--conflict-height-hash"),
+            };
+            match synergy_testnet::consensus::diagnostics::create_snapshot_with_options(options) {
                 Ok(report) => print_json(report)?,
                 Err(error) => return Err(error),
             }
@@ -181,9 +189,7 @@ fn run() -> Result<(), String> {
             println!("  synergy-node recover-transient-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>] [--min-age-secs <seconds>]");
             println!("  synergy-node self-heal --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2");
-            println!(
-                "  synergy-node create-snapshot --chain-id 1264 --network-id synergy-testnet-v2"
-            );
+            println!("  synergy-node create-snapshot --chain-id 1264 --network-id synergy-testnet-v2 --source-node-majority-branch-proven [--source-role GENESIS_VALIDATOR] [--conflict-height-hash <hash>]");
             println!(
                 "  synergy-node list-snapshots --chain-id 1264 --network-id synergy-testnet-v2"
             );
@@ -807,6 +813,10 @@ fn arg_value(args: &[String], name: &str) -> Option<String> {
     args.windows(2)
         .find(|pair| pair[0] == name)
         .map(|pair| pair[1].clone())
+}
+
+fn arg_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
 }
 
 fn arg_values(args: &[String], name: &str) -> Vec<String> {

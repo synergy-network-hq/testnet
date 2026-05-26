@@ -1159,6 +1159,22 @@ fn rpc_string_param(params: &Value, object_key: &str, array_index: usize) -> Opt
         .map(str::to_string)
 }
 
+fn rpc_bool_param(params: &Value, object_key: &str, array_index: usize) -> Option<bool> {
+    params
+        .get(object_key)
+        .or_else(|| params.get(array_index))
+        .and_then(|value| {
+            value.as_bool().or_else(|| {
+                value.as_str().map(|text| {
+                    matches!(
+                        text.trim().to_ascii_lowercase().as_str(),
+                        "1" | "true" | "yes" | "y" | "on"
+                    )
+                })
+            })
+        })
+}
+
 fn handle_json_rpc(
     method: &str,
     params: Value,
@@ -1261,10 +1277,28 @@ fn handle_json_rpc(
 
         "synergy_getSnapshotCatalog" => crate::consensus::diagnostics::snapshot_catalog(),
 
-        "synergy_createSnapshot" => match crate::consensus::diagnostics::create_snapshot() {
-            Ok(report) => report,
-            Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
-        },
+        "synergy_createSnapshot" => {
+            let options = crate::consensus::diagnostics::CreateSnapshotOptions {
+                source_node_majority_branch_proven: rpc_bool_param(
+                    &params,
+                    "source_node_majority_branch_proven",
+                    0,
+                )
+                .unwrap_or(false),
+                source_role: rpc_string_param(&params, "source_role", 1),
+                conflict_height_hash: rpc_string_param(&params, "conflict_height_hash", 2),
+            };
+            match crate::consensus::diagnostics::create_snapshot_with_options(options) {
+                Ok(report) => report,
+                Err(error) => json!({
+                    "success": false,
+                    "typed_status": "FAILED_CLOSED",
+                    "fail_closed": true,
+                    "error": error,
+                    "next_required_action": "prove majority branch and call synergy_createSnapshot with source_node_majority_branch_proven=true"
+                }),
+            }
+        }
 
         "synergy_verifySnapshot" => {
             let manifest_path = rpc_string_param(&params, "manifest_path", 0)

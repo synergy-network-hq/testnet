@@ -24,6 +24,7 @@ pub const DEFAULT_SNAPSHOT_RETENTION_COUNT: usize = 3;
 pub const DEFAULT_SHADOW_OBSERVATION_BLOCKS: u64 = 500;
 
 const SNAPSHOT_MANIFEST_VERSION: u32 = 1;
+const SNAPSHOT_STATE_ROOT_DOMAIN: &[u8] = b"SYNERGY_SNAPSHOT_STATE_ROOT_V1";
 const SNAPSHOT_ALLOWED_FILES: &[&str] = &[
     "chain.json",
     "canonical_locks.json",
@@ -35,6 +36,10 @@ const SNAPSHOT_ALLOWED_FILES: &[&str] = &[
     "account_state.json",
     "state_checkpoint.json",
 ];
+
+pub fn launch_snapshot_allowed_files() -> &'static [&'static str] {
+    SNAPSHOT_ALLOWED_FILES
+}
 const SNAPSHOT_FORBIDDEN_PATH_FRAGMENTS: &[&str] = &[
     "config",
     "node.env",
@@ -164,6 +169,7 @@ pub struct SnapshotManifest {
     pub created_at: u64,
     pub source_node_id: String,
     pub source_role: String,
+    pub runtime_checksum: String,
     pub source_node_quarantined: bool,
     pub source_node_majority_branch: bool,
     pub conflict_height_hash: Option<String>,
@@ -200,6 +206,7 @@ pub struct SnapshotBuildInput {
     pub active_validator_set: Vec<String>,
     pub source_node_id: String,
     pub source_role: String,
+    pub runtime_checksum: String,
     pub source_node_quarantined: bool,
     pub source_node_majority_branch: bool,
     pub conflict_height_hash: Option<String>,
@@ -817,6 +824,10 @@ impl RealignmentLifecycle {
 pub fn create_snapshot_manifest(input: SnapshotBuildInput) -> Result<SnapshotManifest, String> {
     let files = collect_snapshot_files(&input.state_dir)?;
     let full_archive_sha256 = manifest_files_digest(&files)?;
+    let state_root = match input.state_root {
+        Some(root) if !root.trim().is_empty() => Some(root),
+        _ => Some(snapshot_state_root_digest(&files)?),
+    };
     Ok(SnapshotManifest {
         manifest_version: SNAPSHOT_MANIFEST_VERSION,
         chain_id: SYNERGY_TESTNET_V2_CHAIN_ID,
@@ -826,7 +837,7 @@ pub fn create_snapshot_manifest(input: SnapshotBuildInput) -> Result<SnapshotMan
         snapshot_height: input.snapshot_height,
         snapshot_block_hash: input.snapshot_block_hash,
         parent_hash: input.parent_hash,
-        state_root: input.state_root,
+        state_root,
         canonical_lock_height: input.canonical_lock_height,
         canonical_lock_hash: input.canonical_lock_hash,
         qc_evidence: input.qc_evidence,
@@ -837,6 +848,7 @@ pub fn create_snapshot_manifest(input: SnapshotBuildInput) -> Result<SnapshotMan
         created_at: input.created_at,
         source_node_id: input.source_node_id,
         source_role: input.source_role,
+        runtime_checksum: input.runtime_checksum,
         source_node_quarantined: input.source_node_quarantined,
         source_node_majority_branch: input.source_node_majority_branch,
         conflict_height_hash: input.conflict_height_hash,
@@ -944,6 +956,16 @@ pub fn verify_signed_snapshot_manifest(
     if manifest.source_node_quarantined {
         errors.push("snapshot source node is quarantined".to_string());
     }
+    if manifest.source_node_id.trim().is_empty() || manifest.source_node_id == "unknown-validator" {
+        errors.push("snapshot producer identity is invalid".to_string());
+    }
+    match manifest.source_role.as_str() {
+        "GENESIS_VALIDATOR" | "ARCHIVE" | "ARCHIVE_NODE" | "EXPLORER_INDEXER" => {}
+        _ => errors.push("snapshot producer role is not authorized".to_string()),
+    }
+    if manifest.runtime_checksum.trim().is_empty() || manifest.runtime_checksum == "unknown" {
+        errors.push("snapshot runtime checksum is missing".to_string());
+    }
     if !manifest.source_node_majority_branch {
         errors.push("snapshot source node is not proven on the majority branch".to_string());
     }
@@ -954,6 +976,19 @@ pub fn verify_signed_snapshot_manifest(
         if current.saturating_sub(manifest.snapshot_height) > max_lag {
             errors.push("snapshot is stale beyond allowed lag".to_string());
         }
+    }
+    match manifest
+        .state_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|root| !root.is_empty())
+    {
+        Some(root) => match snapshot_state_root_digest(&manifest.files) {
+            Ok(expected) if expected == root => {}
+            Ok(_) => errors.push("snapshot finalized state root mismatch".to_string()),
+            Err(error) => errors.push(error),
+        },
+        None => errors.push("snapshot manifest missing finalized state root".to_string()),
     }
 
     let mut manifest_signature_verified = false;
@@ -1254,6 +1289,9 @@ fn verify_manifest_signature(signed: &SignedSnapshotManifest) -> Result<(), Stri
     if signed.signature_domain != SYNERGY_ARCHIVE_SNAPSHOT_MANIFEST_V1 {
         return Err("snapshot manifest signature domain mismatch".to_string());
     }
+    if !signed.aegis_pq_signature.is_present() {
+        return Err("snapshot manifest is unsigned".to_string());
+    }
     let manifest = &signed.manifest;
     let lifecycle = AegisPqKeyLifecycleRecord {
         uma_id: manifest.manifest_signer_uma_id.clone(),
@@ -1327,6 +1365,17 @@ fn manifest_files_digest(files: &[SnapshotFileEntry]) -> Result<String, String> 
     serde_json::to_vec(&canonical)
         .map(|bytes| sha256_hex(&bytes))
         .map_err(|error| format!("snapshot file digest serialize failed: {error}"))
+}
+
+fn snapshot_state_root_digest(files: &[SnapshotFileEntry]) -> Result<String, String> {
+    let mut canonical = files.to_vec();
+    canonical.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    let bytes = serde_json::to_vec(&canonical)
+        .map_err(|error| format!("snapshot state root serialize failed: {error}"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(SNAPSHOT_STATE_ROOT_DOMAIN);
+    hasher.update(&bytes);
+    Ok(hex::encode(hasher.finalize()))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1428,13 +1477,14 @@ mod tests {
             snapshot_height: 100,
             snapshot_block_hash: "block-hash".to_string(),
             parent_hash: "parent-hash".to_string(),
-            state_root: Some("state-root".to_string()),
+            state_root: None,
             canonical_lock_height: 100,
             canonical_lock_hash: "block-hash".to_string(),
             qc_evidence: qc_evidence(),
             active_validator_set: validators(),
             source_node_id: "validator-2".to_string(),
             source_role: "GENESIS_VALIDATOR".to_string(),
+            runtime_checksum: "runtime-sha256".to_string(),
             source_node_quarantined: false,
             source_node_majority_branch: true,
             conflict_height_hash: Some("block-hash".to_string()),
@@ -1450,6 +1500,35 @@ mod tests {
 
     fn verify(signed: &SignedSnapshotManifest) -> SnapshotVerificationReport {
         verify_signed_snapshot_manifest(signed, &SnapshotVerificationPolicy::default(), None)
+    }
+
+    #[test]
+    fn signed_snapshot_manifest_canonicalization_is_deterministic() {
+        let signed = signed_manifest();
+        let first = signed.manifest.canonical_bytes().unwrap();
+        let second = signed.manifest.canonical_bytes().unwrap();
+        assert_eq!(first, second);
+        assert_eq!(
+            signed.manifest.manifest_hash().unwrap(),
+            signed.manifest.manifest_hash().unwrap()
+        );
+    }
+
+    #[test]
+    fn valid_signed_snapshot_accepted() {
+        let report = verify(&signed_manifest());
+        assert!(report.success, "{:?}", report.errors);
+        assert!(report.manifest_signature_verified);
+        assert!(report.file_checksums_verified);
+    }
+
+    #[test]
+    fn unsigned_snapshot_rejected() {
+        let mut signed = signed_manifest();
+        signed.aegis_pq_signature.algorithm.clear();
+        signed.aegis_pq_signature.signature_bytes.clear();
+        let report = verify(&signed);
+        assert!(report.errors.iter().any(|error| error.contains("unsigned")));
     }
 
     #[test]
@@ -1532,6 +1611,70 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("ACTIVE genesis")));
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_artifact_hash() {
+        let mut signed = signed_manifest();
+        signed.manifest.full_archive_sha256 = "bad-artifact-hash".to_string();
+        let report = verify(&signed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("archive digest")));
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_state_root() {
+        let mut signed = signed_manifest();
+        signed.manifest.state_root = Some("bad-state-root".to_string());
+        let report = verify(&signed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("state root")));
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_producer_identity() {
+        let mut signed = signed_manifest();
+        signed.manifest.source_node_id = "unknown-validator".to_string();
+        let report = verify(&signed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("producer identity")));
+    }
+
+    #[test]
+    fn snapshot_rejects_unauthorized_source_role() {
+        let mut signed = signed_manifest();
+        signed.manifest.source_role = "RPC_GATEWAY".to_string();
+        let report = verify(&signed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("producer role")));
+    }
+
+    #[test]
+    fn snapshot_rejects_missing_runtime_checksum() {
+        let mut signed = signed_manifest();
+        signed.manifest.runtime_checksum.clear();
+        let report = verify(&signed);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("runtime checksum")));
+    }
+
+    #[test]
+    fn snapshot_rejects_invalid_aegis_pqc_signature() {
+        let mut signed = signed_manifest();
+        signed.aegis_pq_signature.signature_bytes[0] ^= 0xff;
+        let report = verify(&signed);
+        assert!(!report.manifest_signature_verified);
+        assert!(!report.success);
     }
 
     #[test]

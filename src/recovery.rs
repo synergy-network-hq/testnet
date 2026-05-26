@@ -203,13 +203,13 @@ struct RecoveryProof {
 }
 
 #[derive(Debug, Clone)]
-struct QcProofSummary {
-    height: u64,
-    hash: String,
-    vote_count: u64,
-    signers: Vec<String>,
-    verified: bool,
-    failure: Option<String>,
+pub struct QcProofSummary {
+    pub height: u64,
+    pub hash: String,
+    pub vote_count: u64,
+    pub signers: Vec<String>,
+    pub verified: bool,
+    pub failure: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -881,6 +881,13 @@ fn verify_legacy_committed_qc(
     let data_dir = data_dir(source_dir);
     let qc = latest_legacy_committed_qc(&data_dir, min_height)?;
     verify_legacy_qc(&data_dir, qc)
+}
+
+pub fn verify_latest_committed_qc_in_state_dir(
+    source_dir: &Path,
+    min_height: Option<u64>,
+) -> Result<QcProofSummary, String> {
+    verify_legacy_committed_qc(source_dir, min_height)
 }
 
 fn latest_legacy_committed_qc(
