@@ -15,6 +15,7 @@ use crate::consensus::cartel_detection::{CartelDetectionEngine, WhistleblowerSys
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dao_governance::{DAOGovernance, SynergyOracle};
 use crate::consensus::dual_quorum::{EntropyBeacon, ValidatorRotation};
+use crate::consensus::self_realign::EXPECTED_GENESIS_HASH;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::consensus::validator_keys::load_local_validator_keypair;
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
@@ -27,6 +28,7 @@ use crate::rpc;
 use crate::rpc::rpc_server::{SHARED_CHAIN, SYNC_MANAGER, TX_POOL};
 use crate::sxcp;
 use crate::sync::SyncManager;
+use crate::synergy_types::{SYNERGY_TESTNET_V2_CHAIN_ID, SYNERGY_TESTNET_V2_NETWORK_ID};
 use crate::telemetry;
 use crate::token::TOKEN_MANAGER;
 use crate::transaction::Transaction;
@@ -116,6 +118,184 @@ fn parse_rpc_block_number(value: &serde_json::Value) -> Option<u64> {
         return u64::from_str_radix(hex, 16).ok();
     }
     text.parse::<u64>().ok()
+}
+
+fn arg_value(args: &[String], name: &str) -> Option<String> {
+    let equals_prefix = format!("{name}=");
+    if let Some(value) = args
+        .iter()
+        .find_map(|arg| arg.strip_prefix(&equals_prefix).map(str::to_string))
+    {
+        return Some(value);
+    }
+    args.windows(2)
+        .find(|pair| pair[0] == name)
+        .map(|pair| pair[1].clone())
+}
+
+fn arg_flag(args: &[String], name: &str) -> bool {
+    args.iter().any(|arg| arg == name)
+}
+
+fn require_testnet_v2_operator_args(args: &[String]) -> Result<(), String> {
+    let chain_id = arg_value(args, "--chain-id")
+        .ok_or_else(|| "missing --chain-id 1264".to_string())?
+        .parse::<u64>()
+        .map_err(|error| format!("invalid --chain-id: {error}"))?;
+    if chain_id != SYNERGY_TESTNET_V2_CHAIN_ID {
+        return Err(format!(
+            "wrong chain_id {chain_id}; expected {SYNERGY_TESTNET_V2_CHAIN_ID}"
+        ));
+    }
+    let network_id = arg_value(args, "--network-id")
+        .ok_or_else(|| "missing --network-id synergy-testnet-v2".to_string())?;
+    if network_id != SYNERGY_TESTNET_V2_NETWORK_ID {
+        return Err(format!(
+            "wrong network_id {network_id}; expected {SYNERGY_TESTNET_V2_NETWORK_ID}"
+        ));
+    }
+    let genesis_hash = arg_value(args, "--genesis-hash")
+        .ok_or_else(|| format!("missing --genesis-hash {EXPECTED_GENESIS_HASH}"))?;
+    if !genesis_hash.eq_ignore_ascii_case(EXPECTED_GENESIS_HASH) {
+        return Err(format!(
+            "wrong genesis_hash {genesis_hash}; expected {EXPECTED_GENESIS_HASH}"
+        ));
+    }
+    Ok(())
+}
+
+fn configure_offline_source_workspace(args: &[String]) -> Result<(), String> {
+    let workspace =
+        arg_value(args, "--source-workspace").or_else(|| arg_value(args, "--workspace"));
+    let Some(workspace) = workspace else {
+        return Err(
+            "missing --source-workspace <PATH>; refusing ambiguous offline snapshot workspace"
+                .to_string(),
+        );
+    };
+    let workspace_path = PathBuf::from(&workspace);
+    if !workspace_path.is_dir() {
+        return Err(format!(
+            "source workspace does not exist or is not a directory: {}",
+            workspace_path.display()
+        ));
+    }
+    if !workspace_path.join("config").is_dir() {
+        return Err(format!(
+            "source workspace is missing config directory: {}",
+            workspace_path.display()
+        ));
+    }
+    if !workspace_path.join("data").is_dir() {
+        return Err(format!(
+            "source workspace is missing data directory: {}",
+            workspace_path.display()
+        ));
+    }
+    fs::read_dir(workspace_path.join("data")).map_err(|error| {
+        format!(
+            "source workspace data directory is not readable: {}: {error}",
+            workspace_path.join("data").display()
+        )
+    })?;
+    env::set_var("SYNERGY_PROJECT_ROOT", &workspace_path);
+    if let Some(config_path) = arg_value(args, "--config") {
+        let config_path = PathBuf::from(config_path);
+        if !config_path.is_file() {
+            return Err(format!(
+                "source workspace config file does not exist: {}",
+                config_path.display()
+            ));
+        }
+        fs::File::open(&config_path).map_err(|error| {
+            format!(
+                "source workspace config file is not readable: {}: {error}",
+                config_path.display()
+            )
+        })?;
+        env::set_var("SYNERGY_CONFIG_PATH", config_path);
+    } else {
+        let default_config = workspace_path.join("config/node.toml");
+        if !default_config.is_file() {
+            return Err(format!(
+                "source workspace is missing default config file: {}",
+                default_config.display()
+            ));
+        }
+        fs::File::open(&default_config).map_err(|error| {
+            format!(
+                "source workspace config file is not readable: {}: {error}",
+                default_config.display()
+            )
+        })?;
+        env::set_var("SYNERGY_CONFIG_PATH", default_config);
+    }
+    Ok(())
+}
+
+fn print_json_value(value: serde_json::Value) {
+    match serde_json::to_string_pretty(&value) {
+        Ok(encoded) => println!("{encoded}"),
+        Err(error) => {
+            eprintln!("failed to serialize JSON response: {error}");
+            process::exit(1);
+        }
+    }
+}
+
+fn run_offline_snapshot_command(args: &[String], command: &str) -> Result<bool, String> {
+    match command {
+        "create-snapshot" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::CreateSnapshotOptions {
+                source_node_majority_branch_proven: arg_flag(
+                    args,
+                    "--source-node-majority-branch-proven",
+                ),
+                source_role: arg_value(args, "--source-role"),
+                conflict_height_hash: arg_value(args, "--conflict-height-hash"),
+            };
+            let report = crate::consensus::diagnostics::create_snapshot_with_options(options)?;
+            print_json_value(report);
+            Ok(true)
+        }
+        "verify-snapshot" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let manifest = arg_value(args, "--manifest")
+                .or_else(|| arg_value(args, "--manifest-path"))
+                .ok_or_else(|| "verify-snapshot requires --manifest <path>".to_string())?;
+            let snapshot_root = arg_value(args, "--snapshot-root");
+            let report = crate::consensus::diagnostics::verify_snapshot(
+                &manifest,
+                snapshot_root.as_deref(),
+            )?;
+            print_json_value(report);
+            Ok(true)
+        }
+        "list-snapshots" | "snapshot-catalog" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            print_json_value(crate::consensus::diagnostics::snapshot_catalog());
+            Ok(true)
+        }
+        "self-heal-from-snapshot" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let manifest = arg_value(args, "--manifest")
+                .or_else(|| arg_value(args, "--manifest-path"))
+                .ok_or_else(|| "self-heal-from-snapshot requires --manifest <path>".to_string())?;
+            let snapshot_root = arg_value(args, "--snapshot-root");
+            let report = crate::consensus::diagnostics::self_heal_from_snapshot(
+                &manifest,
+                snapshot_root.as_deref(),
+            )?;
+            print_json_value(report);
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
 }
 
 fn rpc_block_number(url: &str) -> Option<u64> {
@@ -564,8 +744,25 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!("    generate-keypair      Generate a new PQC keypair");
     eprintln!("    register              Register node as validator");
     eprintln!("    sync                  Check network connectivity or sync");
+    eprintln!("    create-snapshot       Create signed snapshot offline from source workspace");
+    eprintln!("    verify-snapshot       Verify signed snapshot manifest and files");
+    eprintln!("    list-snapshots        List signed snapshot catalog for source workspace");
+    eprintln!("    self-heal-from-snapshot");
+    eprintln!(
+        "                          Restore a quarantined node from a verified signed snapshot"
+    );
     eprintln!("    list-templates        List all available node templates");
     eprintln!("    version               Display version information");
+    eprintln!();
+    eprintln!("SNAPSHOT OPTIONS:");
+    eprintln!(
+        "    --chain-id 1264 --network-id synergy-testnet-v2 --genesis-hash {}",
+        EXPECTED_GENESIS_HASH
+    );
+    eprintln!("    --source-workspace <PATH>  Source workspace for offline create/list/verify");
+    eprintln!("    --source-node-majority-branch-proven");
+    eprintln!("    --source-role GENESIS_VALIDATOR");
+    eprintln!("    --manifest <PATH> [--snapshot-root <DIR>]");
     eprintln!();
     eprintln!("START OPTIONS:");
     eprintln!("    --node-type <TYPE>    Specify the node type (uses templates/<TYPE>.toml)");
@@ -1355,6 +1552,14 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
     }
 
     let subcommand = &args[1];
+    match run_offline_snapshot_command(&args, subcommand) {
+        Ok(true) => return,
+        Ok(false) => {}
+        Err(error) => {
+            eprintln!("{subcommand} failed closed: {error}");
+            process::exit(1);
+        }
+    }
 
     match subcommand.as_str() {
         "init" => {
@@ -2329,6 +2534,209 @@ pub fn run(binary_name: &'static str, expected_profile: Option<&'static RoleProf
 mod tests {
     use super::*;
     use crate::config::NodeConfig;
+    use std::fs;
+    use std::sync::{Mutex, OnceLock};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+    struct EnvRestore {
+        project_root: Option<String>,
+        config_path: Option<String>,
+    }
+
+    impl EnvRestore {
+        fn capture() -> Self {
+            Self {
+                project_root: env::var("SYNERGY_PROJECT_ROOT").ok(),
+                config_path: env::var("SYNERGY_CONFIG_PATH").ok(),
+            }
+        }
+    }
+
+    impl Drop for EnvRestore {
+        fn drop(&mut self) {
+            match &self.project_root {
+                Some(value) => env::set_var("SYNERGY_PROJECT_ROOT", value),
+                None => env::remove_var("SYNERGY_PROJECT_ROOT"),
+            }
+            match &self.config_path {
+                Some(value) => env::set_var("SYNERGY_CONFIG_PATH", value),
+                None => env::remove_var("SYNERGY_CONFIG_PATH"),
+            }
+        }
+    }
+
+    fn unique_test_workspace(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock should be after UNIX epoch")
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "synergy-role-runtime-{name}-{}-{nonce}",
+            process::id()
+        ))
+    }
+
+    fn snapshot_args(extra: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--chain-id".to_string(),
+            "1264".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+            "--genesis-hash".to_string(),
+            EXPECTED_GENESIS_HASH.to_string(),
+        ];
+        args.extend(extra.iter().map(|arg| (*arg).to_string()));
+        args
+    }
+
+    #[test]
+    fn snapshot_operator_args_require_chain_id_1264() {
+        let missing = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+        ];
+        let error =
+            require_testnet_v2_operator_args(&missing).expect_err("chain id must be required");
+        assert!(error.contains("--chain-id 1264"));
+
+        let wrong = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--chain-id".to_string(),
+            "1263".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+        ];
+        let error = require_testnet_v2_operator_args(&wrong).expect_err("wrong chain id must fail");
+        assert!(error.contains("expected 1264"));
+    }
+
+    #[test]
+    fn snapshot_operator_args_require_network_id() {
+        let args = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--chain-id".to_string(),
+            "1264".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v1".to_string(),
+            "--genesis-hash".to_string(),
+            EXPECTED_GENESIS_HASH.to_string(),
+        ];
+        let error =
+            require_testnet_v2_operator_args(&args).expect_err("wrong network must fail closed");
+        assert!(error.contains("expected synergy-testnet-v2"));
+    }
+
+    #[test]
+    fn snapshot_operator_args_require_genesis_hash() {
+        let args = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--chain-id".to_string(),
+            "1264".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+            "--genesis-hash".to_string(),
+            "wrong".to_string(),
+        ];
+        let error =
+            require_testnet_v2_operator_args(&args).expect_err("wrong genesis must fail closed");
+        assert!(error.contains("expected f79011f2"));
+    }
+
+    #[test]
+    fn snapshot_operator_args_accept_equals_form() {
+        let args = vec![
+            "synergy-testnet".to_string(),
+            "create-snapshot".to_string(),
+            "--chain-id=1264".to_string(),
+            "--network-id=synergy-testnet-v2".to_string(),
+            format!("--genesis-hash={EXPECTED_GENESIS_HASH}"),
+        ];
+        require_testnet_v2_operator_args(&args).expect("equals form should be accepted");
+    }
+
+    #[test]
+    fn snapshot_source_workspace_is_required_for_offline_commands() {
+        let args = snapshot_args(&[]);
+        let error = configure_offline_source_workspace(&args)
+            .expect_err("ambiguous workspace must fail closed");
+        assert!(error.contains("missing --source-workspace"));
+    }
+
+    #[test]
+    fn snapshot_source_workspace_requires_config_and_data() {
+        let workspace = unique_test_workspace("missing-data");
+        let config_dir = workspace.join("config");
+        fs::create_dir_all(&config_dir).expect("config directory should be created");
+        fs::write(config_dir.join("node.toml"), b"[node]\n")
+            .expect("node config should be written");
+
+        let args = snapshot_args(&[
+            "--source-workspace",
+            workspace.to_str().expect("workspace path should be UTF-8"),
+        ]);
+        let error = configure_offline_source_workspace(&args).expect_err("missing data must fail");
+        assert!(error.contains("missing data directory"));
+
+        fs::remove_dir_all(&workspace).expect("test workspace should clean up");
+    }
+
+    #[test]
+    fn snapshot_source_workspace_requires_concrete_config() {
+        let workspace = unique_test_workspace("missing-config-file");
+        fs::create_dir_all(workspace.join("config")).expect("config directory should be created");
+        fs::create_dir_all(workspace.join("data")).expect("data directory should be created");
+
+        let args = snapshot_args(&[
+            "--source-workspace",
+            workspace.to_str().expect("workspace path should be UTF-8"),
+        ]);
+        let error =
+            configure_offline_source_workspace(&args).expect_err("missing config file must fail");
+        assert!(error.contains("missing default config file"));
+
+        fs::remove_dir_all(&workspace).expect("test workspace should clean up");
+    }
+
+    #[test]
+    fn snapshot_source_workspace_sets_offline_environment() {
+        let _guard = ENV_LOCK
+            .get_or_init(|| Mutex::new(()))
+            .lock()
+            .expect("environment lock should not be poisoned");
+        let _restore = EnvRestore::capture();
+        let workspace = unique_test_workspace("valid");
+        let config_dir = workspace.join("config");
+        fs::create_dir_all(&config_dir).expect("config directory should be created");
+        fs::create_dir_all(workspace.join("data")).expect("data directory should be created");
+        let config_path = config_dir.join("node.toml");
+        fs::write(&config_path, b"[node]\n").expect("node config should be written");
+
+        let args = snapshot_args(&[
+            "--source-workspace",
+            workspace.to_str().expect("workspace path should be UTF-8"),
+        ]);
+        configure_offline_source_workspace(&args).expect("valid workspace should configure");
+
+        assert_eq!(
+            env::var("SYNERGY_PROJECT_ROOT").expect("project root env should be set"),
+            workspace.to_string_lossy()
+        );
+        assert_eq!(
+            env::var("SYNERGY_CONFIG_PATH").expect("config env should be set"),
+            config_path.to_string_lossy()
+        );
+
+        fs::remove_dir_all(&workspace).expect("test workspace should clean up");
+    }
 
     #[test]
     fn expected_profile_populates_blank_config() {

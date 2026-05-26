@@ -8,6 +8,8 @@ TIMEOUT_SECS="${TIMEOUT_SECS:-120}"
 POLL_INTERVAL_SECS="${POLL_INTERVAL_SECS:-2}"
 MIN_HEIGHT="${MIN_HEIGHT:-2}"
 KEEP_WORKDIR="false"
+LEAVE_RUNNING="false"
+SKIP_PEER_MESH_CHECK="${SKIP_PEER_MESH_CHECK:-false}"
 WORKDIR=""
 CREATED_WORKDIR="false"
 
@@ -32,7 +34,7 @@ RUNTIME_SHA256=""
 
 usage() {
   cat <<USAGE
-Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir]
+Usage: $0 [--binary PATH] [--timeout SECONDS] [--workdir PATH] [--keep-workdir] [--leave-running]
 
 Starts the first five local validators against the canonical five-validator
 genesis and fails unless all active validators form the full validator peer
@@ -59,6 +61,11 @@ while [[ $# -gt 0 ]]; do
       ;;
     --keep-workdir)
       KEEP_WORKDIR="true"
+      shift
+      ;;
+    --leave-running)
+      KEEP_WORKDIR="true"
+      LEAVE_RUNNING="true"
       shift
       ;;
     -h|--help)
@@ -101,6 +108,12 @@ else
 fi
 
 cleanup() {
+  if [[ "$LEAVE_RUNNING" == "true" ]]; then
+    echo "Smoke-test mesh left running at: $WORKDIR"
+    printf 'Stop with: for f in %q/validator-*/node.pid; do kill "$(cat "$f")" 2>/dev/null || true; done\n' "$WORKDIR"
+    return 0
+  fi
+
   for pid in "${PIDS[@]:-}"; do
     if kill -0 "$pid" 2>/dev/null; then
       kill "$pid" 2>/dev/null || true
@@ -540,8 +553,8 @@ status_ready_min_validators = 2
 status_ready_genesis_grace_secs = 60
 allow_genesis_status_bypass = false
 mesh_settle_secs = 3
-leader_timeout_secs = 120
-vote_timeout_secs = 12
+leader_timeout_secs = ${LEADER_TIMEOUT_SECS:-120}
+vote_timeout_secs = ${VOTE_TIMEOUT_SECS:-12}
 block_timeout_secs = 30
 penalization_enabled = false
 synergy_score_decay_rate = 0.05
@@ -656,9 +669,11 @@ start_node() {
     SYNERGY_TIMING_TRACE_NODE_NAME="$node_name" \
     SYNERGY_TIMING_TRACE_VALIDATOR="$validator_address" \
     SYNERGY_CONSENSUS_TIMING_TRACE_PATH="$workspace/data/consensus_timing_trace.jsonl" \
-    "$BINARY" start --config "$config_path" >"$stdout_path" 2>"$stderr_path"
+    exec "$BINARY" start --config "$config_path" >"$stdout_path" 2>"$stderr_path"
   ) &
-  PIDS+=("$!")
+  local pid="$!"
+  PIDS+=("$pid")
+  echo "$pid" > "${workspace}/node.pid"
 }
 
 print_diagnostics() {
@@ -717,17 +732,19 @@ while [[ "$(date +%s)" -lt "$deadline" ]]; do
     fi
   done
 
-  for i in "${!WORKSPACES[@]}"; do
-    expected_peers=()
-    for j in "${!WORKSPACES[@]}"; do
-      if [[ "$j" -ne "$i" ]]; then
-        expected_peers+=("${VALIDATOR_ADDRESSES[$j]}")
+  if [[ "$SKIP_PEER_MESH_CHECK" != "true" ]]; then
+    for i in "${!WORKSPACES[@]}"; do
+      expected_peers=()
+      for j in "${!WORKSPACES[@]}"; do
+        if [[ "$j" -ne "$i" ]]; then
+          expected_peers+=("${VALIDATOR_ADDRESSES[$j]}")
+        fi
+      done
+      if ! rpc_peer_mesh_status "${RPC_PORTS[$i]}" "${VALIDATOR_ADDRESSES[$i]}" "${expected_peers[@]}" >/dev/null; then
+        mesh_ready="false"
       fi
     done
-    if ! rpc_peer_mesh_status "${RPC_PORTS[$i]}" "${VALIDATOR_ADDRESSES[$i]}" "${expected_peers[@]}" >/dev/null; then
-      mesh_ready="false"
-    fi
-  done
+  fi
 
   if [[ "$ready" == "true" && "$mesh_ready" == "true" && "$min_height" -ge "$MIN_HEIGHT" ]]; then
     echo "Smoke test passed: all validators formed the full peer mesh and reached min_height=${min_height}, max_height=${max_height}, required_min_height=${MIN_HEIGHT}."

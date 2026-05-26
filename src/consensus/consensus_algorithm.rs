@@ -947,6 +947,35 @@ impl ProofOfSynergy {
                         let self_quarantined =
                             crate::consensus::anti_divergence::current_self_quarantine_record()
                                 .is_some();
+                        if self_quarantined {
+                            warn!(
+                                "consensus",
+                                "Local validator is self-quarantined; skipping proposer duties",
+                                "chosen_proposer" => selected_validator.address.clone(),
+                                "local_validator" => local_validator_address.clone().unwrap_or_default(),
+                                "height" => next_block_index,
+                                "local_view_round" => view_offset
+                            );
+                            timing_trace::emit(
+                                "proposal_build_blocked_by_self_quarantine",
+                                serde_json::json!({
+                                    "previous_block_height": latest_block_clone.block_index,
+                                    "previous_block_hash": latest_block_clone.hash.clone(),
+                                    "height": next_block_index,
+                                    "chosen_proposer": selected_validator.address.clone(),
+                                    "local_validator": local_validator_address.clone(),
+                                    "local_view_round": view_offset,
+                                    "effective_leader_timeout_secs": leader_timeout_secs,
+                                    "effective_vote_timeout_secs": vote_timeout_secs,
+                                    "proposer_quarantined": true,
+                                    "duties_disabled": true
+                                }),
+                            );
+                            drop(chain_guard);
+                            drop(pool);
+                            thread::sleep(Duration::from_millis(250));
+                            continue;
+                        }
                         timing_trace::emit(
                             "proposal_build_start",
                             serde_json::json!({
@@ -3620,6 +3649,67 @@ mod tests {
         let actual = ProofOfSynergy::deterministic_epoch_randomness(&chain, 1_026, 1_000);
 
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn stopped_validator_does_not_permanently_block_proposer_schedule() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("leader rotation test lock should succeed");
+        let manager = Arc::new(ValidatorManager::new());
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
+            Arc::clone(&manager),
+            Arc::clone(&pqc_manager),
+        ));
+        let epoch_randomness = vec![17; 32];
+        let build_validator = |address: &str| {
+            let mut validator = Validator::new(
+                address.to_string(),
+                format!("{address}-pubkey"),
+                address.to_string(),
+                1_000,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator
+        };
+        let validators = vec![
+            build_validator("synv1offline"),
+            build_validator("synv1active1"),
+            build_validator("synv1active2"),
+            build_validator("synv1active3"),
+            build_validator("synv1active4"),
+        ];
+
+        *EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0, Vec::new());
+        let primary = ProofOfSynergy::select_leader_for_block(
+            &validators,
+            126,
+            &synergy_calculator,
+            &epoch_randomness,
+            1_000,
+            0,
+        );
+
+        let view_advanced_to_different_active_validator =
+            (1..validators.len()).any(|view_offset| {
+                let selected = ProofOfSynergy::select_leader_for_block(
+                    &validators,
+                    126,
+                    &synergy_calculator,
+                    &epoch_randomness,
+                    1_000,
+                    view_offset,
+                );
+                selected.address != primary.address
+            });
+
+        assert!(
+            view_advanced_to_different_active_validator,
+            "deterministic view advance must move past an unresponsive scheduled proposer"
+        );
     }
 
     #[test]
