@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1235,19 +1235,36 @@ fn collect_snapshot_files(state_dir: &Path) -> Result<Vec<SnapshotFileEntry>, St
         if path.exists() {
             let relative_path = file_name.to_string();
             verify_snapshot_relative_path(&relative_path)?;
-            let bytes = fs::read(&path)
-                .map_err(|error| format!("read snapshot file {}: {error}", path.display()))?;
-            files.push(SnapshotFileEntry {
-                relative_path,
-                sha256: sha256_hex(&bytes),
-                bytes: bytes.len() as u64,
-            });
+            files.push(snapshot_file_entry(&path, relative_path)?);
         }
     }
     if files.is_empty() {
         return Err("snapshot contains no chain/state files".to_string());
     }
     Ok(files)
+}
+
+fn snapshot_file_entry(path: &Path, relative_path: String) -> Result<SnapshotFileEntry, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("open snapshot file {}: {error}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut bytes = 0u64;
+    let mut buffer = [0u8; 1024 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|error| format!("read snapshot file {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+        bytes += read as u64;
+    }
+    Ok(SnapshotFileEntry {
+        relative_path,
+        sha256: hex::encode(hasher.finalize()),
+        bytes,
+    })
 }
 
 fn verify_snapshot_file_checksums(
@@ -1261,20 +1278,17 @@ fn verify_snapshot_file_checksums(
     if let Some(root) = snapshot_root {
         for entry in &manifest.files {
             verify_snapshot_relative_path(&entry.relative_path)?;
-            let bytes = fs::read(root.join(&entry.relative_path)).map_err(|error| {
-                format!(
-                    "read snapshot file {}: {error}",
-                    root.join(&entry.relative_path).display()
-                )
-            })?;
-            if bytes.len() as u64 != entry.bytes {
+            let actual_entry = snapshot_file_entry(
+                &root.join(&entry.relative_path),
+                entry.relative_path.clone(),
+            )?;
+            if actual_entry.bytes != entry.bytes {
                 return Err(format!(
                     "snapshot file {} size mismatch",
                     entry.relative_path
                 ));
             }
-            let actual = sha256_hex(&bytes);
-            if actual != entry.sha256 {
+            if actual_entry.sha256 != entry.sha256 {
                 return Err(format!(
                     "snapshot file {} checksum mismatch",
                     entry.relative_path
@@ -1675,6 +1689,26 @@ mod tests {
         let report = verify(&signed);
         assert!(!report.manifest_signature_verified);
         assert!(!report.success);
+    }
+
+    #[test]
+    fn snapshot_file_entry_hashes_large_files_by_streaming() {
+        let root = temp_root("streaming-file-entry");
+        let path = root.join("chain.json");
+        let mut file = fs::File::create(&path).unwrap();
+        let mut expected = Sha256::new();
+        let chunk_len = 1024 * 1024;
+        for index in 0..8u8 {
+            let chunk = vec![index; chunk_len];
+            expected.update(&chunk);
+            file.write_all(&chunk).unwrap();
+        }
+        drop(file);
+
+        let entry = snapshot_file_entry(&path, "chain.json".to_string()).unwrap();
+
+        assert_eq!(entry.bytes, (chunk_len * 8) as u64);
+        assert_eq!(entry.sha256, hex::encode(expected.finalize()));
     }
 
     #[test]

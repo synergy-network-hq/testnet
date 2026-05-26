@@ -11,11 +11,13 @@ use crate::consensus::self_realign::{
 };
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
 use crate::synergy_types::{AegisPqKeyRole, Epoch};
+use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -287,10 +289,40 @@ fn find_block_at_height(value: &Value, height: u64) -> Option<BlockSummary> {
 
 fn read_block_at_height(height: u64) -> Result<BlockSummary, String> {
     let path = crate::utils::resolve_data_path("data/chain.json");
-    let value = read_json_file_raw(&path)
-        .ok_or_else(|| format!("read or parse chain state {}", path.display()))?;
-    find_block_at_height(&value, height)
-        .ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
+    let file = fs::File::open(&path)
+        .map_err(|error| format!("open chain state {}: {error}", path.display()))?;
+    let reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    let value = serde::de::Deserializer::deserialize_seq(
+        &mut deserializer,
+        BlockAtHeightVisitor { height },
+    )
+    .map_err(|error| format!("stream parse chain state {}: {error}", path.display()))?;
+    value.ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
+}
+
+struct BlockAtHeightVisitor {
+    height: u64,
+}
+
+impl<'de> Visitor<'de> for BlockAtHeightVisitor {
+    type Value = Option<BlockSummary>;
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a chain.json array of block objects")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while let Some(value) = seq.next_element::<Value>()? {
+            if let Some(found) = find_block_at_height(&value, self.height) {
+                return Ok(Some(found));
+            }
+        }
+        Ok(None)
+    }
 }
 
 fn active_genesis_validator_addresses() -> Result<Vec<String>, String> {
@@ -1712,10 +1744,10 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
 mod tests {
     use super::{
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        request_rejoin_with_options, shadow_status, start_shadow_observe_with_options,
-        sync_from_canonical_peer_with_options, CreateSnapshotOptions, RejoinRequestOptions,
-        StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
-        DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
+        read_block_at_height, request_rejoin_with_options, shadow_status,
+        start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
+        CreateSnapshotOptions, RejoinRequestOptions, StartShadowObserveOptions,
+        SyncFromCanonicalPeerOptions, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
     use serde_json::{json, Value};
@@ -1868,6 +1900,34 @@ mod tests {
         assert!(!snapshot_dir.join("validator.key").exists());
         assert!(!snapshot_dir.join("node.env").exists());
         assert!(!snapshot_dir.join("runtime.bin").exists());
+    }
+
+    #[test]
+    fn read_block_at_height_streams_chain_array() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("stream-chain-read");
+        let blocks: Vec<Value> = (0u64..4096)
+            .map(|height| {
+                json!({
+                    "height": height,
+                    "hash": format!("hash-{height}"),
+                    "parent_hash": format!("hash-{}", height.saturating_sub(1)),
+                })
+            })
+            .collect();
+        fs::write(
+            root.join("data/chain.json"),
+            serde_json::to_vec(&blocks).unwrap(),
+        )
+        .unwrap();
+
+        let block = with_runtime_root(&root, || read_block_at_height(4095).unwrap());
+
+        assert_eq!(block.height, 4095);
+        assert_eq!(block.hash, "hash-4095");
+        assert_eq!(block.parent_hash, "hash-4094");
     }
 
     #[test]
