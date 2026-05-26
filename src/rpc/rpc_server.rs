@@ -1348,7 +1348,28 @@ fn handle_json_rpc(
         },
 
         "synergy_syncFromCanonicalPeer" => {
-            match crate::consensus::diagnostics::sync_from_canonical_peer() {
+            let options = crate::consensus::diagnostics::SyncFromCanonicalPeerOptions {
+                canonical_height: rpc_u64_param(&params, "canonical_height", 0),
+                canonical_hash: rpc_string_param(&params, "canonical_hash", 1),
+                source_peer: rpc_string_param(&params, "source_peer", 2),
+                source_qc_aegis_pqc_verified: rpc_bool_param(
+                    &params,
+                    "source_qc_aegis_pqc_verified",
+                    3,
+                )
+                .unwrap_or(false),
+                parent_continuity_verified: rpc_bool_param(
+                    &params,
+                    "parent_continuity_verified",
+                    4,
+                )
+                .unwrap_or(false),
+                state_root_matches: rpc_bool_param(&params, "state_root_matches", 5)
+                    .unwrap_or(false),
+                source_peer_quarantined: rpc_bool_param(&params, "source_peer_quarantined", 6)
+                    .unwrap_or(true),
+            };
+            match crate::consensus::diagnostics::sync_from_canonical_peer_with_options(options) {
                 Ok(report) => report,
                 Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
             }
@@ -1382,7 +1403,10 @@ fn handle_json_rpc(
         "synergy_getShadowStatus" => crate::consensus::diagnostics::shadow_status(),
 
         "synergy_startShadowObserve" => {
-            match crate::consensus::diagnostics::start_shadow_observe() {
+            let options = crate::consensus::diagnostics::StartShadowObserveOptions {
+                required_blocks: rpc_u64_param(&params, "required_blocks", 0),
+            };
+            match crate::consensus::diagnostics::start_shadow_observe_with_options(options) {
                 Ok(report) => report,
                 Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
             }
@@ -1390,10 +1414,44 @@ fn handle_json_rpc(
 
         "synergy_getRejoinEligibility" => crate::consensus::diagnostics::rejoin_eligibility(),
 
-        "synergy_requestRejoin" => match crate::consensus::diagnostics::request_rejoin() {
-            Ok(report) => report,
-            Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
-        },
+        "synergy_requestRejoin" => {
+            let options = crate::consensus::diagnostics::RejoinRequestOptions {
+                common_height: rpc_u64_param(&params, "common_height", 0),
+                common_hash: rpc_string_param(&params, "common_hash", 1),
+                exact_common_height_match: rpc_bool_param(&params, "exact_common_height_match", 2)
+                    .unwrap_or(false),
+                latest_finalized_qc_aegis_pqc_verified: rpc_bool_param(
+                    &params,
+                    "latest_finalized_qc_aegis_pqc_verified",
+                    3,
+                )
+                .unwrap_or(false),
+                state_root_matches: rpc_bool_param(&params, "state_root_matches", 4)
+                    .unwrap_or(false),
+                rejoin_at_finalized_safe_boundary: rpc_bool_param(
+                    &params,
+                    "rejoin_at_finalized_safe_boundary",
+                    5,
+                )
+                .unwrap_or(false),
+                cluster_marks_pending_reactivation: rpc_bool_param(
+                    &params,
+                    "cluster_marks_pending_reactivation",
+                    6,
+                )
+                .unwrap_or(false),
+                operator_approved_reactivation: rpc_bool_param(
+                    &params,
+                    "operator_approved_reactivation",
+                    7,
+                )
+                .unwrap_or(false),
+            };
+            match crate::consensus::diagnostics::request_rejoin_with_options(options) {
+                Ok(report) => report,
+                Err(error) => json!({"success": false, "fail_closed": true, "error": error}),
+            }
+        }
 
         "synergy_getValidatorSet" => {
             let chain = chain.lock().unwrap();

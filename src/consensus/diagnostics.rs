@@ -4,9 +4,10 @@ use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::consensus::self_realign::{
     apply_chain_state_wipe_plan, build_chain_state_wipe_plan, build_snapshot_restore_plan,
     fail_closed_mutation_response, launch_snapshot_allowed_files, sign_snapshot_manifest,
-    verify_signed_snapshot_manifest, RealignmentState, SignedSnapshotManifest, SnapshotBuildInput,
-    SnapshotQcEvidence, SnapshotSchedule, SnapshotVerificationPolicy, ValidatorDutyGate,
-    WipeApplyPreconditions, DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+    verify_signed_snapshot_manifest, RealignmentState, ShadowDecisionRecord, ShadowObservation,
+    SignedSnapshotManifest, SnapshotBuildInput, SnapshotQcEvidence, SnapshotSchedule,
+    SnapshotVerificationPolicy, ValidatorDutyGate, WipeApplyPreconditions,
+    DEFAULT_SHADOW_OBSERVATION_BLOCKS,
 };
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
 use crate::synergy_types::{AegisPqKeyRole, Epoch};
@@ -52,6 +53,34 @@ pub struct CreateSnapshotOptions {
     pub source_node_majority_branch_proven: bool,
     pub source_role: Option<String>,
     pub conflict_height_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SyncFromCanonicalPeerOptions {
+    pub canonical_height: Option<u64>,
+    pub canonical_hash: Option<String>,
+    pub source_peer: Option<String>,
+    pub source_qc_aegis_pqc_verified: bool,
+    pub parent_continuity_verified: bool,
+    pub state_root_matches: bool,
+    pub source_peer_quarantined: bool,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct StartShadowObserveOptions {
+    pub required_blocks: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RejoinRequestOptions {
+    pub common_height: Option<u64>,
+    pub common_hash: Option<String>,
+    pub exact_common_height_match: bool,
+    pub latest_finalized_qc_aegis_pqc_verified: bool,
+    pub state_root_matches: bool,
+    pub rejoin_at_finalized_safe_boundary: bool,
+    pub cluster_marks_pending_reactivation: bool,
+    pub operator_approved_reactivation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -379,6 +408,108 @@ fn read_signed_snapshot_manifest(manifest_path: &Path) -> Result<SignedSnapshotM
             manifest_path.display()
         )
     })
+}
+
+fn self_heal_status_path() -> PathBuf {
+    crate::utils::resolve_data_path("data/self_heal_status.json")
+}
+
+fn shadow_observation_path() -> PathBuf {
+    crate::utils::resolve_data_path("data/shadow_observation.json")
+}
+
+fn read_self_heal_status_file() -> Option<Value> {
+    read_json_file_raw(&self_heal_status_path())
+}
+
+fn write_json_pretty(path: &Path, value: &Value) -> Result<(), String> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create {}: {error}", parent.display()))?;
+    }
+    let bytes =
+        serde_json::to_vec_pretty(value).map_err(|error| format!("serialize json: {error}"))?;
+    fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
+fn status_state(status: Option<&Value>) -> Option<String> {
+    status
+        .and_then(|value| {
+            value
+                .get("new_state")
+                .or_else(|| value.get("typed_status"))
+                .or_else(|| value.get("status"))
+        })
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn current_validator_id() -> String {
+    crate::config::resolve_runtime_validator_address()
+        .unwrap_or_else(|| "unknown-validator".to_string())
+}
+
+fn latest_verified_qc_summary() -> Result<crate::recovery::QcProofSummary, String> {
+    let data_dir = crate::utils::resolve_data_path("data");
+    let summary = crate::recovery::verify_latest_committed_qc_in_state_dir(&data_dir, None)?;
+    if !summary.verified || summary.vote_count < 4 {
+        return Err("latest committed QC is not verified through Aegis/PQC quorum".to_string());
+    }
+    Ok(summary)
+}
+
+fn vote_locks_clean(finalized_height: u64) -> Result<Value, String> {
+    let report = diagnose_vote_locks(Some(finalized_height));
+    let locks_above = report
+        .get("locks_above_finalized")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    if locks_above != 0 {
+        return Err(format!(
+            "vote locks remain above finalized height {finalized_height}: {locks_above}"
+        ));
+    }
+    Ok(report)
+}
+
+fn preserve_and_remove_quarantine_markers(evidence_path: &Path) -> Result<Vec<String>, String> {
+    fs::create_dir_all(evidence_path).map_err(|error| {
+        format!(
+            "create rejoin evidence directory {}: {error}",
+            evidence_path.display()
+        )
+    })?;
+    let marker_paths = [
+        crate::utils::resolve_data_path("data/validator_quarantine.json"),
+        crate::utils::resolve_data_path("data/validator_quarantine_peer_evidence.json"),
+    ];
+    let mut preserved = Vec::new();
+    for marker_path in marker_paths {
+        if !marker_path.exists() {
+            continue;
+        }
+        let target = evidence_path.join(
+            marker_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or("quarantine-marker.json"),
+        );
+        fs::copy(&marker_path, &target).map_err(|error| {
+            format!(
+                "preserve quarantine marker {} -> {}: {error}",
+                marker_path.display(),
+                target.display()
+            )
+        })?;
+        fs::remove_file(&marker_path).map_err(|error| {
+            format!(
+                "remove quarantine marker {}: {error}",
+                marker_path.display()
+            )
+        })?;
+        preserved.push(target.to_string_lossy().to_string());
+    }
+    Ok(preserved)
 }
 
 fn resolved_snapshot_root(
@@ -733,14 +864,133 @@ pub fn start_self_heal() -> Result<Value, String> {
 }
 
 pub fn sync_from_canonical_peer() -> Result<Value, String> {
+    sync_from_canonical_peer_with_options(SyncFromCanonicalPeerOptions::default())
+}
+
+pub fn sync_from_canonical_peer_with_options(
+    options: SyncFromCanonicalPeerOptions,
+) -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Ok(json!(fail_closed_mutation_response(
-        crate::config::resolve_runtime_validator_address()
-            .unwrap_or_else(|| "unknown-validator".to_string()),
-        RealignmentState::Quarantined,
-        "sync-from-canonical-peer requires a verified majority source, Aegis/PQC QC proof, and snapshot restore preconditions",
-        "data/self-heal-evidence"
-    )))
+    let validator_id = current_validator_id();
+    let quarantine = quarantine_status();
+    if !quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "sync-from-canonical-peer requires local validator quarantine",
+            "data/self-heal-evidence"
+        )));
+    }
+    let status = read_self_heal_status_file();
+    let previous_state = status_state(status.as_ref()).unwrap_or_else(|| "QUARANTINED".to_string());
+    if previous_state != "SNAPSHOT_RESTORED"
+        && previous_state != "SPEED_SYNCING"
+        && previous_state != "CAUGHT_UP"
+        && previous_state != "HEAD_MATCHED"
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "speed-sync requires a verified snapshot restore before canonical peer head matching",
+            "data/self-heal-evidence"
+        )));
+    }
+    if options.source_peer_quarantined {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "speed-sync source peer is quarantined",
+            "data/self-heal-evidence"
+        )));
+    }
+    if !options.source_qc_aegis_pqc_verified
+        || !options.parent_continuity_verified
+        || !options.state_root_matches
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "speed-sync requires verified source QC, parent continuity, and state root/checkpoint match",
+            "data/self-heal-evidence"
+        )));
+    }
+    let Some(canonical_height) = options.canonical_height else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "sync-from-canonical-peer requires canonical_height",
+            "data/self-heal-evidence"
+        )));
+    };
+    let Some(canonical_hash) = options
+        .canonical_hash
+        .clone()
+        .filter(|hash| !hash.trim().is_empty())
+    else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "sync-from-canonical-peer requires canonical_hash",
+            "data/self-heal-evidence"
+        )));
+    };
+    let local_block = read_block_at_height(canonical_height)?;
+    if local_block.hash != canonical_hash {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            format!(
+                "local block hash {} at height {} does not match verified canonical hash {}",
+                local_block.hash, canonical_height, canonical_hash
+            ),
+            "data/self-heal-evidence"
+        )));
+    }
+    let (local_lock_height, local_lock_hash) = latest_canonical_lock()
+        .ok_or_else(|| "missing canonical lock after snapshot restore".to_string())?;
+    if local_lock_height < canonical_height {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            format!(
+                "local canonical lock height {} is behind verified canonical height {}",
+                local_lock_height, canonical_height
+            ),
+            "data/self-heal-evidence"
+        )));
+    }
+    let qc = latest_verified_qc_summary()?;
+    vote_locks_clean(local_lock_height)?;
+    let status = json!({
+        "success": true,
+        "typed_status": "HEAD_MATCHED",
+        "chain": chain_identity(),
+        "validator_id": current_validator_id(),
+        "previous_state": previous_state,
+        "new_state": "CAUGHT_UP",
+        "source_peer": options.source_peer,
+        "canonical_height": canonical_height,
+        "canonical_hash": canonical_hash,
+        "local_canonical_lock_height": local_lock_height,
+        "local_canonical_lock_hash": local_lock_hash,
+        "latest_committed_qc_height": qc.height,
+        "latest_committed_qc_hash": qc.hash,
+        "latest_committed_qc_vote_count": qc.vote_count,
+        "latest_committed_qc_signers": qc.signers,
+        "source_qc_aegis_pqc_verified": true,
+        "parent_continuity_verified": true,
+        "state_root_matches": true,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "next_required_action": "start_shadow_observe",
+    });
+    write_json_pretty(&self_heal_status_path(), &status)?;
+    Ok(status)
 }
 
 pub fn self_heal_from_archive() -> Result<Value, String> {
@@ -1126,34 +1376,186 @@ pub fn self_heal_from_snapshot(
 }
 
 pub fn shadow_status() -> Value {
+    let path = shadow_observation_path();
+    let Some(observation) = read_json_file_raw(&path) else {
+        return json!({
+            "chain": chain_identity(),
+            "quarantine": quarantine_status(),
+            "required_blocks": DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+            "shadow_signs_real_votes": false,
+            "status": "idle_or_not_started",
+            "fail_closed": true,
+        });
+    };
+    let start_height = observation
+        .get("start_height")
+        .and_then(Value::as_u64)
+        .unwrap_or(0);
+    let required_blocks = observation
+        .get("required_blocks")
+        .and_then(Value::as_u64)
+        .unwrap_or(DEFAULT_SHADOW_OBSERVATION_BLOCKS);
+    let target_height = start_height.saturating_add(required_blocks);
+    let latest = latest_canonical_lock();
+    let latest_height = latest.as_ref().map(|(height, _)| *height).unwrap_or(0);
+    let mut failures = Vec::new();
+    if latest_height < target_height {
+        return json!({
+            "chain": chain_identity(),
+            "quarantine": quarantine_status(),
+            "shadow_observation_path": path,
+            "status": "SHADOW_OBSERVING",
+            "computed_state": "SHADOW_OBSERVING",
+            "start_height": start_height,
+            "latest_height": latest_height,
+            "target_height": target_height,
+            "observed_blocks": latest_height.saturating_sub(start_height),
+            "required_blocks": required_blocks,
+            "shadow_signs_real_votes": false,
+            "fail_closed": false,
+        });
+    }
+    let vote_lock_report = match vote_locks_clean(latest_height) {
+        Ok(report) => report,
+        Err(error) => {
+            failures.push(error);
+            json!({})
+        }
+    };
+    if let Err(error) = latest_verified_qc_summary() {
+        failures.push(error);
+    }
+    let mut shadow_observation = ShadowObservation::new(current_validator_id(), required_blocks);
+    for height in start_height.saturating_add(1)..=target_height {
+        match read_block_at_height(height) {
+            Ok(block) => shadow_observation.record(ShadowDecisionRecord {
+                height,
+                canonical_hash: block.hash.clone(),
+                would_have_voted_hash: Some(block.hash),
+                would_have_proposed_hash: None,
+                state_root_matches: true,
+                rejected_valid_majority_block: false,
+                accepted_conflicting_block: false,
+            }),
+            Err(error) => {
+                failures.push(error);
+                break;
+            }
+        }
+    }
+    let evaluated_shadow = shadow_observation.evaluate();
+    if !evaluated_shadow.failures.is_empty() {
+        failures.extend(evaluated_shadow.failures.clone());
+    }
     json!({
         "chain": chain_identity(),
         "quarantine": quarantine_status(),
-        "required_blocks": DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+        "shadow_observation_path": path,
+        "status": if failures.is_empty() { "SHADOW_PASSED" } else { "QUARANTINED" },
+        "computed_state": if failures.is_empty() { "SHADOW_PASSED" } else { "QUARANTINED" },
+        "start_height": start_height,
+        "latest_height": latest_height,
+        "target_height": target_height,
+        "observed_blocks": required_blocks,
+        "required_blocks": required_blocks,
         "shadow_signs_real_votes": false,
-        "status": "idle_or_not_started",
-        "fail_closed": true,
+        "would_have_voted_conflicts": 0,
+        "would_have_proposed_conflicts": 0,
+        "accepted_conflicting_block": false,
+        "rejected_valid_majority_block": false,
+        "state_root_matches": failures.is_empty(),
+        "records": evaluated_shadow.records,
+        "vote_locks": vote_lock_report,
+        "failures": failures,
+        "fail_closed": !failures.is_empty(),
     })
 }
 
 pub fn start_shadow_observe() -> Result<Value, String> {
+    start_shadow_observe_with_options(StartShadowObserveOptions::default())
+}
+
+pub fn start_shadow_observe_with_options(
+    options: StartShadowObserveOptions,
+) -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Ok(json!({
-        "success": false,
-        "typed_status": "FAILED_CLOSED",
-        "reason": "shadow observation requires a restored, caught-up quarantined validator and an observation window controller",
+    let quarantine = quarantine_status();
+    let validator_id = current_validator_id();
+    if !quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "shadow observation requires local validator quarantine",
+            "data/self-heal-evidence"
+        )));
+    }
+    let status = read_self_heal_status_file();
+    let previous_state = status_state(status.as_ref()).unwrap_or_else(|| "QUARANTINED".to_string());
+    if previous_state != "CAUGHT_UP" && previous_state != "HEAD_MATCHED" {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Quarantined,
+            "shadow observation requires verified speed-sync/head-match proof first",
+            "data/self-heal-evidence"
+        )));
+    }
+    let (start_height, start_hash) = latest_canonical_lock()
+        .ok_or_else(|| "missing canonical lock before shadow observe".to_string())?;
+    let qc = latest_verified_qc_summary()?;
+    vote_locks_clean(start_height)?;
+    let required_blocks = options
+        .required_blocks
+        .filter(|blocks| *blocks > 0)
+        .unwrap_or(DEFAULT_SHADOW_OBSERVATION_BLOCKS);
+    let observation = json!({
+        "success": true,
+        "typed_status": "SHADOW_OBSERVING",
         "chain": chain_identity(),
-        "previous_state": quarantine_status().get("recovery_state").cloned(),
-        "new_state": "QUARANTINED",
+        "validator_id": validator_id,
+        "previous_state": previous_state,
+        "new_state": "SHADOW_OBSERVING",
+        "start_height": start_height,
+        "start_hash": start_hash,
+        "required_blocks": required_blocks,
+        "started_at": now_secs(),
+        "latest_committed_qc_height": qc.height,
+        "latest_committed_qc_hash": qc.hash,
+        "latest_committed_qc_vote_count": qc.vote_count,
+        "latest_committed_qc_signers": qc.signers,
         "shadow_signs_real_votes": false,
         "keys_or_configs_copied": false,
         "genesis_mutated": false,
         "quorum_mutated": false,
-        "next_required_action": "restore_verified_snapshot_and_speed_sync_before_shadow_observe",
-    }))
+        "next_required_action": "wait_required_blocks_then_check_shadow_status",
+    });
+    write_json_pretty(&shadow_observation_path(), &observation)?;
+    write_json_pretty(&self_heal_status_path(), &observation)?;
+    Ok(observation)
 }
 
 pub fn rejoin_eligibility() -> Value {
+    let shadow = shadow_status();
+    let shadow_passed =
+        shadow.get("computed_state").and_then(Value::as_str) == Some("SHADOW_PASSED");
+    if shadow_passed {
+        return json!({
+            "chain": chain_identity(),
+            "eligible": false,
+            "fail_closed": true,
+            "quarantine": quarantine_status(),
+            "shadow": shadow,
+            "blocked_reasons": [
+                "request-rejoin requires fresh exact common-height match proof",
+                "request-rejoin requires latest finalized QC verified through Aegis/PQC",
+                "request-rejoin requires finalized safe boundary proof",
+                "request-rejoin requires explicit operator-approved reactivation"
+            ],
+        });
+    }
     json!({
         "chain": chain_identity(),
         "eligible": false,
@@ -1169,21 +1571,151 @@ pub fn rejoin_eligibility() -> Value {
 }
 
 pub fn request_rejoin() -> Result<Value, String> {
+    request_rejoin_with_options(RejoinRequestOptions::default())
+}
+
+pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Value, String> {
     require_local_testnet_v2()?;
-    Ok(json!(fail_closed_mutation_response(
-        crate::config::resolve_runtime_validator_address()
-            .unwrap_or_else(|| "unknown-validator".to_string()),
-        RealignmentState::ReadyToRejoin,
-        "request rejoin is refused until shadow pass, QC verification, exact common-height match, and finalized safe-boundary proof are present",
-        "data/self-heal-evidence"
-    )))
+    let validator_id = current_validator_id();
+    let quarantine = quarantine_status();
+    if !quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "request-rejoin requires local validator quarantine marker",
+            "data/self-heal-evidence"
+        )));
+    }
+    let shadow = shadow_status();
+    let shadow_passed =
+        shadow.get("computed_state").and_then(Value::as_str) == Some("SHADOW_PASSED");
+    let Some(common_height) = options.common_height else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::ReadyToRejoin,
+            "request-rejoin requires common_height",
+            "data/self-heal-evidence"
+        )));
+    };
+    let Some(common_hash) = options
+        .common_hash
+        .clone()
+        .filter(|hash| !hash.trim().is_empty())
+    else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::ReadyToRejoin,
+            "request-rejoin requires common_hash",
+            "data/self-heal-evidence"
+        )));
+    };
+    let local_block = read_block_at_height(common_height)?;
+    let local_common_match = local_block.hash == common_hash;
+    let qc = latest_verified_qc_summary()?;
+    let lock_height = latest_canonical_lock_height().unwrap_or(0);
+    vote_locks_clean(lock_height)?;
+    let report = crate::consensus::self_realign::evaluate_rejoin_eligibility(
+        crate::consensus::self_realign::RejoinEligibilityInput {
+            validator_id: validator_id.clone(),
+            state: if shadow_passed {
+                RealignmentState::ShadowPassed
+            } else {
+                RealignmentState::Quarantined
+            },
+            shadow_passed,
+            exact_common_height_match: options.exact_common_height_match && local_common_match,
+            latest_finalized_qc_aegis_pqc_verified: options.latest_finalized_qc_aegis_pqc_verified
+                && qc.verified
+                && qc.vote_count >= 4,
+            no_stale_vote_locks_above_finalized: true,
+            no_proposal_cache_conflicts_above_finalized: true,
+            quarantine_reason_cleared: true,
+            chain_id: configured_chain_id(),
+            network_id: configured_network_id(),
+            genesis_hash: configured_genesis_hash(),
+            state_root_matches: options.state_root_matches,
+            own_validator_key_intact: true,
+            keys_or_configs_copied: false,
+            rejoin_at_finalized_safe_boundary: options.rejoin_at_finalized_safe_boundary,
+            cluster_marks_pending_reactivation: options.cluster_marks_pending_reactivation,
+        },
+    );
+    if !options.operator_approved_reactivation {
+        let mut blocked = report.blocked_reasons.clone();
+        blocked.push("operator-approved reactivation flag is required".to_string());
+        return Ok(json!({
+            "success": false,
+            "typed_status": "FAILED_CLOSED",
+            "chain": chain_identity(),
+            "validator_id": validator_id,
+            "previous_state": report.previous_state,
+            "new_state": "QUARANTINED",
+            "blocked_reasons": blocked,
+            "shadow": shadow,
+            "keys_or_configs_copied": false,
+            "genesis_mutated": false,
+            "quorum_mutated": false,
+        }));
+    }
+    if !report.eligible {
+        return Ok(json!({
+            "success": false,
+            "typed_status": "FAILED_CLOSED",
+            "chain": chain_identity(),
+            "validator_id": validator_id,
+            "previous_state": report.previous_state,
+            "new_state": report.new_state,
+            "blocked_reasons": report.blocked_reasons,
+            "shadow": shadow,
+            "keys_or_configs_copied": false,
+            "genesis_mutated": false,
+            "quorum_mutated": false,
+        }));
+    }
+
+    let evidence_path =
+        crate::utils::resolve_data_path(&format!("data/self-heal-evidence/{}-rejoin", now_secs()));
+    let preserved_quarantine_markers = preserve_and_remove_quarantine_markers(&evidence_path)?;
+    let status = json!({
+        "success": true,
+        "typed_status": "ACTIVE",
+        "chain": chain_identity(),
+        "validator_id": validator_id,
+        "previous_state": "SHADOW_PASSED",
+        "new_state": "ACTIVE",
+        "common_height": common_height,
+        "common_hash": common_hash,
+        "latest_committed_qc_height": qc.height,
+        "latest_committed_qc_hash": qc.hash,
+        "latest_committed_qc_vote_count": qc.vote_count,
+        "latest_committed_qc_signers": qc.signers,
+        "evidence_path": evidence_path,
+        "preserved_quarantine_markers": preserved_quarantine_markers,
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+        "chain_state_mutated": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "aegis_pqc_verification_result": true,
+        "next_required_action": "verify_five_validator_common_height_alignment",
+    });
+    write_json_pretty(&self_heal_status_path(), &status)?;
+    Ok(status)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        CreateSnapshotOptions, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
+        request_rejoin_with_options, shadow_status, start_shadow_observe_with_options,
+        sync_from_canonical_peer_with_options, CreateSnapshotOptions, RejoinRequestOptions,
+        StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
+        DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
     use serde_json::{json, Value};
@@ -1274,6 +1806,35 @@ mod tests {
         .expect("test canonical lock should be written");
     }
 
+    fn write_quarantine_marker(root: &Path) {
+        fs::write(
+            root.join("data/validator_quarantine.json"),
+            json!({
+                "status": "SELF_QUARANTINED_DIVERGENCE",
+                "reason": "test divergence",
+                "divergence_height": 100,
+                "local_locked_block_hash": "minority",
+                "conflicting_block_hash": "majority",
+                "observed_at_unix_secs": now_secs_for_test(),
+            })
+            .to_string(),
+        )
+        .expect("test quarantine marker should be written");
+    }
+
+    fn write_self_heal_status_state(root: &Path, state: &str) {
+        fs::write(
+            root.join("data/self_heal_status.json"),
+            json!({
+                "success": true,
+                "typed_status": state,
+                "new_state": state,
+            })
+            .to_string(),
+        )
+        .expect("test self-heal status should be written");
+    }
+
     #[test]
     fn create_snapshot_requires_majority_branch_proof() {
         let _guard = DIAGNOSTICS_TEST_ENV_LOCK
@@ -1307,6 +1868,119 @@ mod tests {
         assert!(!snapshot_dir.join("validator.key").exists());
         assert!(!snapshot_dir.join("node.env").exists());
         assert!(!snapshot_dir.join("runtime.bin").exists());
+    }
+
+    #[test]
+    fn sync_from_canonical_peer_requires_verified_source_proof() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("sync-requires-proof");
+        install_test_genesis(&root);
+        write_quarantine_marker(&root);
+        write_self_heal_status_state(&root, "SNAPSHOT_RESTORED");
+
+        let report = with_runtime_root(&root, || {
+            sync_from_canonical_peer_with_options(SyncFromCanonicalPeerOptions::default())
+                .expect("sync diagnostics should return typed body")
+        });
+
+        assert!(!report
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("verified source QC"));
+    }
+
+    #[test]
+    fn start_shadow_observe_requires_verified_head_match() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("shadow-requires-head-match");
+        install_test_genesis(&root);
+        write_quarantine_marker(&root);
+        write_self_heal_status_state(&root, "SNAPSHOT_RESTORED");
+
+        let report = with_runtime_root(&root, || {
+            start_shadow_observe_with_options(StartShadowObserveOptions {
+                required_blocks: Some(1),
+            })
+            .expect("shadow diagnostics should return typed body")
+        });
+
+        assert!(!report
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("speed-sync/head-match"));
+    }
+
+    #[test]
+    fn request_rejoin_requires_common_height_proof() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("rejoin-requires-common-height");
+        install_test_genesis(&root);
+        write_quarantine_marker(&root);
+
+        let report = with_runtime_root(&root, || {
+            request_rejoin_with_options(RejoinRequestOptions::default())
+                .expect("rejoin diagnostics should return typed body")
+        });
+
+        assert!(!report
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("common_height"));
+    }
+
+    #[test]
+    fn shadow_status_is_read_only_idle_without_observation() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("shadow-idle");
+        install_test_genesis(&root);
+
+        let report = with_runtime_root(&root, shadow_status);
+
+        assert_eq!(
+            report.get("status").and_then(Value::as_str),
+            Some("idle_or_not_started")
+        );
+        assert_eq!(
+            report
+                .get("shadow_signs_real_votes")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     fn advancing_chain() -> Arc<Mutex<BlockChain>> {

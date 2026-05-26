@@ -76,7 +76,18 @@ fn run() -> Result<(), String> {
         }
         "sync-from-canonical-peer" => {
             require_testnet_args(&args)?;
-            match synergy_testnet::consensus::diagnostics::sync_from_canonical_peer() {
+            let options = synergy_testnet::consensus::diagnostics::SyncFromCanonicalPeerOptions {
+                canonical_height: optional_u64_arg(&args, "--canonical-height")?,
+                canonical_hash: arg_value(&args, "--canonical-hash"),
+                source_peer: arg_value(&args, "--source-peer"),
+                source_qc_aegis_pqc_verified: arg_flag(&args, "--source-qc-aegis-pqc-verified"),
+                parent_continuity_verified: arg_flag(&args, "--parent-continuity-verified"),
+                state_root_matches: arg_flag(&args, "--state-root-matches"),
+                source_peer_quarantined: !arg_flag(&args, "--source-peer-not-quarantined"),
+            };
+            match synergy_testnet::consensus::diagnostics::sync_from_canonical_peer_with_options(
+                options,
+            ) {
                 Ok(report) => print_json(report)?,
                 Err(error) => return Err(error),
             }
@@ -126,7 +137,12 @@ fn run() -> Result<(), String> {
         }
         "start-shadow-observe" => {
             require_testnet_args(&args)?;
-            match synergy_testnet::consensus::diagnostics::start_shadow_observe() {
+            let options = synergy_testnet::consensus::diagnostics::StartShadowObserveOptions {
+                required_blocks: optional_u64_arg(&args, "--required-blocks")?,
+            };
+            match synergy_testnet::consensus::diagnostics::start_shadow_observe_with_options(
+                options,
+            ) {
                 Ok(report) => print_json(report)?,
                 Err(error) => return Err(error),
             }
@@ -141,7 +157,26 @@ fn run() -> Result<(), String> {
         }
         "request-rejoin" => {
             require_testnet_args(&args)?;
-            match synergy_testnet::consensus::diagnostics::request_rejoin() {
+            let options = synergy_testnet::consensus::diagnostics::RejoinRequestOptions {
+                common_height: optional_u64_arg(&args, "--common-height")?,
+                common_hash: arg_value(&args, "--common-hash"),
+                exact_common_height_match: arg_flag(&args, "--exact-common-height-match"),
+                latest_finalized_qc_aegis_pqc_verified: arg_flag(
+                    &args,
+                    "--latest-finalized-qc-aegis-pqc-verified",
+                ),
+                state_root_matches: arg_flag(&args, "--state-root-matches"),
+                rejoin_at_finalized_safe_boundary: arg_flag(
+                    &args,
+                    "--rejoin-at-finalized-safe-boundary",
+                ),
+                cluster_marks_pending_reactivation: arg_flag(
+                    &args,
+                    "--cluster-marks-pending-reactivation",
+                ),
+                operator_approved_reactivation: arg_flag(&args, "--operator-approved-reactivation"),
+            };
+            match synergy_testnet::consensus::diagnostics::request_rejoin_with_options(options) {
                 Ok(report) => print_json(report)?,
                 Err(error) => return Err(error),
             }
@@ -188,14 +223,14 @@ fn run() -> Result<(), String> {
             );
             println!("  synergy-node recover-transient-vote-locks --chain-id 1264 --network-id synergy-testnet-v2 [--finalized-height <height>] [--min-age-secs <seconds>]");
             println!("  synergy-node self-heal --chain-id 1264 --network-id synergy-testnet-v2");
-            println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2 --canonical-height <height> --canonical-hash <hash> --source-qc-aegis-pqc-verified --parent-continuity-verified --state-root-matches --source-peer-not-quarantined [--source-peer <id>]");
             println!("  synergy-node create-snapshot --chain-id 1264 --network-id synergy-testnet-v2 --source-node-majority-branch-proven [--source-role GENESIS_VALIDATOR] [--conflict-height-hash <hash>]");
             println!(
                 "  synergy-node list-snapshots --chain-id 1264 --network-id synergy-testnet-v2"
             );
             println!("  synergy-node verify-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
             println!("  synergy-node self-heal-from-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
-            println!("  synergy-node start-shadow-observe --chain-id 1264 --network-id synergy-testnet-v2");
+            println!("  synergy-node start-shadow-observe --chain-id 1264 --network-id synergy-testnet-v2 [--required-blocks <blocks>]");
             println!(
                 "  synergy-node shadow-status --chain-id 1264 --network-id synergy-testnet-v2"
             );
@@ -203,7 +238,7 @@ fn run() -> Result<(), String> {
                 "  synergy-node rejoin-eligibility --chain-id 1264 --network-id synergy-testnet-v2"
             );
             println!(
-                "  synergy-node request-rejoin --chain-id 1264 --network-id synergy-testnet-v2"
+                "  synergy-node request-rejoin --chain-id 1264 --network-id synergy-testnet-v2 --common-height <height> --common-hash <hash> --exact-common-height-match --latest-finalized-qc-aegis-pqc-verified --state-root-matches --rejoin-at-finalized-safe-boundary --cluster-marks-pending-reactivation --operator-approved-reactivation"
             );
             println!("  synergy-node sync-from-archive --archive-url <url> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
             println!("  synergy-node self-heal-from-archive --archive-url <url> --divergence-height <height> --chain-id 1264 --network-id synergy-testnet-v2 --expected-genesis-hash <hash>");
