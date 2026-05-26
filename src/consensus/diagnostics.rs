@@ -4,9 +4,9 @@ use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::consensus::self_realign::{
     apply_chain_state_wipe_plan, build_chain_state_wipe_plan, build_snapshot_restore_plan,
     fail_closed_mutation_response, launch_snapshot_allowed_files, sign_snapshot_manifest,
-    verify_signed_snapshot_manifest, RealignmentState, ShadowDecisionRecord, ShadowObservation,
-    SignedSnapshotManifest, SnapshotBuildInput, SnapshotQcEvidence, SnapshotSchedule,
-    SnapshotVerificationPolicy, ValidatorDutyGate, WipeApplyPreconditions,
+    verify_signed_snapshot_manifest, QuarantineMarker, RealignmentState, ShadowDecisionRecord,
+    ShadowObservation, SignedSnapshotManifest, SnapshotBuildInput, SnapshotQcEvidence,
+    SnapshotSchedule, SnapshotVerificationPolicy, ValidatorDutyGate, WipeApplyPreconditions,
     DEFAULT_SHADOW_OBSERVATION_BLOCKS,
 };
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
@@ -55,6 +55,17 @@ pub struct CreateSnapshotOptions {
     pub source_node_majority_branch_proven: bool,
     pub source_role: Option<String>,
     pub conflict_height_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct OperatorQuarantineOptions {
+    pub reason: Option<String>,
+    pub target_stopped: bool,
+    pub operator_approved_containment: bool,
+    pub quorum_majority_height: Option<u64>,
+    pub quorum_majority_hash: Option<String>,
+    pub local_conflicting_height: Option<u64>,
+    pub local_conflicting_hash: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -131,8 +142,10 @@ fn chain_identity() -> Value {
 }
 
 fn require_local_testnet_v2() -> Result<(), String> {
-    let chain_id = configured_chain_id();
-    let network_id = configured_network_id();
+    let config = crate::config::load_node_config(None)
+        .map_err(|error| format!("node config invalid; refusing mutation: {error}"))?;
+    let chain_id = config.blockchain.chain_id;
+    let network_id = config.network.network_id;
     let genesis_hash = crate::genesis::load_canonical_genesis_for_runtime()
         .map(|genesis| genesis.hash().to_string())
         .map_err(|error| format!("genesis unavailable; refusing mutation: {error}"))?;
@@ -514,6 +527,95 @@ fn write_json_pretty(path: &Path, value: &Value) -> Result<(), String> {
     let bytes =
         serde_json::to_vec_pretty(value).map_err(|error| format!("serialize json: {error}"))?;
     fs::write(path, bytes).map_err(|error| format!("write {}: {error}", path.display()))
+}
+
+fn file_evidence_summary(path: &Path) -> Value {
+    let exists = path.exists();
+    let size_bytes = fs::metadata(path).ok().map(|metadata| metadata.len());
+    let sha256 = size_bytes
+        .filter(|size| *size <= 64 * 1024 * 1024)
+        .and_then(|_| fs::read(path).ok())
+        .map(|bytes| format!("{:x}", Sha256::digest(&bytes)));
+    json!({
+        "path": path.to_string_lossy(),
+        "exists": exists,
+        "size_bytes": size_bytes,
+        "sha256": sha256,
+        "sha256_skipped_large_file": size_bytes.map(|size| size > 64 * 1024 * 1024).unwrap_or(false),
+    })
+}
+
+fn preserve_operator_quarantine_evidence(evidence_path: &Path) -> Result<Value, String> {
+    fs::create_dir_all(evidence_path)
+        .map_err(|error| format!("create evidence dir {}: {error}", evidence_path.display()))?;
+    let data_dir = crate::utils::resolve_data_path("data");
+    let files = [
+        "chain.json",
+        "canonical_locks.json",
+        "committed_qcs.jsonl",
+        "consensus_vote_locks.json",
+        "validator_quarantine.json",
+        "validator_quarantine_peer_evidence.json",
+        "self_heal_status.json",
+    ];
+    let summaries = files
+        .iter()
+        .map(|name| file_evidence_summary(&data_dir.join(name)))
+        .collect::<Vec<_>>();
+    let evidence = json!({
+        "chain": chain_identity(),
+        "evidence_path": evidence_path.to_string_lossy(),
+        "captured_at": now_secs(),
+        "file_summaries": summaries,
+        "process_mutation": false,
+        "chain_state_mutated": false,
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+    });
+    write_json_pretty(
+        &evidence_path.join("operator-quarantine-evidence.json"),
+        &evidence,
+    )?;
+    Ok(evidence)
+}
+
+fn read_standard_quarantine_marker() -> Result<QuarantineMarker, String> {
+    let marker_path = crate::utils::resolve_data_path("data/validator_quarantine.json");
+    let content = fs::read_to_string(&marker_path).map_err(|error| {
+        format!(
+            "standard local quarantine marker {} is required before self-heal: {error}",
+            marker_path.display()
+        )
+    })?;
+    let marker = serde_json::from_str::<QuarantineMarker>(&content).map_err(|error| {
+        format!(
+            "local quarantine marker {} is malformed or not the standard schema: {error}",
+            marker_path.display()
+        )
+    })?;
+    if marker.recovery_state != RealignmentState::Quarantined {
+        return Err(format!(
+            "local quarantine marker recovery_state {:?} is not QUARANTINED",
+            marker.recovery_state
+        ));
+    }
+    if !marker.voting_disabled
+        || !marker.proposing_disabled
+        || !marker.qc_aggregation_disabled
+        || !marker.canonical_source_disabled
+    {
+        return Err("local quarantine marker does not disable all consensus duties".to_string());
+    }
+    if marker.rejoin_eligibility {
+        return Err("local quarantine marker cannot be rejoin eligible before restore".to_string());
+    }
+    if marker.evidence_path.trim().is_empty() || !Path::new(&marker.evidence_path).exists() {
+        return Err("local quarantine marker evidence_path is missing or unavailable".to_string());
+    }
+    Ok(marker)
 }
 
 fn status_state(status: Option<&Value>) -> Option<String> {
@@ -945,6 +1047,109 @@ pub fn start_self_heal() -> Result<Value, String> {
         "self-heal requires a verified signed snapshot manifest; use synergy_selfHealFromSnapshot after snapshot verification",
         "data/self-heal-evidence"
     )))
+}
+
+pub fn quarantine_stopped_validator_with_options(
+    options: OperatorQuarantineOptions,
+) -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    let validator_id = current_validator_id();
+    if !options.operator_approved_containment {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "quarantine-stopped-validator requires --operator-approved-containment",
+            "data/self-heal-evidence"
+        )));
+    }
+    if !options.target_stopped {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "quarantine-stopped-validator requires --target-stopped confirmation",
+            "data/self-heal-evidence"
+        )));
+    }
+    let Some(quorum_majority_height) = options.quorum_majority_height else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "quarantine-stopped-validator requires --quorum-majority-height",
+            "data/self-heal-evidence"
+        )));
+    };
+    let Some(quorum_majority_hash) = options
+        .quorum_majority_hash
+        .clone()
+        .filter(|hash| !hash.trim().is_empty())
+    else {
+        return Ok(json!(fail_closed_mutation_response(
+            validator_id,
+            RealignmentState::Active,
+            "quarantine-stopped-validator requires --quorum-majority-hash",
+            "data/self-heal-evidence"
+        )));
+    };
+
+    let latest = read_latest_block_summary().ok();
+    let detected_height = options
+        .local_conflicting_height
+        .or_else(|| latest.as_ref().map(|block| block.height))
+        .unwrap_or(quorum_majority_height);
+    let detected_hash = options
+        .local_conflicting_hash
+        .clone()
+        .or_else(|| latest.as_ref().map(|block| block.hash.clone()))
+        .unwrap_or_else(|| quorum_majority_hash.clone());
+    let reason = options
+        .reason
+        .unwrap_or_else(|| "operator_approved_stopped_stale_validator_quarantine".to_string());
+    let evidence_path = crate::utils::resolve_data_path(&format!(
+        "data/self-heal-evidence/{}-operator-quarantine",
+        now_secs()
+    ));
+    let evidence = preserve_operator_quarantine_evidence(&evidence_path)?;
+    let marker = QuarantineMarker::divergence(
+        validator_id.clone(),
+        reason.clone(),
+        detected_height,
+        detected_hash.clone(),
+        quorum_majority_height,
+        quorum_majority_hash.clone(),
+        Some(detected_hash.clone()),
+        evidence_path.to_string_lossy(),
+    );
+    let marker_path = crate::utils::resolve_data_path("data/validator_quarantine.json");
+    write_json_pretty(
+        &marker_path,
+        &serde_json::to_value(&marker)
+            .map_err(|error| format!("serialize quarantine marker: {error}"))?,
+    )?;
+    Ok(json!({
+        "success": true,
+        "typed_status": "QUARANTINED",
+        "chain": chain_identity(),
+        "validator_id": validator_id,
+        "previous_state": "ACTIVE_OR_STOPPED_WITHOUT_MARKER",
+        "new_state": "QUARANTINED",
+        "reason": reason,
+        "detected_height": detected_height,
+        "detected_hash": detected_hash,
+        "quorum_majority_height": quorum_majority_height,
+        "quorum_majority_hash": quorum_majority_hash,
+        "evidence_path": evidence_path,
+        "marker_path": marker_path,
+        "evidence": evidence,
+        "duty_gate": ValidatorDutyGate::for_state(RealignmentState::Quarantined),
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+        "chain_state_mutated": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "manual_state_copy_used": false,
+        "next_required_action": "verify signed snapshot on target then run self-heal-from-snapshot",
+    }))
 }
 
 pub fn sync_from_canonical_peer() -> Result<Value, String> {
@@ -1394,6 +1599,15 @@ pub fn self_heal_from_snapshot(
             "data/self-heal-evidence"
         )));
     }
+    if let Err(reason) = read_standard_quarantine_marker() {
+        return Ok(json!(fail_closed_mutation_response(
+            crate::config::resolve_runtime_validator_address()
+                .unwrap_or_else(|| "unknown-validator".to_string()),
+            RealignmentState::Quarantined,
+            format!("self-heal-from-snapshot requires standard local quarantine marker: {reason}"),
+            "data/self-heal-evidence"
+        )));
+    }
 
     let validator_id = crate::config::resolve_runtime_validator_address()
         .unwrap_or_else(|| "unknown-validator".to_string());
@@ -1810,12 +2024,21 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
 mod tests {
     use super::{
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        read_block_at_height, read_latest_block_summary, request_rejoin_with_options,
-        shadow_status, start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
-        CreateSnapshotOptions, RejoinRequestOptions, StartShadowObserveOptions,
-        SyncFromCanonicalPeerOptions, DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
+        quarantine_status, quarantine_stopped_validator_with_options, read_block_at_height,
+        read_latest_block_summary, rejoin_eligibility, request_rejoin_with_options,
+        self_heal_from_snapshot, shadow_status, start_shadow_observe_with_options,
+        sync_from_canonical_peer_with_options, CreateSnapshotOptions, OperatorQuarantineOptions,
+        RejoinRequestOptions, StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
+        DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
+    use crate::config::NodeConfig;
+    use crate::consensus::self_realign::{
+        create_snapshot_manifest, sign_snapshot_manifest, QuarantineMarker, SnapshotBuildInput,
+        SnapshotQcEvidence,
+    };
+    use crate::crypto::aegis_pqvm::AegisPqvmSigner;
+    use crate::synergy_types::{AegisPqKeyRole, Epoch};
     use serde_json::{json, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -1849,6 +2072,148 @@ mod tests {
             .unwrap_or(&manifest_dir)
             .join("config/genesis.json");
         fs::copy(source, root.join("config/genesis.json")).expect("test genesis should be copied");
+    }
+
+    fn install_mutated_test_genesis(root: &Path) {
+        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let source = manifest_dir
+            .parent()
+            .unwrap_or(&manifest_dir)
+            .join("config/genesis.json");
+        let mut genesis: Value =
+            serde_json::from_slice(&fs::read(source).expect("test genesis should be readable"))
+                .expect("test genesis should parse");
+        genesis["integrity"]["genesis_hash"] = Value::String("bad-genesis-hash".to_string());
+        fs::write(
+            root.join("config/genesis.json"),
+            serde_json::to_vec_pretty(&genesis).expect("mutated genesis should serialize"),
+        )
+        .expect("mutated test genesis should be written");
+    }
+
+    fn install_test_config(root: &Path, chain_id: u64, network_id: &str) {
+        let mut config = NodeConfig::default();
+        config.network.id = chain_id;
+        config.network.network_id = network_id.to_string();
+        config.blockchain.chain_id = chain_id;
+        fs::write(
+            root.join("config/node.toml"),
+            toml::to_string_pretty(&config).expect("test config should serialize"),
+        )
+        .expect("test node config should be written");
+    }
+
+    fn operator_quarantine_options() -> OperatorQuarantineOptions {
+        OperatorQuarantineOptions {
+            reason: Some("operator approved stale stopped validator containment".to_string()),
+            target_stopped: true,
+            operator_approved_containment: true,
+            quorum_majority_height: Some(87892),
+            quorum_majority_hash: Some("majority-hash".to_string()),
+            local_conflicting_height: Some(84117),
+            local_conflicting_hash: Some("local-stale-hash".to_string()),
+        }
+    }
+
+    fn write_minimal_chain_state(root: &Path) {
+        fs::write(
+            root.join("data/chain.json"),
+            json!([{
+                "height": 84117,
+                "hash": "local-stale-hash",
+                "parent_hash": "local-parent-hash",
+            }])
+            .to_string(),
+        )
+        .expect("test chain state should be written");
+        write_canonical_lock(root);
+        fs::write(
+            root.join("data/committed_qcs.jsonl"),
+            b"{\"height\":84117}\n",
+        )
+        .expect("test committed QC tail should be written");
+        fs::write(root.join("data/consensus_vote_locks.json"), b"{}")
+            .expect("test vote locks should be written");
+    }
+
+    fn operator_quarantine(root: &Path) -> Value {
+        with_runtime_root(root, || {
+            quarantine_stopped_validator_with_options(operator_quarantine_options())
+                .expect("operator quarantine should succeed with explicit proof")
+        })
+    }
+
+    fn write_valid_signed_snapshot(root: &Path) -> (PathBuf, PathBuf) {
+        let snapshot_root = root.join("snapshot-root");
+        fs::create_dir_all(&snapshot_root).expect("snapshot root should be created");
+        fs::write(snapshot_root.join("chain.json"), b"snapshot-chain")
+            .expect("snapshot chain should be written");
+        fs::write(
+            snapshot_root.join("canonical_locks.json"),
+            b"snapshot-locks",
+        )
+        .expect("snapshot locks should be written");
+        fs::write(snapshot_root.join("committed_qcs.jsonl"), b"snapshot-qcs")
+            .expect("snapshot QCs should be written");
+
+        let mut signer = AegisPqvmSigner::initialize_required().expect("test signer should init");
+        let key_id = signer
+            .generate_and_register_key(
+                "archive-1",
+                vec![AegisPqKeyRole::ArchiveSnapshotSigner],
+                Epoch(0),
+            )
+            .expect("test snapshot key should be generated");
+        let public_key = signer
+            .public_key_record(&key_id)
+            .expect("test public key should be available");
+        let qc_evidence = SnapshotQcEvidence {
+            committed_qc_height: 100,
+            committed_qc_hash: "snapshot-qc-hash".to_string(),
+            vote_count: 4,
+            signer_set: vec![
+                "validator-1".to_string(),
+                "validator-2".to_string(),
+                "validator-3".to_string(),
+                "validator-4".to_string(),
+            ],
+            aegis_pqc_verified: true,
+            duplicate_signer_check_passed: true,
+            active_validator_set_is_genesis_5: true,
+            relayers_rpc_support_counted_toward_quorum: false,
+        };
+        let manifest = create_snapshot_manifest(SnapshotBuildInput {
+            state_dir: snapshot_root.clone(),
+            snapshot_height: 100,
+            snapshot_block_hash: "snapshot-block-hash".to_string(),
+            parent_hash: "snapshot-parent-hash".to_string(),
+            state_root: None,
+            canonical_lock_height: 100,
+            canonical_lock_hash: "snapshot-block-hash".to_string(),
+            qc_evidence,
+            active_validator_set: (1..=5).map(|index| format!("validator-{index}")).collect(),
+            source_node_id: "validator-3".to_string(),
+            source_role: "GENESIS_VALIDATOR".to_string(),
+            runtime_checksum: "runtime-sha256".to_string(),
+            source_node_quarantined: false,
+            source_node_majority_branch: true,
+            conflict_height_hash: Some("snapshot-block-hash".to_string()),
+            manifest_signer_uma_id: "archive-1".to_string(),
+            manifest_signing_key_id: key_id,
+            manifest_signer_public_key: public_key,
+            manifest_signature_epoch: 0,
+            created_at: 1,
+        })
+        .expect("test snapshot manifest should build");
+        let signed =
+            sign_snapshot_manifest(&mut signer, manifest).expect("test snapshot should sign");
+        let manifest_path = snapshot_root.join("snapshot-100-manifest.json");
+        fs::write(
+            &manifest_path,
+            serde_json::to_vec_pretty(&signed).expect("signed manifest should serialize"),
+        )
+        .expect("signed manifest should be written");
+        (snapshot_root, manifest_path)
     }
 
     fn write_vote_lock(root: &Path, updated_at: u64, second_hash: Option<&str>) {
@@ -1966,6 +2331,556 @@ mod tests {
         assert!(!snapshot_dir.join("validator.key").exists());
         assert!(!snapshot_dir.join("node.env").exists());
         assert!(!snapshot_dir.join("runtime.bin").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_requires_explicit_approval() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-requires-approval");
+        install_test_genesis(&root);
+
+        let report = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(OperatorQuarantineOptions {
+                target_stopped: true,
+                quorum_majority_height: Some(87892),
+                quorum_majority_hash: Some("majority-hash".to_string()),
+                ..OperatorQuarantineOptions::default()
+            })
+            .expect("operator quarantine should return typed body")
+        });
+
+        assert!(!report
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("operator-approved-containment"));
+        assert!(!root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_requires_target_stopped_confirmation() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-requires-stopped");
+        install_test_genesis(&root);
+
+        let report = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(OperatorQuarantineOptions {
+                operator_approved_containment: true,
+                quorum_majority_height: Some(87892),
+                quorum_majority_hash: Some("majority-hash".to_string()),
+                ..OperatorQuarantineOptions::default()
+            })
+            .expect("operator quarantine should return typed body")
+        });
+
+        assert!(!report
+            .get("success")
+            .and_then(Value::as_bool)
+            .unwrap_or(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("target-stopped"));
+        assert!(!root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_writes_marker_and_preserves_evidence_without_state_mutation() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-marker");
+        install_test_genesis(&root);
+        fs::write(
+            root.join("data/chain.json"),
+            json!([{
+                "height": 84117,
+                "hash": "local-stale-hash",
+                "parent_hash": "local-parent-hash",
+            }])
+            .to_string(),
+        )
+        .expect("test chain state should be written");
+        write_canonical_lock(&root);
+        fs::write(
+            root.join("data/committed_qcs.jsonl"),
+            b"{\"height\":84117}\n",
+        )
+        .expect("test committed QC tail should be written");
+        fs::write(root.join("data/consensus_vote_locks.json"), b"{}")
+            .expect("test vote locks should be written");
+
+        let report = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(OperatorQuarantineOptions {
+                reason: Some("operator approved stale stopped validator containment".to_string()),
+                target_stopped: true,
+                operator_approved_containment: true,
+                quorum_majority_height: Some(87892),
+                quorum_majority_hash: Some("majority-hash".to_string()),
+                local_conflicting_height: Some(84117),
+                local_conflicting_hash: Some("local-stale-hash".to_string()),
+            })
+            .expect("operator quarantine should succeed with explicit proof")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("QUARANTINED")
+        );
+        assert_eq!(
+            report.get("quorum_majority_height").and_then(Value::as_u64),
+            Some(87892)
+        );
+        assert_eq!(
+            report
+                .get("keys_or_configs_copied")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("chain_state_mutated").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("quorum_mutated").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report
+                .get("duty_gate")
+                .and_then(|gate| gate.get("can_vote"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report
+                .get("duty_gate")
+                .and_then(|gate| gate.get("can_propose"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report
+                .get("duty_gate")
+                .and_then(|gate| gate.get("can_aggregate_qc"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+
+        let marker_path = root.join("data/validator_quarantine.json");
+        assert!(marker_path.exists());
+        let marker: Value = serde_json::from_slice(&fs::read(marker_path).unwrap()).unwrap();
+        assert_eq!(
+            marker.get("recovery_state").and_then(Value::as_str),
+            Some("QUARANTINED")
+        );
+        assert_eq!(
+            marker.get("voting_disabled").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            marker.get("quorum_majority_hash").and_then(Value::as_str),
+            Some("majority-hash")
+        );
+
+        let evidence_path = report
+            .get("evidence_path")
+            .and_then(Value::as_str)
+            .expect("evidence path should be returned");
+        assert!(Path::new(evidence_path)
+            .join("operator-quarantine-evidence.json")
+            .exists());
+
+        let status = with_runtime_root(&root, quarantine_status);
+        assert_eq!(
+            status.get("quarantined").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            status
+                .get("duty_gate")
+                .and_then(|gate| gate.get("can_count_toward_quorum"))
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn operator_quarantine_rejects_wrong_chain_id() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-wrong-chain");
+        install_test_genesis(&root);
+        install_test_config(&root, 1263, "synergy-testnet-v2");
+
+        let error = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(operator_quarantine_options())
+        })
+        .expect_err("wrong chain_id should fail closed");
+
+        assert!(error.contains("chain_id"), "{error}");
+        assert!(!root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_rejects_wrong_network_id() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-wrong-network");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v1");
+
+        let error = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(operator_quarantine_options())
+        })
+        .expect_err("wrong network_id should fail closed");
+
+        assert!(error.contains("network"), "{error}");
+        assert!(!root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_rejects_wrong_genesis_hash() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-wrong-genesis");
+        install_mutated_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+
+        let error = with_runtime_root(&root, || {
+            quarantine_stopped_validator_with_options(operator_quarantine_options())
+        })
+        .expect_err("wrong genesis should fail closed");
+
+        assert!(error.contains("genesis"));
+        assert!(!root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_preserves_evidence_before_marker() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-evidence-first");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+
+        let report = operator_quarantine(&root);
+
+        let evidence_path = report
+            .get("evidence_path")
+            .and_then(Value::as_str)
+            .expect("evidence path should be returned");
+        let evidence: Value = serde_json::from_slice(
+            &fs::read(Path::new(evidence_path).join("operator-quarantine-evidence.json"))
+                .expect("operator quarantine evidence should exist"),
+        )
+        .expect("operator quarantine evidence should parse");
+        let marker_summary = evidence
+            .get("file_summaries")
+            .and_then(Value::as_array)
+            .and_then(|items| {
+                items.iter().find(|item| {
+                    item.get("path")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .ends_with("validator_quarantine.json")
+                })
+            })
+            .expect("quarantine marker pre-summary should be present");
+        assert_eq!(
+            marker_summary.get("exists").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert!(root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn operator_quarantine_writes_standard_marker_schema() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-standard-marker");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+
+        operator_quarantine(&root);
+
+        let marker: QuarantineMarker = serde_json::from_slice(
+            &fs::read(root.join("data/validator_quarantine.json"))
+                .expect("standard marker should be written"),
+        )
+        .expect("standard marker schema should parse");
+        assert_eq!(marker.recovery_state, super::RealignmentState::Quarantined);
+        assert_eq!(marker.quorum_majority_height, 87892);
+        assert_eq!(marker.quorum_majority_hash, "majority-hash");
+        assert!(!marker.rejoin_eligibility);
+    }
+
+    #[test]
+    fn operator_quarantine_disables_all_consensus_duties() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-disables-duties");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+
+        let report = operator_quarantine(&root);
+
+        let duty_gate = report
+            .get("duty_gate")
+            .expect("duty gate should be returned");
+        assert_eq!(
+            duty_gate.get("can_vote").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            duty_gate.get("can_propose").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            duty_gate.get("can_aggregate_qc").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            duty_gate
+                .get("can_count_toward_quorum")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            duty_gate
+                .get("can_enter_proposer_schedule")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn operator_quarantine_does_not_mutate_keys() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-keeps-keys");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        let key_path = root.join("config/validator/consensus.private.key");
+        fs::create_dir_all(key_path.parent().unwrap()).unwrap();
+        fs::write(&key_path, b"validator-key").unwrap();
+
+        operator_quarantine(&root);
+
+        assert_eq!(fs::read(&key_path).unwrap(), b"validator-key");
+    }
+
+    #[test]
+    fn operator_quarantine_does_not_mutate_configs() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-keeps-configs");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        let config_path = root.join("config/node.toml");
+        let before = fs::read(&config_path).unwrap();
+
+        operator_quarantine(&root);
+
+        assert_eq!(fs::read(&config_path).unwrap(), before);
+    }
+
+    #[test]
+    fn operator_quarantine_does_not_mutate_genesis() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-keeps-genesis");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        let genesis_path = root.join("config/genesis.json");
+        let before = fs::read(&genesis_path).unwrap();
+
+        operator_quarantine(&root);
+
+        assert_eq!(fs::read(&genesis_path).unwrap(), before);
+    }
+
+    #[test]
+    fn operator_quarantine_does_not_delete_canonical_locks() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-keeps-locks");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        let path = root.join("data/canonical_locks.json");
+        let before = fs::read(&path).unwrap();
+
+        operator_quarantine(&root);
+
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn operator_quarantine_does_not_delete_committed_qcs() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("operator-quarantine-keeps-qcs");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        let path = root.join("data/committed_qcs.jsonl");
+        let before = fs::read(&path).unwrap();
+
+        operator_quarantine(&root);
+
+        assert_eq!(fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn self_heal_rejects_non_quarantined_stale_validator() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("self-heal-rejects-non-quarantined");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        let (snapshot_root, manifest_path) = write_valid_signed_snapshot(&root);
+
+        let report = with_runtime_root(&root, || {
+            self_heal_from_snapshot(
+                manifest_path.to_str().unwrap(),
+                Some(snapshot_root.to_str().unwrap()),
+            )
+            .expect("self-heal should return typed body")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("local validator quarantine"));
+    }
+
+    #[test]
+    fn self_heal_rejects_manual_or_malformed_quarantine_marker() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("self-heal-rejects-malformed-marker");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        write_quarantine_marker(&root);
+        let (snapshot_root, manifest_path) = write_valid_signed_snapshot(&root);
+
+        let report = with_runtime_root(&root, || {
+            self_heal_from_snapshot(
+                manifest_path.to_str().unwrap(),
+                Some(snapshot_root.to_str().unwrap()),
+            )
+            .expect("self-heal should return typed body")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(false));
+        assert!(report
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("standard local quarantine marker"));
+    }
+
+    #[test]
+    fn self_heal_accepts_operator_quarantined_validator_only_after_signed_snapshot_verification() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("self-heal-accepts-operator-marker");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        let (snapshot_root, manifest_path) = write_valid_signed_snapshot(&root);
+
+        let report = with_runtime_root(&root, || {
+            self_heal_from_snapshot(
+                manifest_path.to_str().unwrap(),
+                Some(snapshot_root.to_str().unwrap()),
+            )
+            .expect("self-heal should return typed body")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("SNAPSHOT_RESTORED")
+        );
+        assert_eq!(
+            report
+                .get("keys_or_configs_copied")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("genesis_mutated").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("quorum_mutated").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn rejoin_requires_shadow_observation_after_restore() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("rejoin-requires-shadow-after-restore");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        write_self_heal_status_state(&root, "SNAPSHOT_RESTORED");
+
+        let report = with_runtime_root(&root, rejoin_eligibility);
+
+        assert_eq!(report.get("eligible").and_then(Value::as_bool), Some(false));
+        let blocked = report
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .expect("blocked reasons should be returned");
+        assert!(blocked.iter().any(|reason| {
+            reason
+                .as_str()
+                .unwrap_or_default()
+                .contains("SHADOW_PASSED")
+        }));
     }
 
     #[test]
@@ -2152,13 +3067,24 @@ mod tests {
 
     fn with_runtime_root<T>(root: &Path, test: impl FnOnce() -> T) -> T {
         let previous_root = std::env::var("SYNERGY_PROJECT_ROOT").ok();
+        let previous_config = std::env::var("SYNERGY_CONFIG_PATH").ok();
         let previous_genesis = std::env::var("SYNERGY_GENESIS_FILE").ok();
         std::env::set_var("SYNERGY_PROJECT_ROOT", root);
+        let config_path = root.join("config/node.toml");
+        if config_path.exists() {
+            std::env::set_var("SYNERGY_CONFIG_PATH", config_path);
+        } else {
+            std::env::remove_var("SYNERGY_CONFIG_PATH");
+        }
         std::env::remove_var("SYNERGY_GENESIS_FILE");
         let result = test();
         match previous_root {
             Some(value) => std::env::set_var("SYNERGY_PROJECT_ROOT", value),
             None => std::env::remove_var("SYNERGY_PROJECT_ROOT"),
+        }
+        match previous_config {
+            Some(value) => std::env::set_var("SYNERGY_CONFIG_PATH", value),
+            None => std::env::remove_var("SYNERGY_CONFIG_PATH"),
         }
         match previous_genesis {
             Some(value) => std::env::set_var("SYNERGY_GENESIS_FILE", value),

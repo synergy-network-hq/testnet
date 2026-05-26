@@ -135,6 +135,23 @@ fn run() -> Result<(), String> {
             )?;
             print_json(report)?;
         }
+        "quarantine-stopped-validator" => {
+            require_testnet_args(&args)?;
+            let options = synergy_testnet::consensus::diagnostics::OperatorQuarantineOptions {
+                reason: arg_value(&args, "--reason"),
+                target_stopped: arg_flag(&args, "--target-stopped"),
+                operator_approved_containment: arg_flag(&args, "--operator-approved-containment"),
+                quorum_majority_height: optional_u64_arg(&args, "--quorum-majority-height")?,
+                quorum_majority_hash: arg_value(&args, "--quorum-majority-hash"),
+                local_conflicting_height: optional_u64_arg(&args, "--local-conflicting-height")?,
+                local_conflicting_hash: arg_value(&args, "--local-conflicting-hash"),
+            };
+            let report =
+                synergy_testnet::consensus::diagnostics::quarantine_stopped_validator_with_options(
+                    options,
+                )?;
+            print_json(report)?;
+        }
         "start-shadow-observe" => {
             require_testnet_args(&args)?;
             let options = synergy_testnet::consensus::diagnostics::StartShadowObserveOptions {
@@ -230,6 +247,7 @@ fn run() -> Result<(), String> {
             );
             println!("  synergy-node verify-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
             println!("  synergy-node self-heal-from-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
+            println!("  synergy-node quarantine-stopped-validator --chain-id 1264 --network-id synergy-testnet-v2 --target-stopped --operator-approved-containment --quorum-majority-height <height> --quorum-majority-hash <hash> [--local-conflicting-height <height>] [--local-conflicting-hash <hash>]");
             println!("  synergy-node start-shadow-observe --chain-id 1264 --network-id synergy-testnet-v2 [--required-blocks <blocks>]");
             println!(
                 "  synergy-node shadow-status --chain-id 1264 --network-id synergy-testnet-v2"

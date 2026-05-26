@@ -137,6 +137,16 @@ fn arg_flag(args: &[String], name: &str) -> bool {
     args.iter().any(|arg| arg == name)
 }
 
+fn optional_u64_arg(args: &[String], name: &str) -> Result<Option<u64>, String> {
+    arg_value(args, name)
+        .map(|value| {
+            value
+                .parse::<u64>()
+                .map_err(|error| format!("invalid {name}: {error}"))
+        })
+        .transpose()
+}
+
 fn require_testnet_v2_operator_args(args: &[String]) -> Result<(), String> {
     let chain_id = arg_value(args, "--chain-id")
         .ok_or_else(|| "missing --chain-id 1264".to_string())?
@@ -291,6 +301,23 @@ fn run_offline_snapshot_command(args: &[String], command: &str) -> Result<bool, 
                 &manifest,
                 snapshot_root.as_deref(),
             )?;
+            print_json_value(report);
+            Ok(true)
+        }
+        "quarantine-stopped-validator" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::OperatorQuarantineOptions {
+                reason: arg_value(args, "--reason"),
+                target_stopped: arg_flag(args, "--target-stopped"),
+                operator_approved_containment: arg_flag(args, "--operator-approved-containment"),
+                quorum_majority_height: optional_u64_arg(args, "--quorum-majority-height")?,
+                quorum_majority_hash: arg_value(args, "--quorum-majority-hash"),
+                local_conflicting_height: optional_u64_arg(args, "--local-conflicting-height")?,
+                local_conflicting_hash: arg_value(args, "--local-conflicting-hash"),
+            };
+            let report =
+                crate::consensus::diagnostics::quarantine_stopped_validator_with_options(options)?;
             print_json_value(report);
             Ok(true)
         }
@@ -751,6 +778,10 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!(
         "                          Restore a quarantined node from a verified signed snapshot"
     );
+    eprintln!("    quarantine-stopped-validator");
+    eprintln!(
+        "                          Operator-approved quarantine marker for an already stopped stale validator"
+    );
     eprintln!("    list-templates        List all available node templates");
     eprintln!("    version               Display version information");
     eprintln!();
@@ -763,6 +794,7 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!("    --source-node-majority-branch-proven");
     eprintln!("    --source-role GENESIS_VALIDATOR");
     eprintln!("    --manifest <PATH> [--snapshot-root <DIR>]");
+    eprintln!("    --target-stopped --operator-approved-containment --quorum-majority-height <H> --quorum-majority-hash <HASH>");
     eprintln!();
     eprintln!("START OPTIONS:");
     eprintln!("    --node-type <TYPE>    Specify the node type (uses templates/<TYPE>.toml)");
@@ -2593,6 +2625,21 @@ mod tests {
         args
     }
 
+    fn quarantine_args(extra: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "synergy-testnet".to_string(),
+            "quarantine-stopped-validator".to_string(),
+            "--chain-id".to_string(),
+            "1264".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+            "--genesis-hash".to_string(),
+            EXPECTED_GENESIS_HASH.to_string(),
+        ];
+        args.extend(extra.iter().map(|arg| (*arg).to_string()));
+        args
+    }
+
     #[test]
     fn snapshot_operator_args_require_chain_id_1264() {
         let missing = vec![
@@ -2669,6 +2716,46 @@ mod tests {
         let error = configure_offline_source_workspace(&args)
             .expect_err("ambiguous workspace must fail closed");
         assert!(error.contains("missing --source-workspace"));
+    }
+
+    #[test]
+    fn operator_quarantine_rejects_ambiguous_workspace() {
+        let args = quarantine_args(&[
+            "--target-stopped",
+            "--operator-approved-containment",
+            "--quorum-majority-height",
+            "87892",
+            "--quorum-majority-hash",
+            "majority-hash",
+        ]);
+        let error = run_offline_snapshot_command(&args, "quarantine-stopped-validator")
+            .expect_err("ambiguous workspace must fail closed");
+        assert!(error.contains("missing --source-workspace"));
+    }
+
+    #[test]
+    fn operator_quarantine_rejects_workspace_without_validator_structure() {
+        let workspace = unique_test_workspace("operator-quarantine-missing-data");
+        let config_dir = workspace.join("config");
+        fs::create_dir_all(&config_dir).expect("config directory should be created");
+        fs::write(config_dir.join("node.toml"), b"[node]\n")
+            .expect("node config should be written");
+        let args = quarantine_args(&[
+            "--source-workspace",
+            workspace.to_str().expect("workspace path should be UTF-8"),
+            "--target-stopped",
+            "--operator-approved-containment",
+            "--quorum-majority-height",
+            "87892",
+            "--quorum-majority-hash",
+            "majority-hash",
+        ]);
+
+        let error = run_offline_snapshot_command(&args, "quarantine-stopped-validator")
+            .expect_err("workspace without data directory must fail closed");
+
+        assert!(error.contains("missing data directory"));
+        fs::remove_dir_all(&workspace).expect("test workspace should clean up");
     }
 
     #[test]
