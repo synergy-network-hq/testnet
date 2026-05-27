@@ -241,6 +241,78 @@ fn append_epoch_bounds(mut value: Value, bounds: &ShadowEpochBounds) -> Value {
     value
 }
 
+fn shadow_boundary_assessment(
+    bounds: &ShadowEpochBounds,
+    latest_height: u64,
+    full_epoch_shadow_completed: bool,
+    has_failures: bool,
+) -> Value {
+    let next_eligible_boundary = if latest_height <= bounds.earliest_activation_height {
+        bounds.earliest_activation_height
+    } else if latest_height % bounds.epoch_size == 0 {
+        latest_height
+    } else {
+        latest_height
+            .saturating_div(bounds.epoch_size)
+            .saturating_add(1)
+            .saturating_mul(bounds.epoch_size)
+    };
+    let last_eligible_boundary = if latest_height >= bounds.earliest_activation_height {
+        Some((latest_height / bounds.epoch_size) * bounds.epoch_size)
+    } else {
+        None
+    };
+    let epoch_rejoin_window_open = full_epoch_shadow_completed
+        && !has_failures
+        && latest_height >= bounds.earliest_activation_height
+        && latest_height % bounds.epoch_size == 0;
+    let missed_boundary = full_epoch_shadow_completed
+        && !has_failures
+        && latest_height > bounds.earliest_activation_height
+        && latest_height % bounds.epoch_size != 0;
+    let mut reasons = Vec::new();
+    if has_failures {
+        reasons.push("shadow or safety verification has failures".to_string());
+    }
+    if !full_epoch_shadow_completed {
+        reasons.push("continuous full shadow epoch is incomplete".to_string());
+    }
+    if latest_height < bounds.earliest_activation_height {
+        reasons.push(format!(
+            "current height {latest_height} is before earliest activation height {}",
+            bounds.earliest_activation_height
+        ));
+    }
+    if full_epoch_shadow_completed
+        && latest_height >= bounds.earliest_activation_height
+        && latest_height % bounds.epoch_size != 0
+    {
+        reasons.push(format!(
+            "current height {latest_height} is not an epoch boundary for epoch_size {}",
+            bounds.epoch_size
+        ));
+    }
+    if epoch_rejoin_window_open {
+        reasons.push("epoch rejoin window is open".to_string());
+    }
+
+    json!({
+        "epoch_size": bounds.epoch_size,
+        "current_height": latest_height,
+        "earliest_activation_height": bounds.earliest_activation_height,
+        "last_eligible_boundary": last_eligible_boundary,
+        "next_eligible_boundary": next_eligible_boundary,
+        "epoch_rejoin_window_open": epoch_rejoin_window_open,
+        "missed_boundary": missed_boundary,
+        "last_missed_boundary": missed_boundary.then_some((latest_height / bounds.epoch_size) * bounds.epoch_size),
+        "missed_boundary_reason": missed_boundary.then_some(format!(
+            "full shadow proof existed but no rejoin transition was executed at epoch boundary {}",
+            (latest_height / bounds.epoch_size) * bounds.epoch_size
+        )),
+        "blocked_reasons": reasons,
+    })
+}
+
 fn configured_chain_id() -> u64 {
     crate::config::load_node_config(None)
         .ok()
@@ -2153,6 +2225,12 @@ pub fn shadow_status() -> Value {
         .count() as u64;
     let mismatch_count = observed_shadow_blocks.saturating_sub(canonical_match_count)
         + evaluated_shadow.failures.len() as u64;
+    let runtime_boundary_assessment = shadow_boundary_assessment(
+        &bounds,
+        latest_height,
+        failures.is_empty() && full_epoch_shadow_completed,
+        !failures.is_empty(),
+    );
     let epoch_rejoin_window_open = failures.is_empty()
         && full_epoch_shadow_completed
         && latest_height >= bounds.earliest_activation_height
@@ -2193,6 +2271,12 @@ pub fn shadow_status() -> Value {
             "process_proof_completed": process_proof_completed,
             "full_epoch_shadow_completed": failures.is_empty() && full_epoch_shadow_completed,
             "epoch_rejoin_window_open": epoch_rejoin_window_open,
+            "last_eligible_boundary": runtime_boundary_assessment.get("last_eligible_boundary").cloned().unwrap_or(Value::Null),
+            "next_eligible_boundary": runtime_boundary_assessment.get("next_eligible_boundary").cloned().unwrap_or(Value::Null),
+            "missed_boundary": runtime_boundary_assessment.get("missed_boundary").cloned().unwrap_or(json!(false)),
+            "last_missed_boundary": runtime_boundary_assessment.get("last_missed_boundary").cloned().unwrap_or(Value::Null),
+            "missed_boundary_reason": runtime_boundary_assessment.get("missed_boundary_reason").cloned().unwrap_or(Value::Null),
+            "runtime_boundary_assessment": runtime_boundary_assessment,
             "rejoin_eligible": false,
             "duty_gate": duty_gate,
             "last_observed_height": last_observed_height,
@@ -2326,6 +2410,26 @@ pub fn rejoin_eligibility() -> Value {
             "earliest activation height is {earliest}; rejoin must be requested at that epoch boundary or a later epoch boundary"
         ));
     }
+    if shadow
+        .get("missed_boundary")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        if let Some(reason) = shadow.get("missed_boundary_reason").and_then(Value::as_str) {
+            blocked_reasons.push(format!("missed rejoin boundary: {reason}"));
+        } else {
+            blocked_reasons.push("missed rejoin boundary".to_string());
+        }
+        if let Some(next) = shadow.get("next_eligible_boundary").and_then(Value::as_u64) {
+            blocked_reasons.push(format!(
+                "next eligible epoch boundary is {next}; pre-arm or request rejoin before that boundary"
+            ));
+        }
+    }
+    let runtime_boundary_assessment = shadow
+        .get("runtime_boundary_assessment")
+        .cloned()
+        .unwrap_or(Value::Null);
     if shadow_passed {
         return json!({
             "chain": chain_identity(),
@@ -2333,6 +2437,7 @@ pub fn rejoin_eligibility() -> Value {
             "fail_closed": true,
             "quarantine": quarantine_status(),
             "shadow": shadow,
+            "runtime_boundary_assessment": runtime_boundary_assessment,
             "blocked_reasons": [
                 "request-rejoin requires fresh exact common-height match proof",
                 "request-rejoin requires latest finalized QC verified through Aegis/PQC",
@@ -2353,6 +2458,7 @@ pub fn rejoin_eligibility() -> Value {
         "fail_closed": true,
         "quarantine": quarantine_status(),
         "shadow": shadow,
+        "runtime_boundary_assessment": runtime_boundary_assessment,
         "blocked_reasons": blocked_reasons,
     })
 }
@@ -3858,6 +3964,47 @@ mod tests {
                 .get("earliest_activation_height")
                 .and_then(Value::as_u64),
             Some(91000)
+        );
+    }
+
+    #[test]
+    fn shadow_status_reports_missed_epoch_rejoin_boundary() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("shadow-missed-epoch-boundary");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        write_quarantine_marker(&root);
+        write_empty_vote_locks(&root);
+        write_shadow_observation(&root, 89957, 500);
+        write_chain_range(&root, 90000, 94002);
+        write_canonical_lock_at_height(&root, 94002);
+        write_legacy_qc_fixture_at_height(&root, 94002);
+
+        let report = with_runtime_root(&root, shadow_status);
+
+        assert_eq!(
+            report.get("status").and_then(Value::as_str),
+            Some("SHADOW_PASSED")
+        );
+        assert_eq!(
+            report.get("missed_boundary").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report.get("last_missed_boundary").and_then(Value::as_u64),
+            Some(94000)
+        );
+        assert_eq!(
+            report.get("next_eligible_boundary").and_then(Value::as_u64),
+            Some(95000)
+        );
+        assert_eq!(
+            report
+                .get("epoch_rejoin_window_open")
+                .and_then(Value::as_bool),
+            Some(false)
         );
     }
 

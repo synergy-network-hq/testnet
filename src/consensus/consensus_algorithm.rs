@@ -871,10 +871,9 @@ impl ProofOfSynergy {
                         // Phase 1: Leader selection using entropy beacon and synergy scores
                         // Use next block index for leader selection (current block + 1)
                         let next_block_index = latest_block_clone.block_index + 1;
-                        // Rebuild leader rotation from the shared consensus validator set.
-                        // The liveness gate above still decides whether block production is
-                        // allowed, but every node must derive the same leader order from the
-                        // same validator set for a given height/epoch.
+                        // Rebuild leader rotation from the shared duty-active set. Quarantined
+                        // and shadow validators remain registered/history-known, but they must
+                        // not be scheduled as live proposers while their duties are disabled.
                         let epoch_randomness = Self::deterministic_epoch_randomness(
                             &chain_guard,
                             next_block_index,
@@ -882,7 +881,7 @@ impl ProofOfSynergy {
                         );
                         let local_validator_address = Self::resolve_local_validator_address();
                         let selected_validator = Self::select_leader_for_block(
-                            &active_validators,
+                            &live_active_validators,
                             next_block_index,
                             &synergy_calculator,
                             &epoch_randomness,
@@ -891,7 +890,7 @@ impl ProofOfSynergy {
                         );
                         let selected_validator = Self::prefer_local_vote_lock_leader(
                             selected_validator,
-                            &active_validators,
+                            &live_active_validators,
                             local_validator_address.as_deref(),
                             current_epoch,
                             next_block_index,
@@ -1790,9 +1789,13 @@ impl ProofOfSynergy {
                 .collect::<HashSet<_>>();
         let mut live_validator_addresses = HashSet::new();
 
-        if let Some(local_validator_address) = Self::resolve_local_validator_address() {
-            if active_validator_addresses.contains(&local_validator_address) {
-                live_validator_addresses.insert(local_validator_address);
+        let local_duties_disabled =
+            crate::consensus::anti_divergence::current_validator_quarantine_duty_block().is_some();
+        if !local_duties_disabled {
+            if let Some(local_validator_address) = Self::resolve_local_validator_address() {
+                if active_validator_addresses.contains(&local_validator_address) {
+                    live_validator_addresses.insert(local_validator_address);
+                }
             }
         }
 
@@ -3913,6 +3916,68 @@ mod tests {
             ]
         );
         assert!(!cached_reduced.1.iter().any(|address| address == "synv1c"));
+    }
+
+    #[test]
+    fn quarantined_validator_is_not_in_duty_active_leader_rotation() {
+        let _guard = proposal_cache_test_lock()
+            .lock()
+            .expect("leader rotation test lock should succeed");
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        let synergy_calculator = Arc::new(SynergyScoreCalculator::new(
+            Arc::new(ValidatorManager::new()),
+            pqc_manager,
+        ));
+        let epoch_randomness = vec![11u8; 64];
+        let build_validator = |address: &str| {
+            let mut validator = Validator::new(
+                address.to_string(),
+                format!("{address}-pubkey"),
+                address.to_string(),
+                1_000,
+            );
+            validator.status = ValidatorStatus::Active;
+            validator.synergy_score = 100.0;
+            validator
+        };
+        let registered_validators = vec![
+            build_validator("synv1a"),
+            build_validator("synv1b"),
+            build_validator("synv1c-quarantined"),
+            build_validator("synv1d"),
+            build_validator("synv1e"),
+        ];
+        let duty_active_validators = registered_validators
+            .iter()
+            .filter(|validator| validator.address != "synv1c-quarantined")
+            .cloned()
+            .collect::<Vec<_>>();
+
+        *EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed") = (0, Vec::new(), 0, Vec::new());
+
+        for height in 94_000..94_025 {
+            let selected = ProofOfSynergy::select_leader_for_block(
+                &duty_active_validators,
+                height,
+                &synergy_calculator,
+                &epoch_randomness,
+                1_000,
+                0,
+            );
+            assert_ne!(selected.address, "synv1c-quarantined");
+        }
+
+        let cached = EPOCH_LEADER_ROTATION
+            .lock()
+            .expect("rotation lock should succeed")
+            .clone();
+        assert_eq!(cached.3.len(), 4);
+        assert!(!cached
+            .3
+            .iter()
+            .any(|address| address == "synv1c-quarantined"));
     }
 
     #[test]

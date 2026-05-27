@@ -139,6 +139,9 @@ struct PeerConnection {
     best_block_hash: String,
     genesis_hash: String,
     status_received_at: Option<u64>,
+    quarantined: bool,
+    consensus_duties_disabled: bool,
+    recovery_state: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +161,9 @@ struct CachedPeerState {
     best_block_hash: String,
     genesis_hash: String,
     status_received_at: Option<u64>,
+    quarantined: bool,
+    consensus_duties_disabled: bool,
+    recovery_state: Option<String>,
     last_seen: u64,
     connected_at: u64,
 }
@@ -849,6 +855,9 @@ fn build_cached_peer_state(peer: &PeerConnection) -> Option<(String, CachedPeerS
             best_block_hash: peer.best_block_hash.clone(),
             genesis_hash: peer.genesis_hash.clone(),
             status_received_at: peer.status_received_at,
+            quarantined: peer.quarantined,
+            consensus_duties_disabled: peer.consensus_duties_disabled,
+            recovery_state: peer.recovery_state.clone(),
             last_seen: peer.last_seen,
             connected_at: peer.connected_at,
         },
@@ -897,6 +906,12 @@ fn merge_cached_state_into_peer(peer: &mut PeerConnection, state: &CachedPeerSta
         peer.genesis_hash = state.genesis_hash.clone();
         peer.status_received_at = state.status_received_at;
     }
+    peer.quarantined = peer.quarantined || state.quarantined;
+    peer.consensus_duties_disabled =
+        peer.consensus_duties_disabled || state.consensus_duties_disabled;
+    if peer.recovery_state.is_none() {
+        peer.recovery_state = state.recovery_state.clone();
+    }
     peer.last_seen = peer.last_seen.max(state.last_seen);
     peer.connected_at = if peer.connected_at == 0 {
         state.connected_at
@@ -932,6 +947,9 @@ fn merge_peer_state_from_existing(existing: &PeerConnection, replacement: &mut P
             best_block_hash: existing.best_block_hash.clone(),
             genesis_hash: existing.genesis_hash.clone(),
             status_received_at: existing.status_received_at,
+            quarantined: existing.quarantined,
+            consensus_duties_disabled: existing.consensus_duties_disabled,
+            recovery_state: existing.recovery_state.clone(),
             last_seen: existing.last_seen,
             connected_at: existing.connected_at,
         },
@@ -943,6 +961,9 @@ fn apply_status_to_peer(
     block_height: u64,
     best_block_hash: &str,
     genesis_hash: &str,
+    quarantined: bool,
+    consensus_duties_disabled: bool,
+    recovery_state: Option<&str>,
     status_received_at: u64,
 ) {
     if block_height >= peer.last_known_height {
@@ -957,6 +978,12 @@ fn apply_status_to_peer(
     }
 
     peer.status_received_at = Some(status_received_at);
+    peer.quarantined = quarantined;
+    peer.consensus_duties_disabled = consensus_duties_disabled || quarantined;
+    peer.recovery_state = recovery_state
+        .map(str::trim)
+        .filter(|state| !state.is_empty())
+        .map(ToOwned::to_owned);
 }
 
 fn propagate_status_to_matching_peers(
@@ -966,6 +993,9 @@ fn propagate_status_to_matching_peers(
     block_height: u64,
     best_block_hash: &str,
     genesis_hash: &str,
+    quarantined: bool,
+    consensus_duties_disabled: bool,
+    recovery_state: Option<&str>,
 ) {
     let identity = peers
         .get(peer_address)
@@ -995,6 +1025,9 @@ fn propagate_status_to_matching_peers(
                 block_height,
                 best_block_hash,
                 genesis_hash,
+                quarantined,
+                consensus_duties_disabled,
+                recovery_state,
                 status_received_at,
             );
             cache_peer_state(peer_state_cache, peer);
@@ -1056,6 +1089,9 @@ fn handle_status_message(
     block_height: u64,
     best_block_hash: &str,
     genesis_hash: &str,
+    quarantined: bool,
+    consensus_duties_disabled: bool,
+    recovery_state: Option<&str>,
 ) {
     if config.node.bootstrap_only {
         debug!(
@@ -1091,6 +1127,9 @@ fn handle_status_message(
             block_height,
             best_block_hash,
             genesis_hash,
+            quarantined,
+            consensus_duties_disabled,
+            recovery_state,
         );
         request_status_from_connected_peer(&mut peers, peer_address);
         info!(
@@ -1139,6 +1178,9 @@ fn handle_status_message(
             block_height,
             best_block_hash,
             genesis_hash,
+            quarantined,
+            consensus_duties_disabled,
+            recovery_state,
         );
     }
     info!(
@@ -1496,13 +1538,48 @@ fn status_ready_validator_addresses(
 ) -> Vec<String> {
     let mut validators = HashSet::<String>::new();
 
-    if let Some(local_validator) = announced_validator_address(config) {
-        validators.insert(local_validator);
+    if current_validator_quarantine_duty_block().is_none() {
+        if let Some(local_validator) = announced_validator_address(config) {
+            validators.insert(local_validator);
+        }
     }
 
     if let Ok(peers) = connected_peers.lock() {
         for peer in peers.values() {
-            if !peer_has_remote_status(peer) {
+            if !peer_has_remote_status(peer) || peer.quarantined || peer.consensus_duties_disabled {
+                continue;
+            }
+            if let Some(address) = peer.validator_address.as_deref() {
+                let trimmed = address.trim();
+                if !trimmed.is_empty() {
+                    validators.insert(trimmed.to_string());
+                }
+            }
+        }
+    }
+
+    let mut validators = validators.into_iter().collect::<Vec<_>>();
+    validators.sort();
+    validators
+}
+
+#[cfg(test)]
+fn status_ready_validator_addresses_with_local_duty_gate(
+    config: &NodeConfig,
+    connected_peers: &PeersArc,
+    local_duties_disabled: bool,
+) -> Vec<String> {
+    let mut validators = HashSet::<String>::new();
+
+    if !local_duties_disabled {
+        if let Some(local_validator) = announced_validator_address(config) {
+            validators.insert(local_validator);
+        }
+    }
+
+    if let Ok(peers) = connected_peers.lock() {
+        for peer in peers.values() {
+            if !peer_has_remote_status(peer) || peer.quarantined || peer.consensus_duties_disabled {
                 continue;
             }
             if let Some(address) = peer.validator_address.as_deref() {
@@ -1991,6 +2068,9 @@ pub struct PeerSnapshot {
     pub best_block_hash: String,
     pub genesis_hash: String,
     pub status_received_at: Option<u64>,
+    pub quarantined: bool,
+    pub consensus_duties_disabled: bool,
+    pub recovery_state: Option<String>,
     pub connected_at: u64,
     pub last_seen: u64,
     pub blocks_sent: u64,
@@ -2189,6 +2269,16 @@ impl P2PNetwork {
         let mut sent_validator_addresses = HashSet::new();
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
+            if peer.quarantined || peer.consensus_duties_disabled {
+                debug!(
+                    "p2p",
+                    "Skipping vote request to duty-disabled validator peer",
+                    "peer" => address.clone(),
+                    "validator_address" => peer.validator_address.clone().unwrap_or_default(),
+                    "height" => block.block_index
+                );
+                continue;
+            }
             let Some(validator_address) = peer.validator_address.as_deref() else {
                 continue;
             };
@@ -2336,6 +2426,9 @@ impl P2PNetwork {
                 best_block_hash: peer.best_block_hash.clone(),
                 genesis_hash: peer.genesis_hash.clone(),
                 status_received_at: peer.status_received_at,
+                quarantined: peer.quarantined,
+                consensus_duties_disabled: peer.consensus_duties_disabled,
+                recovery_state: peer.recovery_state.clone(),
                 connected_at: peer.connected_at,
                 last_seen: peer.last_seen,
                 blocks_sent: peer.blocks_sent,
@@ -3663,11 +3756,17 @@ fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -
                 .unwrap_or_else(canonical_genesis_hash),
         )
     };
+    let quarantine_block = current_validator_quarantine_duty_block();
+    let quarantined = quarantine_block.is_some();
+    let recovery_state = quarantine_block.map(|block| block.source);
 
     NetworkMessage::Status {
         block_height,
         best_block_hash,
         genesis_hash,
+        quarantined,
+        consensus_duties_disabled: quarantined,
+        recovery_state,
     }
 }
 
@@ -3708,6 +3807,9 @@ fn handle_incoming_connection(
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
     }
@@ -3808,6 +3910,9 @@ fn handle_outgoing_connection(
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
     }
@@ -4216,6 +4321,12 @@ fn handle_messages(
                                                             .clone(),
                                                         status_received_at: existing_state
                                                             .status_received_at,
+                                                        quarantined: existing_state.quarantined,
+                                                        consensus_duties_disabled: existing_state
+                                                            .consensus_duties_disabled,
+                                                        recovery_state: existing_state
+                                                            .recovery_state
+                                                            .clone(),
                                                     };
                                                     merge_peer_state_from_existing(
                                                         &existing_peer,
@@ -4468,6 +4579,9 @@ fn handle_messages(
                         block_height,
                         best_block_hash,
                         genesis_hash,
+                        quarantined,
+                        consensus_duties_disabled,
+                        recovery_state,
                     } => {
                         handle_status_message(
                             &blockchain,
@@ -4478,6 +4592,9 @@ fn handle_messages(
                             block_height,
                             &best_block_hash,
                             &genesis_hash,
+                            quarantined,
+                            consensus_duties_disabled,
+                            recovery_state.as_deref(),
                         );
                     }
                     NetworkMessage::GetBlockHeaders {
@@ -5684,7 +5801,8 @@ mod tests {
         pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
-        should_request_missing_blocks, status_ready_validator_participants, status_sync_batch,
+        should_request_missing_blocks, status_ready_validator_addresses_with_local_duty_gate,
+        status_ready_validator_participants, status_sync_batch,
         support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
@@ -5748,7 +5866,52 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: canonical_genesis_hash(),
             status_received_at: Some(0),
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         }
+    }
+
+    #[test]
+    fn status_ready_excludes_quarantined_and_duty_disabled_validators() {
+        let mut config = NodeConfig::default();
+        config.node.validator_address = "synv1local".to_string();
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+
+        let mut healthy_peer = test_peer_with_validator_address(Some("synv1healthy"));
+        healthy_peer.status_received_at = Some(current_timestamp());
+
+        let mut quarantined_peer = test_peer_with_validator_address(Some("synv1quarantined"));
+        quarantined_peer.address = "peer-quarantined".to_string();
+        quarantined_peer.status_received_at = Some(current_timestamp());
+        quarantined_peer.quarantined = true;
+        quarantined_peer.consensus_duties_disabled = true;
+        quarantined_peer.recovery_state = Some("OPERATOR_QUARANTINE".to_string());
+
+        let mut shadow_peer = test_peer_with_validator_address(Some("synv1shadow"));
+        shadow_peer.address = "peer-shadow".to_string();
+        shadow_peer.status_received_at = Some(current_timestamp());
+        shadow_peer.consensus_duties_disabled = true;
+        shadow_peer.recovery_state = Some("SHADOW_OBSERVING".to_string());
+
+        {
+            let mut peers = connected_peers.lock().unwrap();
+            peers.insert("peer-healthy".to_string(), healthy_peer);
+            peers.insert("peer-quarantined".to_string(), quarantined_peer);
+            peers.insert("peer-shadow".to_string(), shadow_peer);
+        }
+
+        let addresses =
+            status_ready_validator_addresses_with_local_duty_gate(&config, &connected_peers, false);
+        assert!(addresses.contains(&"synv1local".to_string()));
+        assert!(addresses.contains(&"synv1healthy".to_string()));
+        assert!(!addresses.contains(&"synv1quarantined".to_string()));
+        assert!(!addresses.contains(&"synv1shadow".to_string()));
+
+        let local_disabled =
+            status_ready_validator_addresses_with_local_duty_gate(&config, &connected_peers, true);
+        assert!(!local_disabled.contains(&"synv1local".to_string()));
+        assert!(local_disabled.contains(&"synv1healthy".to_string()));
     }
 
     lazy_static! {
@@ -6111,6 +6274,9 @@ mod tests {
             best_block_hash: "block-hash".to_string(),
             genesis_hash: "genesis-hash".to_string(),
             status_received_at: Some(21),
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
         cache_peer_state(&cache, &existing);
 
@@ -6133,6 +6299,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
 
         let peer_identity = peer_identity_key("testnet-peer-b", Some("synv1peer-b"));
@@ -6165,6 +6334,9 @@ mod tests {
             best_block_hash: "hash-9".to_string(),
             genesis_hash: "genesis-hash".to_string(),
             status_received_at: Some(16),
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
         let mut replacement = PeerConnection {
             address: "62.146.182.208:56733".to_string(),
@@ -6185,6 +6357,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
 
         merge_peer_state_from_existing(&existing, &mut replacement);
@@ -6326,6 +6501,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -6349,6 +6527,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         let connected_peers = Arc::new(Mutex::new(peers));
@@ -6383,6 +6564,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
         let identified = PeerConnection {
             address: "62.146.182.208:5622".to_string(),
@@ -6403,6 +6587,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
 
         assert!(!peer_has_identifying_metadata(&unidentified));
@@ -6433,6 +6620,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -6456,6 +6646,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -6479,6 +6672,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -6513,6 +6709,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
@@ -6594,6 +6793,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -6637,6 +6839,9 @@ mod tests {
                 best_block_hash: "remote-tip".to_string(),
                 genesis_hash: "remote-hash".to_string(),
                 status_received_at: Some(current_timestamp()),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -6760,6 +6965,9 @@ mod tests {
             block_height: 1,
             best_block_hash: "tip".to_string(),
             genesis_hash: "genesis".to_string(),
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         }));
     }
 
@@ -7251,6 +7459,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -7336,6 +7547,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -7357,6 +7571,9 @@ mod tests {
                 12,
                 "best-hash",
                 &genesis_hash_for_thread,
+                false,
+                false,
+                None,
             );
             let _ = done_tx.send(());
         });
@@ -7453,6 +7670,9 @@ mod tests {
                     best_block_hash: String::new(),
                     genesis_hash: "genesis-hash".to_string(),
                     status_received_at: Some(1),
+                    quarantined: false,
+                    consensus_duties_disabled: false,
+                    recovery_state: None,
                 },
             );
         }
@@ -7495,6 +7715,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -7518,6 +7741,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: "genesis-hash".to_string(),
                 status_received_at: Some(1),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -7556,6 +7782,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: String::new(),
                 status_received_at: None,
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -7579,6 +7808,9 @@ mod tests {
                 best_block_hash: String::new(),
                 genesis_hash: "genesis-hash".to_string(),
                 status_received_at: Some(1),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -7610,6 +7842,9 @@ mod tests {
                 best_block_hash: "hash-12".to_string(),
                 genesis_hash: "genesis-hash".to_string(),
                 status_received_at: Some(1),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -7633,6 +7868,9 @@ mod tests {
                 best_block_hash: "hash-12".to_string(),
                 genesis_hash: "genesis-hash".to_string(),
                 status_received_at: Some(1),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
         peers.insert(
@@ -7656,6 +7894,9 @@ mod tests {
                 best_block_hash: "fork-20".to_string(),
                 genesis_hash: "genesis-hash".to_string(),
                 status_received_at: Some(1),
+                quarantined: false,
+                consensus_duties_disabled: false,
+                recovery_state: None,
             },
         );
 
@@ -7797,6 +8038,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
 
         assert!(!should_prune_stale_peer(
@@ -7830,6 +8074,9 @@ mod tests {
             best_block_hash: String::new(),
             genesis_hash: String::new(),
             status_received_at: None,
+            quarantined: false,
+            consensus_duties_disabled: false,
+            recovery_state: None,
         };
 
         assert!(!should_prune_stale_peer(

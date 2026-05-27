@@ -91,6 +91,12 @@ pub enum NetworkMessage {
         block_height: u64,
         best_block_hash: String,
         genesis_hash: String,
+        #[serde(default)]
+        quarantined: bool,
+        #[serde(default)]
+        consensus_duties_disabled: bool,
+        #[serde(default)]
+        recovery_state: Option<String>,
     },
     GetBlockHeaders {
         start_height: u64,

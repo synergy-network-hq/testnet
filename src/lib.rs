@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 pub mod address;
 pub mod aegis_tx_tool;
 pub mod archive_validator;
