@@ -1,6 +1,6 @@
 use super::timing_trace;
 use crate::block::Block;
-use crate::consensus::anti_divergence::current_self_quarantine_record;
+use crate::consensus::anti_divergence::current_validator_quarantine_duty_block;
 use crate::consensus::legacy_canonical_lock::{
     latest_legacy_canonical_commit_record, legacy_canonical_commit_record,
 };
@@ -231,10 +231,10 @@ impl DualQuorumConsensus {
         minimum_round_number: u64,
         transient_vote_recovery_min_age_secs: u64,
     ) -> Result<QuorumCertificate, String> {
-        if let Some(record) = current_self_quarantine_record() {
+        if let Some(record) = current_validator_quarantine_duty_block() {
             return Err(format!(
-                "validator is self-quarantined at divergence height {} and cannot propose, vote, or aggregate QCs: {}",
-                record.divergence_height.0, record.reason
+                "validator is quarantined at divergence height {} by {} and cannot propose, vote, or aggregate QCs: {}",
+                record.divergence_height.0, record.source, record.reason
             ));
         }
         let block_hash = proposed_block.hash.clone();

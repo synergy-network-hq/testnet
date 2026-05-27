@@ -30,7 +30,7 @@ use serde::{Deserialize, Serialize};
 use sha3::{Digest, Sha3_512};
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -944,17 +944,20 @@ impl ProofOfSynergy {
                         let network_peer_count = crate::p2p::get_p2p_network()
                             .map(|network| network.get_peer_count())
                             .unwrap_or(0);
-                        let self_quarantined =
-                            crate::consensus::anti_divergence::current_self_quarantine_record()
-                                .is_some();
-                        if self_quarantined {
+                        let quarantine_block =
+                            crate::consensus::anti_divergence::current_validator_quarantine_duty_block();
+                        let self_quarantined = quarantine_block.is_some();
+                        if let Some(quarantine_block) = quarantine_block {
                             warn!(
                                 "consensus",
-                                "Local validator is self-quarantined; skipping proposer duties",
+                                "Local validator is quarantined; skipping proposer duties",
                                 "chosen_proposer" => selected_validator.address.clone(),
                                 "local_validator" => local_validator_address.clone().unwrap_or_default(),
                                 "height" => next_block_index,
-                                "local_view_round" => view_offset
+                                "local_view_round" => view_offset,
+                                "quarantine_height" => quarantine_block.divergence_height.0,
+                                "quarantine_source" => quarantine_block.source.clone(),
+                                "reason" => quarantine_block.reason.clone()
                             );
                             timing_trace::emit(
                                 "proposal_build_blocked_by_self_quarantine",
@@ -968,7 +971,10 @@ impl ProofOfSynergy {
                                     "effective_leader_timeout_secs": leader_timeout_secs,
                                     "effective_vote_timeout_secs": vote_timeout_secs,
                                     "proposer_quarantined": true,
-                                    "duties_disabled": true
+                                    "duties_disabled": true,
+                                    "quarantine_height": quarantine_block.divergence_height.0,
+                                    "quarantine_source": quarantine_block.source,
+                                    "quarantine_reason": quarantine_block.reason
                                 }),
                             );
                             drop(chain_guard);
@@ -2603,6 +2609,20 @@ impl ProofOfSynergy {
         }
     }
 
+    fn archive_proposal_cache_file(source: &Path, target: &Path) -> Result<(), std::io::Error> {
+        match fs::rename(source, target) {
+            Ok(()) => Ok(()),
+            Err(error) if error.raw_os_error() == Some(18) => {
+                fs::copy(source, target)?;
+                if let Ok(metadata) = fs::metadata(source) {
+                    let _ = fs::set_permissions(target, metadata.permissions());
+                }
+                fs::remove_file(source)
+            }
+            Err(error) => Err(error),
+        }
+    }
+
     pub fn recover_cached_block_proposals_above_finalized_height(
         finalized_height: u64,
         reason: &str,
@@ -2657,7 +2677,7 @@ impl ProofOfSynergy {
                     }
                 };
                 let target = evidence_dir.join(file_name);
-                fs::rename(&path, &target).map_err(|error| {
+                Self::archive_proposal_cache_file(&path, &target).map_err(|error| {
                     format!(
                         "failed to archive proposal cache file {:?} to {:?}: {error}",
                         path, target

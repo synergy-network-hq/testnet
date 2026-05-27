@@ -1,4 +1,5 @@
 use crate::consensus::posy::LocalConsensusContext;
+use crate::consensus::self_realign::{QuarantineMarker, RealignmentState};
 use crate::crypto::aegis_pqvm::AegisPqvmVerifier;
 use crate::dag_mempool::compute_tx_order_root;
 use crate::execution::{execute_block, ExecutionState};
@@ -435,6 +436,13 @@ pub struct SelfQuarantineRecord {
     pub observed_at_unix_secs: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatorQuarantineDutyBlock {
+    pub divergence_height: Height,
+    pub reason: String,
+    pub source: String,
+}
+
 impl SelfQuarantineRecord {
     pub fn canonical_lock_conflict(
         height: u64,
@@ -476,9 +484,70 @@ pub fn current_self_quarantine_record() -> Option<SelfQuarantineRecord> {
 }
 
 pub fn validator_is_self_quarantined() -> bool {
-    current_self_quarantine_record()
-        .map(|record| record.status == QuarantineStatus::SelfQuarantinedDivergence)
-        .unwrap_or(false)
+    current_validator_quarantine_duty_block().is_some()
+}
+
+pub fn current_validator_quarantine_duty_block() -> Option<ValidatorQuarantineDutyBlock> {
+    let path = self_quarantine_path();
+    if let Some(record) = read_self_quarantine_record(&path).ok().flatten() {
+        if record.status == QuarantineStatus::SelfQuarantinedDivergence {
+            return Some(ValidatorQuarantineDutyBlock {
+                divergence_height: record.divergence_height,
+                reason: record.reason,
+                source: "self_quarantine_record".to_string(),
+            });
+        }
+    }
+
+    let Ok(bytes) = fs::read(&path) else {
+        return None;
+    };
+    if bytes.is_empty() {
+        return Some(malformed_quarantine_duty_block(
+            "malformed quarantine marker: marker file is empty".to_string(),
+        ));
+    }
+    let marker = match serde_json::from_slice::<QuarantineMarker>(&bytes) {
+        Ok(marker) => marker,
+        Err(error) => {
+            return Some(malformed_quarantine_duty_block(format!(
+                "malformed quarantine marker: {error}"
+            )))
+        }
+    };
+
+    let disables_consensus_duties = marker.voting_disabled
+        || marker.proposing_disabled
+        || marker.qc_aggregation_disabled
+        || marker.canonical_source_disabled;
+    let inactive_recovery_state = marker.recovery_state != RealignmentState::Active;
+    if !disables_consensus_duties && !inactive_recovery_state {
+        return None;
+    }
+
+    let height = if marker.detected_height > 0 {
+        marker.detected_height
+    } else {
+        marker.quorum_majority_height
+    };
+    let reason = if marker.reason.trim().is_empty() {
+        "standard quarantine marker disables consensus duties".to_string()
+    } else {
+        marker.reason
+    };
+    Some(ValidatorQuarantineDutyBlock {
+        divergence_height: Height(height),
+        reason,
+        source: "standard_quarantine_marker".to_string(),
+    })
+}
+
+fn malformed_quarantine_duty_block(reason: String) -> ValidatorQuarantineDutyBlock {
+    ValidatorQuarantineDutyBlock {
+        divergence_height: Height(0),
+        reason,
+        source: "malformed_quarantine_marker".to_string(),
+    }
 }
 
 fn self_quarantine_path() -> PathBuf {
@@ -890,6 +959,91 @@ mod tests {
         );
         assert_eq!(loaded.conflicting_block_hash, "peer-conflict");
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn standard_operator_quarantine_marker_blocks_consensus_duties() {
+        let path = self_quarantine_path();
+        let _ = fs::remove_file(&path);
+        let marker = QuarantineMarker::divergence(
+            "synv11kguave5fpdpm9hru4acfvw0hcp4fcc7zv9f",
+            "operator_approved_stopped_stale_validator_quarantine",
+            84346,
+            "local-hash",
+            84900,
+            "majority-hash",
+            Some("local-hash".to_string()),
+            "data/self-heal-evidence/test",
+        );
+        fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+
+        let duty_block = current_validator_quarantine_duty_block().unwrap();
+        assert_eq!(duty_block.divergence_height, Height(84346));
+        assert_eq!(duty_block.source, "standard_quarantine_marker");
+        assert!(duty_block
+            .reason
+            .contains("operator_approved_stopped_stale_validator_quarantine"));
+        assert!(validator_is_self_quarantined());
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn malformed_quarantine_marker_blocks_consensus_duties_fail_closed() {
+        let path = self_quarantine_path();
+        let _ = fs::remove_file(&path);
+        fs::write(&path, b"{not-json").unwrap();
+
+        let duty_block = current_validator_quarantine_duty_block().unwrap();
+        assert_eq!(duty_block.divergence_height, Height(0));
+        assert_eq!(duty_block.source, "malformed_quarantine_marker");
+        assert!(duty_block.reason.contains("malformed quarantine marker"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn empty_quarantine_marker_blocks_consensus_duties_fail_closed() {
+        let path = self_quarantine_path();
+        let _ = fs::remove_file(&path);
+        fs::write(&path, b"").unwrap();
+
+        let duty_block = current_validator_quarantine_duty_block().unwrap();
+        assert_eq!(duty_block.divergence_height, Height(0));
+        assert_eq!(duty_block.source, "malformed_quarantine_marker");
+        assert!(duty_block.reason.contains("marker file is empty"));
+
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn active_marker_without_disabled_duties_does_not_block_consensus() {
+        let path = self_quarantine_path();
+        let _ = fs::remove_file(&path);
+        let marker = QuarantineMarker {
+            validator_id: "validator".to_string(),
+            reason: "healthy".to_string(),
+            detected_height: 1,
+            detected_hash: "hash".to_string(),
+            quorum_majority_height: 1,
+            quorum_majority_hash: "hash".to_string(),
+            local_conflicting_height: None,
+            local_conflicting_hash: None,
+            evidence_path: "data/self-heal-evidence/test".to_string(),
+            detected_at: 1,
+            recovery_state: RealignmentState::Active,
+            voting_disabled: false,
+            proposing_disabled: false,
+            qc_aggregation_disabled: false,
+            canonical_source_disabled: false,
+            rejoin_eligibility: false,
+        };
+        fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+
+        assert!(current_validator_quarantine_duty_block().is_none());
+        assert!(!validator_is_self_quarantined());
+
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

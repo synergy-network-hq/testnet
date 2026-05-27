@@ -1,6 +1,6 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
-use crate::consensus::anti_divergence::current_self_quarantine_record;
+use crate::consensus::anti_divergence::current_validator_quarantine_duty_block;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
     legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
@@ -2777,15 +2777,16 @@ fn handle_vote_request_message(
         );
         return;
     }
-    if let Some(record) = current_self_quarantine_record() {
+    if let Some(record) = current_validator_quarantine_duty_block() {
         warn!(
             "p2p",
-            "Self-quarantined validator refusing vote request",
+            "Quarantined validator refusing vote request",
             "peer" => peer_address.to_string(),
             "height" => block_data.block_index,
             "epoch" => epoch_number,
             "round" => round_number,
             "quarantine_height" => record.divergence_height.0,
+            "quarantine_source" => record.source,
             "reason" => record.reason
         );
         return;
