@@ -26,6 +26,7 @@ const EXPECTED_NETWORK_ID: &str = "synergy-testnet-v2";
 const EXPECTED_GENESIS_HASH: &str =
     "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789";
 const DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS: u64 = 30;
+const SHADOW_REJOIN_EPOCH_SIZE: u64 = 1_000;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct VoteLockEntry {
@@ -102,11 +103,142 @@ struct BlockSummary {
     parent_hash: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ShadowEpochBounds {
+    epoch_size: u64,
+    shadow_start_height: u64,
+    shadow_start_epoch: u64,
+    current_epoch_start: u64,
+    current_epoch_end: u64,
+    partial_epoch_start: Option<u64>,
+    partial_epoch_end: Option<u64>,
+    required_full_shadow_epoch_start: u64,
+    required_full_shadow_epoch_end: u64,
+    earliest_activation_height: u64,
+}
+
 fn now_secs() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+fn shadow_epoch_bounds(start_height: u64, latest_height: u64) -> Result<ShadowEpochBounds, String> {
+    let epoch_size = SHADOW_REJOIN_EPOCH_SIZE;
+    if epoch_size == 0 {
+        return Err("shadow rejoin epoch size is zero".to_string());
+    }
+    let shadow_start_epoch = start_height / epoch_size;
+    let current_epoch_start = (latest_height / epoch_size) * epoch_size;
+    let current_epoch_end = current_epoch_start.saturating_add(epoch_size - 1);
+    let start_epoch_start = shadow_start_epoch * epoch_size;
+    let start_epoch_end = start_epoch_start.saturating_add(epoch_size - 1);
+    let starts_at_epoch_boundary = start_height == start_epoch_start;
+    let required_full_shadow_epoch_start = if starts_at_epoch_boundary {
+        start_height
+    } else {
+        start_epoch_start.saturating_add(epoch_size)
+    };
+    let required_full_shadow_epoch_end =
+        required_full_shadow_epoch_start.saturating_add(epoch_size - 1);
+    let earliest_activation_height = required_full_shadow_epoch_end.saturating_add(1);
+    if earliest_activation_height % epoch_size != 0 {
+        return Err(format!(
+            "computed earliest activation height {earliest_activation_height} is not an epoch boundary for epoch size {epoch_size}"
+        ));
+    }
+    Ok(ShadowEpochBounds {
+        epoch_size,
+        shadow_start_height: start_height,
+        shadow_start_epoch,
+        current_epoch_start,
+        current_epoch_end,
+        partial_epoch_start: (!starts_at_epoch_boundary).then_some(start_epoch_start),
+        partial_epoch_end: (!starts_at_epoch_boundary).then_some(start_epoch_end),
+        required_full_shadow_epoch_start,
+        required_full_shadow_epoch_end,
+        earliest_activation_height,
+    })
+}
+
+fn epoch_bounds_json(bounds: &ShadowEpochBounds) -> Value {
+    json!({
+        "epoch_size": bounds.epoch_size,
+        "shadow_start_height": bounds.shadow_start_height,
+        "shadow_start_epoch": bounds.shadow_start_epoch,
+        "current_epoch_start": bounds.current_epoch_start,
+        "current_epoch_end": bounds.current_epoch_end,
+        "partial_epoch_start": bounds.partial_epoch_start,
+        "partial_epoch_end": bounds.partial_epoch_end,
+        "required_full_shadow_epoch_start": bounds.required_full_shadow_epoch_start,
+        "required_full_shadow_epoch_end": bounds.required_full_shadow_epoch_end,
+        "earliest_activation_height": bounds.earliest_activation_height,
+    })
+}
+
+fn fail_closed_rejoin_response(
+    validator_id: &str,
+    previous_state: impl Into<String>,
+    blocked_reasons: Vec<String>,
+    shadow: Value,
+) -> Value {
+    json!({
+        "success": false,
+        "typed_status": "FAILED_CLOSED",
+        "chain": chain_identity(),
+        "validator_id": validator_id,
+        "previous_state": previous_state.into(),
+        "new_state": "QUARANTINED",
+        "blocked_reasons": blocked_reasons,
+        "shadow": shadow,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+    })
+}
+
+fn append_epoch_bounds(mut value: Value, bounds: &ShadowEpochBounds) -> Value {
+    if let Some(object) = value.as_object_mut() {
+        object.insert("epoch_size".to_string(), json!(bounds.epoch_size));
+        object.insert(
+            "shadow_start_height".to_string(),
+            json!(bounds.shadow_start_height),
+        );
+        object.insert(
+            "shadow_start_epoch".to_string(),
+            json!(bounds.shadow_start_epoch),
+        );
+        object.insert(
+            "current_epoch_start".to_string(),
+            json!(bounds.current_epoch_start),
+        );
+        object.insert(
+            "current_epoch_end".to_string(),
+            json!(bounds.current_epoch_end),
+        );
+        object.insert(
+            "partial_epoch_start".to_string(),
+            json!(bounds.partial_epoch_start),
+        );
+        object.insert(
+            "partial_epoch_end".to_string(),
+            json!(bounds.partial_epoch_end),
+        );
+        object.insert(
+            "required_full_shadow_epoch_start".to_string(),
+            json!(bounds.required_full_shadow_epoch_start),
+        );
+        object.insert(
+            "required_full_shadow_epoch_end".to_string(),
+            json!(bounds.required_full_shadow_epoch_end),
+        );
+        object.insert(
+            "earliest_activation_height".to_string(),
+            json!(bounds.earliest_activation_height),
+        );
+    }
+    value
 }
 
 fn configured_chain_id() -> u64 {
@@ -311,6 +443,73 @@ fn read_block_at_height(height: u64) -> Result<BlockSummary, String> {
         }
     })?;
     found.ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
+}
+
+fn read_blocks_in_height_range(
+    start_height: u64,
+    end_height: u64,
+) -> Result<Vec<BlockSummary>, String> {
+    if end_height < start_height {
+        return Ok(Vec::new());
+    }
+    let path = crate::utils::resolve_data_path("data/chain.json");
+    let expected = end_height.saturating_sub(start_height).saturating_add(1) as usize;
+    let mut blocks = BTreeMap::<u64, BlockSummary>::new();
+    stream_chain_blocks(&path, |value| {
+        let Some(height) = u64_field(value, &["height", "number", "block_number", "block_index"])
+        else {
+            return Ok(false);
+        };
+        if height < start_height || height > end_height {
+            return Ok(false);
+        }
+        let Some(hash) = string_field(value, &["hash", "block_hash"]) else {
+            return Ok(false);
+        };
+        let parent_hash = string_field(value, &["parent_hash", "previous_hash", "parentHash"])
+            .unwrap_or_default();
+        blocks.insert(
+            height,
+            BlockSummary {
+                height,
+                hash,
+                parent_hash,
+            },
+        );
+        Ok(blocks.len() >= expected)
+    })?;
+    if blocks.len() != expected {
+        let missing = (start_height..=end_height)
+            .find(|height| !blocks.contains_key(height))
+            .map(|height| height.to_string())
+            .unwrap_or_else(|| "unknown".to_string());
+        return Err(format!(
+            "chain state missing shadow observation block height {missing} in range {start_height}-{end_height}"
+        ));
+    }
+    Ok(blocks.into_values().collect())
+}
+
+fn evaluate_shadow_block_range(
+    validator_id: String,
+    start_height: u64,
+    end_height: u64,
+    required_blocks: u64,
+) -> Result<ShadowObservation, String> {
+    let blocks = read_blocks_in_height_range(start_height, end_height)?;
+    let mut shadow_observation = ShadowObservation::new(validator_id, required_blocks);
+    for block in blocks {
+        shadow_observation.record(ShadowDecisionRecord {
+            height: block.height,
+            canonical_hash: block.hash.clone(),
+            would_have_voted_hash: Some(block.hash),
+            would_have_proposed_hash: None,
+            state_root_matches: true,
+            rejected_valid_majority_block: false,
+            accepted_conflicting_block: false,
+        });
+    }
+    Ok(shadow_observation.evaluate())
 }
 
 fn read_latest_block_summary() -> Result<BlockSummary, String> {
@@ -1800,6 +1999,10 @@ pub fn shadow_status() -> Value {
             "chain": chain_identity(),
             "quarantine": quarantine_status(),
             "required_blocks": DEFAULT_SHADOW_OBSERVATION_BLOCKS,
+            "epoch_size": SHADOW_REJOIN_EPOCH_SIZE,
+            "process_proof_completed": false,
+            "full_epoch_shadow_completed": false,
+            "rejoin_eligible": false,
             "shadow_signs_real_votes": false,
             "status": "idle_or_not_started",
             "fail_closed": true,
@@ -1813,26 +2016,75 @@ pub fn shadow_status() -> Value {
         .get("required_blocks")
         .and_then(Value::as_u64)
         .unwrap_or(DEFAULT_SHADOW_OBSERVATION_BLOCKS);
-    let target_height = start_height.saturating_add(required_blocks);
+    let process_target_height = start_height.saturating_add(required_blocks);
     let latest = latest_canonical_lock();
     let latest_height = latest.as_ref().map(|(height, _)| *height).unwrap_or(0);
-    let mut failures = Vec::new();
-    if latest_height < target_height {
-        return json!({
-            "chain": chain_identity(),
-            "quarantine": quarantine_status(),
-            "shadow_observation_path": path,
-            "status": "SHADOW_OBSERVING",
-            "computed_state": "SHADOW_OBSERVING",
-            "start_height": start_height,
-            "latest_height": latest_height,
-            "target_height": target_height,
-            "observed_blocks": latest_height.saturating_sub(start_height),
-            "required_blocks": required_blocks,
-            "shadow_signs_real_votes": false,
-            "fail_closed": false,
-        });
+    let latest_hash = latest.as_ref().map(|(_, hash)| hash.clone());
+    let quarantine = quarantine_status();
+    let duty_gate = quarantine
+        .get("duty_gate")
+        .cloned()
+        .unwrap_or_else(|| json!({}));
+    let bounds = match shadow_epoch_bounds(start_height, latest_height) {
+        Ok(bounds) => bounds,
+        Err(error) => {
+            return json!({
+                "chain": chain_identity(),
+                "quarantine": quarantine,
+                "shadow_observation_path": path,
+                "status": "QUARANTINED",
+                "computed_state": "QUARANTINED",
+                "start_height": start_height,
+                "latest_height": latest_height,
+                "latest_hash": latest_hash,
+                "target_height": process_target_height,
+                "process_target_height": process_target_height,
+                "observed_blocks": latest_height.saturating_sub(start_height),
+                "observed_shadow_blocks": latest_height.saturating_sub(start_height),
+                "required_blocks": required_blocks,
+                "epoch_size": SHADOW_REJOIN_EPOCH_SIZE,
+                "process_proof_completed": false,
+                "full_epoch_shadow_completed": false,
+                "rejoin_eligible": false,
+                "duty_gate": duty_gate,
+                "shadow_signs_real_votes": false,
+                "failures": [error],
+                "fail_closed": true,
+            });
+        }
+    };
+    if latest_height < process_target_height {
+        return append_epoch_bounds(
+            json!({
+                "chain": chain_identity(),
+                "quarantine": quarantine,
+                "shadow_observation_path": path,
+                "status": "SHADOW_OBSERVING",
+                "computed_state": "SHADOW_OBSERVING",
+                "start_height": start_height,
+                "latest_height": latest_height,
+                "latest_hash": latest_hash,
+                "target_height": process_target_height,
+                "process_target_height": process_target_height,
+                "observed_blocks": latest_height.saturating_sub(start_height),
+                "observed_shadow_blocks": latest_height.saturating_sub(start_height),
+                "required_blocks": required_blocks,
+                "process_proof_completed": false,
+                "full_epoch_shadow_completed": false,
+                "rejoin_eligible": false,
+                "duty_gate": duty_gate,
+                "last_observed_height": latest_height,
+                "last_observed_hash": latest_hash,
+                "mismatch_count": 0,
+                "missed_observation_count": process_target_height.saturating_sub(latest_height),
+                "shadow_signs_real_votes": false,
+                "fail_closed": false,
+                "epoch_bounds": epoch_bounds_json(&bounds),
+            }),
+            &bounds,
+        );
     }
+    let mut failures = Vec::new();
     let vote_lock_report = match vote_locks_clean(latest_height) {
         Ok(report) => report,
         Err(error) => {
@@ -1843,50 +2095,125 @@ pub fn shadow_status() -> Value {
     if let Err(error) = latest_verified_qc_summary() {
         failures.push(error);
     }
-    let mut shadow_observation = ShadowObservation::new(current_validator_id(), required_blocks);
-    for height in start_height.saturating_add(1)..=target_height {
-        match read_block_at_height(height) {
-            Ok(block) => shadow_observation.record(ShadowDecisionRecord {
-                height,
-                canonical_hash: block.hash.clone(),
-                would_have_voted_hash: Some(block.hash),
-                would_have_proposed_hash: None,
-                state_root_matches: true,
-                rejected_valid_majority_block: false,
-                accepted_conflicting_block: false,
-            }),
-            Err(error) => {
-                failures.push(error);
-                break;
-            }
+    let full_epoch_shadow_completed = latest_height >= bounds.required_full_shadow_epoch_end;
+    let (evaluation_start, evaluation_end, evaluation_required, process_proof_completed) =
+        if full_epoch_shadow_completed {
+            (
+                bounds.required_full_shadow_epoch_start,
+                bounds.required_full_shadow_epoch_end,
+                bounds.epoch_size,
+                true,
+            )
+        } else {
+            (
+                start_height.saturating_add(1),
+                process_target_height,
+                required_blocks,
+                true,
+            )
+        };
+    let evaluated_shadow = match evaluate_shadow_block_range(
+        current_validator_id(),
+        evaluation_start,
+        evaluation_end,
+        evaluation_required,
+    ) {
+        Ok(evaluated) => evaluated,
+        Err(error) => {
+            failures.push(error);
+            ShadowObservation::new(current_validator_id(), evaluation_required).evaluate()
         }
-    }
-    let evaluated_shadow = shadow_observation.evaluate();
+    };
     if !evaluated_shadow.failures.is_empty() {
         failures.extend(evaluated_shadow.failures.clone());
     }
-    json!({
-        "chain": chain_identity(),
-        "quarantine": quarantine_status(),
-        "shadow_observation_path": path,
-        "status": if failures.is_empty() { "SHADOW_PASSED" } else { "QUARANTINED" },
-        "computed_state": if failures.is_empty() { "SHADOW_PASSED" } else { "QUARANTINED" },
-        "start_height": start_height,
-        "latest_height": latest_height,
-        "target_height": target_height,
-        "observed_blocks": required_blocks,
-        "required_blocks": required_blocks,
-        "shadow_signs_real_votes": false,
-        "would_have_voted_conflicts": 0,
-        "would_have_proposed_conflicts": 0,
-        "accepted_conflicting_block": false,
-        "rejected_valid_majority_block": false,
-        "state_root_matches": failures.is_empty(),
-        "records": evaluated_shadow.records,
-        "vote_locks": vote_lock_report,
-        "failures": failures,
-        "fail_closed": !failures.is_empty(),
-    })
+    let observed_shadow_blocks = evaluated_shadow.records.len() as u64;
+    let missed_observation_count = evaluation_required.saturating_sub(observed_shadow_blocks);
+    let last_record = evaluated_shadow.records.last();
+    let last_observed_height = last_record
+        .map(|record| record.height)
+        .unwrap_or(latest_height);
+    let last_observed_hash = last_record
+        .map(|record| record.canonical_hash.clone())
+        .or(latest_hash.clone());
+    let canonical_match_count = evaluated_shadow
+        .records
+        .iter()
+        .filter(|record| {
+            record.would_have_voted_hash.as_deref() == Some(record.canonical_hash.as_str())
+                && record
+                    .would_have_proposed_hash
+                    .as_deref()
+                    .map(|hash| hash == record.canonical_hash.as_str())
+                    .unwrap_or(true)
+                && record.state_root_matches
+                && !record.rejected_valid_majority_block
+                && !record.accepted_conflicting_block
+        })
+        .count() as u64;
+    let mismatch_count = observed_shadow_blocks.saturating_sub(canonical_match_count)
+        + evaluated_shadow.failures.len() as u64;
+    let epoch_rejoin_window_open = failures.is_empty()
+        && full_epoch_shadow_completed
+        && latest_height >= bounds.earliest_activation_height
+        && latest_height % bounds.epoch_size == 0;
+    let status = if failures.is_empty() {
+        if full_epoch_shadow_completed {
+            "SHADOW_PASSED"
+        } else {
+            "PROCESS_PROOF_PASS"
+        }
+    } else {
+        "QUARANTINED"
+    };
+    let computed_state = if failures.is_empty() && full_epoch_shadow_completed {
+        "SHADOW_PASSED"
+    } else if failures.is_empty() {
+        "SHADOW_OBSERVING"
+    } else {
+        "QUARANTINED"
+    };
+    append_epoch_bounds(
+        json!({
+            "chain": chain_identity(),
+            "quarantine": quarantine,
+            "shadow_observation_path": path,
+            "status": status,
+            "computed_state": computed_state,
+            "start_height": start_height,
+            "latest_height": latest_height,
+            "latest_hash": latest_hash,
+            "target_height": process_target_height,
+            "process_target_height": process_target_height,
+            "observed_blocks": observed_shadow_blocks,
+            "observed_shadow_blocks": observed_shadow_blocks,
+            "required_blocks": required_blocks,
+            "evaluation_start_height": evaluation_start,
+            "evaluation_end_height": evaluation_end,
+            "process_proof_completed": process_proof_completed,
+            "full_epoch_shadow_completed": failures.is_empty() && full_epoch_shadow_completed,
+            "epoch_rejoin_window_open": epoch_rejoin_window_open,
+            "rejoin_eligible": false,
+            "duty_gate": duty_gate,
+            "last_observed_height": last_observed_height,
+            "last_observed_hash": last_observed_hash,
+            "canonical_match_count": canonical_match_count,
+            "mismatch_count": mismatch_count,
+            "missed_observation_count": missed_observation_count,
+            "shadow_signs_real_votes": false,
+            "would_have_voted_conflicts": 0,
+            "would_have_proposed_conflicts": 0,
+            "accepted_conflicting_block": false,
+            "rejected_valid_majority_block": false,
+            "state_root_matches": failures.is_empty(),
+            "records": evaluated_shadow.records,
+            "vote_locks": vote_lock_report,
+            "failures": failures,
+            "fail_closed": !failures.is_empty(),
+            "epoch_bounds": epoch_bounds_json(&bounds),
+        }),
+        &bounds,
+    )
 }
 
 pub fn start_shadow_observe() -> Result<Value, String> {
@@ -1929,6 +2256,7 @@ pub fn start_shadow_observe_with_options(
         .required_blocks
         .filter(|blocks| *blocks > 0)
         .unwrap_or(DEFAULT_SHADOW_OBSERVATION_BLOCKS);
+    let epoch_bounds = shadow_epoch_bounds(start_height, start_height)?;
     let observation = json!({
         "success": true,
         "typed_status": "SHADOW_OBSERVING",
@@ -1939,16 +2267,30 @@ pub fn start_shadow_observe_with_options(
         "start_height": start_height,
         "start_hash": start_hash,
         "required_blocks": required_blocks,
+        "process_target_height": start_height.saturating_add(required_blocks),
+        "process_proof_completed": false,
+        "full_epoch_shadow_completed": false,
+        "rejoin_eligible": false,
         "started_at": now_secs(),
         "latest_committed_qc_height": qc.height,
         "latest_committed_qc_hash": qc.hash,
         "latest_committed_qc_vote_count": qc.vote_count,
         "latest_committed_qc_signers": qc.signers,
+        "epoch_bounds": epoch_bounds_json(&epoch_bounds),
+        "epoch_size": epoch_bounds.epoch_size,
+        "shadow_start_epoch": epoch_bounds.shadow_start_epoch,
+        "current_epoch_start": epoch_bounds.current_epoch_start,
+        "current_epoch_end": epoch_bounds.current_epoch_end,
+        "partial_epoch_start": epoch_bounds.partial_epoch_start,
+        "partial_epoch_end": epoch_bounds.partial_epoch_end,
+        "required_full_shadow_epoch_start": epoch_bounds.required_full_shadow_epoch_start,
+        "required_full_shadow_epoch_end": epoch_bounds.required_full_shadow_epoch_end,
+        "earliest_activation_height": epoch_bounds.earliest_activation_height,
         "shadow_signs_real_votes": false,
         "keys_or_configs_copied": false,
         "genesis_mutated": false,
         "quorum_mutated": false,
-        "next_required_action": "wait_required_blocks_then_check_shadow_status",
+        "next_required_action": "complete process proof, continue through full required epoch, then request rejoin at earliest epoch boundary only",
     });
     write_json_pretty(&shadow_observation_path(), &observation)?;
     write_json_pretty(&self_heal_status_path(), &observation)?;
@@ -1959,6 +2301,31 @@ pub fn rejoin_eligibility() -> Value {
     let shadow = shadow_status();
     let shadow_passed =
         shadow.get("computed_state").and_then(Value::as_str) == Some("SHADOW_PASSED");
+    let process_proof_only =
+        shadow.get("status").and_then(Value::as_str) == Some("PROCESS_PROOF_PASS");
+    let mut blocked_reasons = Vec::new();
+    if process_proof_only {
+        blocked_reasons.push(
+            "500-block process proof is not rejoin eligibility; full epoch shadow is required"
+                .to_string(),
+        );
+    }
+    if shadow
+        .get("full_epoch_shadow_completed")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
+        blocked_reasons
+            .push("rejoin requires a continuously observed full shadow epoch".to_string());
+    }
+    if let Some(earliest) = shadow
+        .get("earliest_activation_height")
+        .and_then(Value::as_u64)
+    {
+        blocked_reasons.push(format!(
+            "earliest activation height is {earliest}; rejoin must be requested at that epoch boundary or a later epoch boundary"
+        ));
+    }
     if shadow_passed {
         return json!({
             "chain": chain_identity(),
@@ -1974,17 +2341,19 @@ pub fn rejoin_eligibility() -> Value {
             ],
         });
     }
+    blocked_reasons.extend([
+        "rejoin requires SHADOW_PASSED".to_string(),
+        "rejoin requires exact common-height hash match".to_string(),
+        "rejoin requires latest finalized QC verified through Aegis/PQC".to_string(),
+        "rejoin requires finalized safe boundary".to_string(),
+    ]);
     json!({
         "chain": chain_identity(),
         "eligible": false,
         "fail_closed": true,
         "quarantine": quarantine_status(),
-        "blocked_reasons": [
-            "rejoin requires SHADOW_PASSED",
-            "rejoin requires exact common-height hash match",
-            "rejoin requires latest finalized QC verified through Aegis/PQC",
-            "rejoin requires finalized safe boundary"
-        ],
+        "shadow": shadow,
+        "blocked_reasons": blocked_reasons,
     })
 }
 
@@ -2031,6 +2400,61 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
             "data/self-heal-evidence"
         )));
     };
+    let epoch_size = shadow.get("epoch_size").and_then(Value::as_u64);
+    let earliest_activation_height = shadow
+        .get("earliest_activation_height")
+        .and_then(Value::as_u64);
+    let full_epoch_shadow_completed = shadow
+        .get("full_epoch_shadow_completed")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let mut epoch_blockers = Vec::new();
+    match epoch_size {
+        Some(size) if size == SHADOW_REJOIN_EPOCH_SIZE && size > 0 => {
+            if common_height % size != 0 {
+                epoch_blockers.push(format!(
+                    "request-rejoin common_height {common_height} is not an epoch boundary for epoch_size {size}"
+                ));
+            }
+        }
+        Some(size) => epoch_blockers.push(format!(
+            "request-rejoin refused: shadow epoch_size {size} is inconsistent with expected {SHADOW_REJOIN_EPOCH_SIZE}"
+        )),
+        None => epoch_blockers
+            .push("request-rejoin refused: shadow epoch_size is missing".to_string()),
+    }
+    match earliest_activation_height {
+        Some(earliest) => {
+            if common_height < earliest {
+                epoch_blockers.push(format!(
+                    "request-rejoin common_height {common_height} is before earliest_activation_height {earliest}"
+                ));
+            }
+        }
+        None => epoch_blockers
+            .push("request-rejoin refused: earliest_activation_height is missing".to_string()),
+    }
+    if !full_epoch_shadow_completed {
+        epoch_blockers
+            .push("request-rejoin requires a continuously observed full shadow epoch".to_string());
+    }
+    if !shadow_passed {
+        epoch_blockers.push(
+            "request-rejoin refused: 500-block process proof is not SHADOW_PASSED".to_string(),
+        );
+    }
+    if !epoch_blockers.is_empty() {
+        return Ok(fail_closed_rejoin_response(
+            &validator_id,
+            if shadow_passed {
+                "SHADOW_PASSED"
+            } else {
+                "QUARANTINED"
+            },
+            epoch_blockers,
+            shadow,
+        ));
+    }
     let local_block = read_block_at_height(common_height)?;
     let local_common_match = local_block.hash == common_hash;
     let qc = latest_verified_qc_summary()?;
@@ -2144,7 +2568,10 @@ mod tests {
         SnapshotQcEvidence,
     };
     use crate::crypto::aegis_pqvm::AegisPqvmSigner;
+    use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
     use crate::synergy_types::{AegisPqKeyRole, Epoch};
+    use base64::engine::general_purpose;
+    use base64::Engine as _;
     use serde_json::{json, Value};
     use std::fs;
     use std::path::{Path, PathBuf};
@@ -2384,6 +2811,141 @@ mod tests {
             .to_string(),
         )
         .expect("test canonical lock should be written");
+    }
+
+    fn test_hash(height: u64) -> String {
+        format!("hash-{height}")
+    }
+
+    fn write_chain_range(root: &Path, start_height: u64, end_height: u64) {
+        let blocks = (start_height..=end_height)
+            .map(|height| {
+                json!({
+                    "height": height,
+                    "hash": test_hash(height),
+                    "parent_hash": height.checked_sub(1).map(test_hash).unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>();
+        fs::write(
+            root.join("data/chain.json"),
+            serde_json::to_vec(&blocks).expect("test chain should serialize"),
+        )
+        .expect("test chain should be written");
+    }
+
+    fn write_canonical_lock_at_height(root: &Path, height: u64) {
+        let mut locks = serde_json::Map::new();
+        locks.insert(
+            height.to_string(),
+            json!({
+                "block_hash": test_hash(height),
+                "qc_hash": format!("qc-{height}")
+            }),
+        );
+        fs::write(
+            root.join("data/canonical_locks.json"),
+            Value::Object(locks).to_string(),
+        )
+        .expect("test canonical lock should be written");
+    }
+
+    fn write_empty_vote_locks(root: &Path) {
+        fs::write(root.join("data/consensus_vote_locks.json"), b"{}")
+            .expect("test vote locks should be written");
+    }
+
+    fn write_shadow_observation(root: &Path, start_height: u64, required_blocks: u64) {
+        fs::write(
+            root.join("data/shadow_observation.json"),
+            json!({
+                "success": true,
+                "typed_status": "SHADOW_OBSERVING",
+                "start_height": start_height,
+                "start_hash": test_hash(start_height),
+                "required_blocks": required_blocks,
+                "shadow_signs_real_votes": false,
+            })
+            .to_string(),
+        )
+        .expect("test shadow observation should be written");
+    }
+
+    fn write_legacy_qc_fixture_at_height(root: &Path, height: u64) {
+        let mut manager = PQCManager::new();
+        let mut validators = serde_json::Map::new();
+        let mut keys = Vec::new();
+        for index in 0..5 {
+            let address = format!("synv11testvalidator{index}");
+            let (public_key, private_key) = manager
+                .generate_keypair(PQCAlgorithm::FNDSA)
+                .expect("test PQC keypair should be generated");
+            validators.insert(
+                address.clone(),
+                json!({
+                    "address": address,
+                    "status": "Active",
+                    "public_key": format!(
+                        "fn-dsa:{}",
+                        general_purpose::STANDARD.encode(&public_key.key_data)
+                    ),
+                    "synergy_score": 100.0,
+                    "cluster_id": 0,
+                }),
+            );
+            keys.push((address, public_key, private_key));
+        }
+        fs::write(
+            root.join("data/validator_registry.json"),
+            json!({
+                "validators": validators,
+                "clusters": {"0": []},
+                "current_epoch": 0,
+            })
+            .to_string(),
+        )
+        .expect("test validator registry should be written");
+
+        let block_hash = test_hash(height);
+        let votes = keys
+            .iter()
+            .take(4)
+            .map(|(address, public_key, private_key)| {
+                let payload = format!("{address}:{height}:0:{block_hash}:0");
+                let signature = manager
+                    .sign(private_key, payload.as_bytes())
+                    .expect("test vote signature should be generated");
+                json!({
+                    "validator_address": address,
+                    "block_hash": block_hash.clone(),
+                    "block_index": height,
+                    "epoch_number": 0,
+                    "round_number": 0,
+                    "signature": signature,
+                    "signer_public_key": public_key.key_data,
+                    "timestamp": 100,
+                })
+            })
+            .collect::<Vec<_>>();
+        let qc = json!({
+            "block_hash": block_hash.clone(),
+            "epoch_number": 0,
+            "round_number": 0,
+            "aggregate_signature": [1, 2, 3, 4],
+            "participant_bitmap": [15],
+            "cumulative_weight": 4.0,
+            "validation_quorum_met": true,
+            "cooperation_quorum_met": true,
+            "timestamp": 100,
+            "votes": votes,
+        });
+        fs::write(
+            root.join("data/committed_qcs.jsonl"),
+            serde_json::to_string(&json!({"block_hash": block_hash.clone(), "qc": qc}))
+                .expect("test QC should serialize")
+                + "\n",
+        )
+        .expect("test committed QC should be written");
     }
 
     fn write_quarantine_marker(root: &Path) {
@@ -3193,6 +3755,202 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn shadow_status_classifies_500_blocks_as_process_proof_only() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("shadow-process-proof-only");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        write_quarantine_marker(&root);
+        write_empty_vote_locks(&root);
+        write_shadow_observation(&root, 89957, 500);
+        write_chain_range(&root, 89958, 90457);
+        write_canonical_lock_at_height(&root, 90457);
+        write_legacy_qc_fixture_at_height(&root, 90457);
+
+        let report = with_runtime_root(&root, shadow_status);
+
+        assert_eq!(
+            report.get("status").and_then(Value::as_str),
+            Some("PROCESS_PROOF_PASS")
+        );
+        assert_eq!(
+            report.get("computed_state").and_then(Value::as_str),
+            Some("SHADOW_OBSERVING")
+        );
+        assert_eq!(
+            report
+                .get("process_proof_completed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report
+                .get("full_epoch_shadow_completed")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("rejoin_eligible").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report
+                .get("required_full_shadow_epoch_start")
+                .and_then(Value::as_u64),
+            Some(90000)
+        );
+        assert_eq!(
+            report
+                .get("required_full_shadow_epoch_end")
+                .and_then(Value::as_u64),
+            Some(90999)
+        );
+        assert_eq!(
+            report
+                .get("earliest_activation_height")
+                .and_then(Value::as_u64),
+            Some(91000)
+        );
+    }
+
+    #[test]
+    fn shadow_status_requires_full_epoch_before_rejoin_boundary() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("shadow-full-epoch-no-boundary");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        write_quarantine_marker(&root);
+        write_empty_vote_locks(&root);
+        write_shadow_observation(&root, 89957, 500);
+        write_chain_range(&root, 90000, 90999);
+        write_canonical_lock_at_height(&root, 90999);
+        write_legacy_qc_fixture_at_height(&root, 90999);
+
+        let report = with_runtime_root(&root, shadow_status);
+
+        assert_eq!(
+            report.get("status").and_then(Value::as_str),
+            Some("SHADOW_PASSED")
+        );
+        assert_eq!(
+            report
+                .get("full_epoch_shadow_completed")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            report.get("rejoin_eligible").and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            report.get("latest_height").and_then(Value::as_u64),
+            Some(90999)
+        );
+        assert_eq!(
+            report
+                .get("earliest_activation_height")
+                .and_then(Value::as_u64),
+            Some(91000)
+        );
+    }
+
+    #[test]
+    fn request_rejoin_rejects_process_proof_without_full_epoch() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("rejoin-rejects-process-proof");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        write_quarantine_marker(&root);
+        write_empty_vote_locks(&root);
+        write_shadow_observation(&root, 89957, 500);
+        write_chain_range(&root, 89958, 90457);
+        write_canonical_lock_at_height(&root, 90457);
+        write_legacy_qc_fixture_at_height(&root, 90457);
+
+        let report = with_runtime_root(&root, || {
+            request_rejoin_with_options(RejoinRequestOptions {
+                common_height: Some(90457),
+                common_hash: Some(test_hash(90457)),
+                exact_common_height_match: true,
+                latest_finalized_qc_aegis_pqc_verified: true,
+                state_root_matches: true,
+                rejoin_at_finalized_safe_boundary: true,
+                cluster_marks_pending_reactivation: true,
+                operator_approved_reactivation: true,
+            })
+            .expect("rejoin diagnostics should return typed body")
+        });
+
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        let blocked = report
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(blocked.iter().any(|reason| {
+            reason
+                .as_str()
+                .unwrap_or_default()
+                .contains("500-block process proof")
+        }));
+    }
+
+    #[test]
+    fn request_rejoin_rejects_non_epoch_boundary_after_full_epoch() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("rejoin-rejects-non-boundary");
+        install_test_genesis(&root);
+        install_test_config(&root, 1264, "synergy-testnet-v2");
+        write_quarantine_marker(&root);
+        write_empty_vote_locks(&root);
+        write_shadow_observation(&root, 89957, 500);
+        write_chain_range(&root, 90000, 90999);
+        write_canonical_lock_at_height(&root, 91001);
+        write_legacy_qc_fixture_at_height(&root, 91001);
+
+        let report = with_runtime_root(&root, || {
+            request_rejoin_with_options(RejoinRequestOptions {
+                common_height: Some(91001),
+                common_hash: Some(test_hash(91001)),
+                exact_common_height_match: true,
+                latest_finalized_qc_aegis_pqc_verified: true,
+                state_root_matches: true,
+                rejoin_at_finalized_safe_boundary: true,
+                cluster_marks_pending_reactivation: true,
+                operator_approved_reactivation: true,
+            })
+            .expect("rejoin diagnostics should return typed body")
+        });
+
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        let blocked = report
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        assert!(blocked.iter().any(|reason| {
+            reason
+                .as_str()
+                .unwrap_or_default()
+                .contains("not an epoch boundary")
+        }));
     }
 
     fn advancing_chain() -> Arc<Mutex<BlockChain>> {
