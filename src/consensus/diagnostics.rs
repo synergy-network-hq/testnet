@@ -11,13 +11,12 @@ use crate::consensus::self_realign::{
 };
 use crate::crypto::aegis_pqvm::AegisPqvmSigner;
 use crate::synergy_types::{AegisPqKeyRole, Epoch};
-use serde::de::{SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::BufReader;
+use std::io::{BufReader, Read};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -302,92 +301,199 @@ fn find_block_at_height(value: &Value, height: u64) -> Option<BlockSummary> {
 
 fn read_block_at_height(height: u64) -> Result<BlockSummary, String> {
     let path = crate::utils::resolve_data_path("data/chain.json");
-    let file = fs::File::open(&path)
-        .map_err(|error| format!("open chain state {}: {error}", path.display()))?;
-    let reader = BufReader::with_capacity(1024 * 1024, file);
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let value = serde::de::Deserializer::deserialize_seq(
-        &mut deserializer,
-        BlockAtHeightVisitor { height },
-    )
-    .map_err(|error| format!("stream parse chain state {}: {error}", path.display()))?;
-    value.ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
+    let mut found = None;
+    stream_chain_blocks(&path, |value| {
+        if let Some(block) = find_block_at_height(value, height) {
+            found = Some(block);
+            Ok(true)
+        } else {
+            Ok(false)
+        }
+    })?;
+    found.ok_or_else(|| format!("chain state does not contain finalized block height {height}"))
 }
 
 fn read_latest_block_summary() -> Result<BlockSummary, String> {
     let path = crate::utils::resolve_data_path("data/chain.json");
-    let file = fs::File::open(&path)
+    let mut latest = None;
+    stream_chain_blocks(&path, |value| {
+        let candidate_height =
+            u64_field(value, &["height", "number", "block_number", "block_index"]);
+        let Some(height) = candidate_height else {
+            return Ok(false);
+        };
+        let Some(hash) = string_field(value, &["hash", "block_hash"]) else {
+            return Ok(false);
+        };
+        let parent_hash = string_field(value, &["parent_hash", "previous_hash", "parentHash"])
+            .unwrap_or_default();
+        if latest
+            .as_ref()
+            .map(|block: &BlockSummary| height > block.height)
+            .unwrap_or(true)
+        {
+            latest = Some(BlockSummary {
+                height,
+                hash,
+                parent_hash,
+            });
+        }
+        Ok(false)
+    })?;
+    latest.ok_or_else(|| "chain state does not contain any persisted blocks".to_string())
+}
+
+fn stream_chain_blocks<F>(path: &Path, mut on_block: F) -> Result<(), String>
+where
+    F: FnMut(&Value) -> Result<bool, String>,
+{
+    let file = fs::File::open(path)
         .map_err(|error| format!("open chain state {}: {error}", path.display()))?;
-    let reader = BufReader::with_capacity(1024 * 1024, file);
-    let mut deserializer = serde_json::Deserializer::from_reader(reader);
-    let value = serde::de::Deserializer::deserialize_seq(&mut deserializer, LatestBlockVisitor)
-        .map_err(|error| format!("stream parse chain state {}: {error}", path.display()))?;
-    value.ok_or_else(|| "chain state does not contain any persisted blocks".to_string())
-}
+    let mut reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut buffer = [0u8; 64 * 1024];
+    let mut offset = 0u64;
+    let mut saw_array = false;
+    let mut capturing = false;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
+    let mut need_value = true;
+    let mut parsed_any = false;
+    let mut block_bytes = Vec::with_capacity(32 * 1024);
 
-struct BlockAtHeightVisitor {
-    height: u64,
-}
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|error| format!("read chain state {}: {error}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        for byte in buffer[..read].iter().copied() {
+            offset += 1;
+            if !saw_array {
+                if byte.is_ascii_whitespace() {
+                    continue;
+                }
+                if byte == b'[' {
+                    saw_array = true;
+                    continue;
+                }
+                return Err(format!(
+                    "stream parse chain state {}: expected array at byte {}",
+                    path.display(),
+                    offset
+                ));
+            }
 
-impl<'de> Visitor<'de> for BlockAtHeightVisitor {
-    type Value = Option<BlockSummary>;
+            if !capturing {
+                if byte.is_ascii_whitespace() {
+                    continue;
+                }
+                if byte == b']' {
+                    if need_value && parsed_any {
+                        return Err(format!(
+                            "stream parse chain state {}: trailing comma before array close at byte {}",
+                            path.display(),
+                            offset
+                        ));
+                    }
+                    return Ok(());
+                }
+                if byte == b',' {
+                    if need_value {
+                        return Err(format!(
+                            "stream parse chain state {}: unexpected comma at byte {}",
+                            path.display(),
+                            offset
+                        ));
+                    }
+                    need_value = true;
+                    continue;
+                }
+                if !need_value {
+                    return Err(format!(
+                        "stream parse chain state {}: missing comma before byte {}",
+                        path.display(),
+                        offset
+                    ));
+                }
+                if byte != b'{' {
+                    return Err(format!(
+                        "stream parse chain state {}: expected block object at byte {}",
+                        path.display(),
+                        offset
+                    ));
+                }
+                capturing = true;
+                in_string = false;
+                escaped = false;
+                depth = 0;
+                block_bytes.clear();
+            }
 
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a chain.json array of block objects")
-    }
+            block_bytes.push(byte);
+            if in_string {
+                if escaped {
+                    escaped = false;
+                } else if byte == b'\\' {
+                    escaped = true;
+                } else if byte == b'"' {
+                    in_string = false;
+                }
+                continue;
+            }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        while let Some(value) = seq.next_element::<Value>()? {
-            if let Some(found) = find_block_at_height(&value, self.height) {
-                return Ok(Some(found));
+            match byte {
+                b'"' => in_string = true,
+                b'{' | b'[' => depth = depth.saturating_add(1),
+                b'}' | b']' => {
+                    if depth == 0 {
+                        return Err(format!(
+                            "stream parse chain state {}: unexpected closing delimiter at byte {}",
+                            path.display(),
+                            offset
+                        ));
+                    }
+                    depth -= 1;
+                    if depth == 0 {
+                        let value =
+                            serde_json::from_slice::<Value>(&block_bytes).map_err(|error| {
+                                format!(
+                                    "stream parse chain state {} block ending at byte {}: {error}",
+                                    path.display(),
+                                    offset
+                                )
+                            })?;
+                        capturing = false;
+                        parsed_any = true;
+                        need_value = false;
+                        block_bytes.clear();
+                        if on_block(&value)? {
+                            return Ok(());
+                        }
+                    }
+                }
+                _ => {}
             }
         }
-        Ok(None)
-    }
-}
-
-struct LatestBlockVisitor;
-
-impl<'de> Visitor<'de> for LatestBlockVisitor {
-    type Value = Option<BlockSummary>;
-
-    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("a chain.json array of block objects")
     }
 
-    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-    where
-        A: SeqAccess<'de>,
-    {
-        let mut latest = None;
-        while let Some(value) = seq.next_element::<Value>()? {
-            let candidate_height =
-                u64_field(&value, &["height", "number", "block_number", "block_index"]);
-            let Some(height) = candidate_height else {
-                continue;
-            };
-            let Some(hash) = string_field(&value, &["hash", "block_hash"]) else {
-                continue;
-            };
-            let parent_hash = string_field(&value, &["parent_hash", "previous_hash", "parentHash"])
-                .unwrap_or_default();
-            if latest
-                .as_ref()
-                .map(|block: &BlockSummary| height > block.height)
-                .unwrap_or(true)
-            {
-                latest = Some(BlockSummary {
-                    height,
-                    hash,
-                    parent_hash,
-                });
-            }
-        }
-        Ok(latest)
+    if !saw_array {
+        return Err(format!(
+            "stream parse chain state {}: missing chain array",
+            path.display()
+        ));
     }
+    if capturing {
+        return Err(format!(
+            "stream parse chain state {}: unterminated block object",
+            path.display()
+        ));
+    }
+    Err(format!(
+        "stream parse chain state {}: missing closing array delimiter",
+        path.display()
+    ))
 }
 
 fn active_genesis_validator_addresses() -> Result<Vec<String>, String> {
@@ -2146,8 +2252,19 @@ mod tests {
     fn write_valid_signed_snapshot(root: &Path) -> (PathBuf, PathBuf) {
         let snapshot_root = root.join("snapshot-root");
         fs::create_dir_all(&snapshot_root).expect("snapshot root should be created");
-        fs::write(snapshot_root.join("chain.json"), b"snapshot-chain")
-            .expect("snapshot chain should be written");
+        fs::write(
+            snapshot_root.join("chain.json"),
+            serde_json::to_vec(&json!([{
+                "block_index": 100,
+                "hash": "snapshot-block-hash",
+                "previous_hash": "snapshot-parent-hash",
+                "transactions": [],
+                "validator_id": "validator-3",
+                "nonce": 100
+            }]))
+            .expect("snapshot chain should serialize"),
+        )
+        .expect("snapshot chain should be written");
         fs::write(
             snapshot_root.join("canonical_locks.json"),
             b"snapshot-locks",
@@ -2937,6 +3054,32 @@ mod tests {
         assert_eq!(block.height, 4095);
         assert_eq!(block.hash, "hash-4095");
         assert_eq!(block.parent_hash, "hash-4094");
+    }
+
+    #[test]
+    fn read_block_at_height_tolerates_stale_trailing_bytes_after_chain_array() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("stream-chain-stale-tail");
+        let blocks: Vec<Value> = (0u64..16)
+            .map(|height| {
+                json!({
+                    "block_index": height,
+                    "hash": format!("hash-{height}"),
+                    "previous_hash": format!("hash-{}", height.saturating_sub(1)),
+                })
+            })
+            .collect();
+        let mut bytes = serde_json::to_vec(&blocks).unwrap();
+        bytes.extend_from_slice(b"{\"stale_tail\":true}");
+        fs::write(root.join("data/chain.json"), bytes).unwrap();
+
+        let block = with_runtime_root(&root, || read_block_at_height(15).unwrap());
+        let latest = with_runtime_root(&root, || read_latest_block_summary().unwrap());
+
+        assert_eq!(block.hash, "hash-15");
+        assert_eq!(latest.hash, "hash-15");
     }
 
     #[test]

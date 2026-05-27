@@ -382,7 +382,8 @@ impl BlockChain {
             if let Ok(mut file) = File::open(path) {
                 let mut contents = String::new();
                 if file.read_to_string(&mut contents).is_ok() {
-                    if let Ok(blocks) = serde_json::from_str::<Vec<Block>>(&contents) {
+                    let mut deserializer = serde_json::Deserializer::from_str(&contents);
+                    if let Ok(blocks) = Vec::<Block>::deserialize(&mut deserializer) {
                         return Some(BlockChain { chain: blocks });
                     }
                 }
@@ -395,6 +396,8 @@ impl BlockChain {
 #[cfg(test)]
 mod tests {
     use super::{Block, BlockChain};
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn block(height: u64, previous_hash: String, validator: &str) -> Block {
         Block::new_with_timestamp(
@@ -431,6 +434,32 @@ mod tests {
 
         assert_eq!(chain.add_block_extending_tip(genesis), Ok(false));
         assert_eq!(chain.chain.len(), 1);
+    }
+
+    #[test]
+    fn load_from_file_accepts_stale_bytes_after_valid_chain_array() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "synergy-chain-load-stale-tail-{}-{nonce}.json",
+            std::process::id()
+        ));
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let child = block(1, genesis.hash.clone(), "validator-2");
+        let mut bytes = serde_json::to_vec(&vec![genesis, child.clone()]).unwrap();
+        bytes.extend_from_slice(b"{\"stale_tail\":true}");
+        fs::write(&path, bytes).unwrap();
+
+        let loaded = BlockChain::load_from_file(path.to_str().unwrap()).unwrap();
+
+        assert_eq!(loaded.last().map(|block| block.block_index), Some(1));
+        assert_eq!(
+            loaded.last().map(|block| block.hash.as_str()),
+            Some(child.hash.as_str())
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

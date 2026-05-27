@@ -6,11 +6,12 @@ use crate::synergy_types::{
     AegisPqKeyId, AegisPqKeyRole, AegisPqPublicKey, AegisPqSignature, CanonicalSerialize, Epoch,
     SYNERGY_TESTNET_V2_CHAIN_ID, SYNERGY_TESTNET_V2_NETWORK_ID,
 };
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufReader, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -1294,9 +1295,42 @@ fn verify_snapshot_file_checksums(
                     entry.relative_path
                 ));
             }
+            if entry.relative_path == "chain.json" {
+                validate_snapshot_chain_json(&root.join(&entry.relative_path))?;
+            }
         }
     }
     Ok(())
+}
+
+fn validate_snapshot_chain_json(path: &Path) -> Result<(), String> {
+    let file =
+        fs::File::open(path).map_err(|error| format!("open snapshot chain.json: {error}"))?;
+    let reader = BufReader::with_capacity(1024 * 1024, file);
+    let mut deserializer = serde_json::Deserializer::from_reader(reader);
+    serde::de::Deserializer::deserialize_seq(&mut deserializer, StrictJsonArrayVisitor)
+        .map_err(|error| format!("snapshot chain.json is not a valid JSON array: {error}"))?;
+    deserializer
+        .end()
+        .map_err(|error| format!("snapshot chain.json has trailing data: {error}"))
+}
+
+struct StrictJsonArrayVisitor;
+
+impl<'de> Visitor<'de> for StrictJsonArrayVisitor {
+    type Value = ();
+
+    fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("a single JSON array")
+    }
+
+    fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
+    where
+        A: SeqAccess<'de>,
+    {
+        while seq.next_element::<IgnoredAny>()?.is_some() {}
+        Ok(())
+    }
 }
 
 fn verify_manifest_signature(signed: &SignedSnapshotManifest) -> Result<(), String> {
@@ -1647,6 +1681,51 @@ mod tests {
             .errors
             .iter()
             .any(|error| error.contains("state root")));
+    }
+
+    #[test]
+    fn snapshot_rejects_chain_json_with_trailing_bytes() {
+        let root = temp_root("trailing-chain-json");
+        fs::write(root.join("chain.json"), b"[{\"block_index\":100,\"hash\":\"block-hash\",\"previous_hash\":\"parent-hash\",\"transactions\":[],\"validator_id\":\"validator-1\",\"nonce\":1}]stale-tail").unwrap();
+        fs::write(root.join("canonical_locks.json"), b"locks").unwrap();
+        fs::write(root.join("committed_qcs.jsonl"), b"qcs").unwrap();
+        let (mut signer, key_id, public) = signer();
+        let manifest = create_snapshot_manifest(SnapshotBuildInput {
+            state_dir: root.clone(),
+            snapshot_height: 100,
+            snapshot_block_hash: "block-hash".to_string(),
+            parent_hash: "parent-hash".to_string(),
+            state_root: None,
+            canonical_lock_height: 100,
+            canonical_lock_hash: "block-hash".to_string(),
+            qc_evidence: qc_evidence(),
+            active_validator_set: validators(),
+            source_node_id: "validator-2".to_string(),
+            source_role: "GENESIS_VALIDATOR".to_string(),
+            runtime_checksum: "runtime-sha256".to_string(),
+            source_node_quarantined: false,
+            source_node_majority_branch: true,
+            conflict_height_hash: Some("block-hash".to_string()),
+            manifest_signer_uma_id: "archive-1".to_string(),
+            manifest_signing_key_id: key_id,
+            manifest_signer_public_key: public,
+            manifest_signature_epoch: 0,
+            created_at: 1,
+        })
+        .unwrap();
+        let signed = sign_snapshot_manifest(&mut signer, manifest).unwrap();
+
+        let report = verify_signed_snapshot_manifest(
+            &signed,
+            &SnapshotVerificationPolicy::default(),
+            Some(&root),
+        );
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("trailing data")));
     }
 
     #[test]

@@ -321,6 +321,71 @@ fn run_offline_snapshot_command(args: &[String], command: &str) -> Result<bool, 
             print_json_value(report);
             Ok(true)
         }
+        "sync-from-canonical-peer" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::SyncFromCanonicalPeerOptions {
+                canonical_height: optional_u64_arg(args, "--canonical-height")?,
+                canonical_hash: arg_value(args, "--canonical-hash"),
+                source_peer: arg_value(args, "--source-peer"),
+                source_qc_aegis_pqc_verified: arg_flag(args, "--source-qc-aegis-pqc-verified"),
+                parent_continuity_verified: arg_flag(args, "--parent-continuity-verified"),
+                state_root_matches: arg_flag(args, "--state-root-matches"),
+                source_peer_quarantined: !arg_flag(args, "--source-peer-not-quarantined"),
+            };
+            let report =
+                crate::consensus::diagnostics::sync_from_canonical_peer_with_options(options)?;
+            print_json_value(report);
+            Ok(true)
+        }
+        "start-shadow-observe" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::StartShadowObserveOptions {
+                required_blocks: optional_u64_arg(args, "--required-blocks")?,
+            };
+            let report = crate::consensus::diagnostics::start_shadow_observe_with_options(options)?;
+            print_json_value(report);
+            Ok(true)
+        }
+        "shadow-status" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            print_json_value(crate::consensus::diagnostics::shadow_status());
+            Ok(true)
+        }
+        "rejoin-eligibility" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            print_json_value(crate::consensus::diagnostics::rejoin_eligibility());
+            Ok(true)
+        }
+        "request-rejoin" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::RejoinRequestOptions {
+                common_height: optional_u64_arg(args, "--common-height")?,
+                common_hash: arg_value(args, "--common-hash"),
+                exact_common_height_match: arg_flag(args, "--exact-common-height-match"),
+                latest_finalized_qc_aegis_pqc_verified: arg_flag(
+                    args,
+                    "--latest-finalized-qc-aegis-pqc-verified",
+                ),
+                state_root_matches: arg_flag(args, "--state-root-matches"),
+                rejoin_at_finalized_safe_boundary: arg_flag(
+                    args,
+                    "--rejoin-at-finalized-safe-boundary",
+                ),
+                cluster_marks_pending_reactivation: arg_flag(
+                    args,
+                    "--cluster-marks-pending-reactivation",
+                ),
+                operator_approved_reactivation: arg_flag(args, "--operator-approved-reactivation"),
+            };
+            let report = crate::consensus::diagnostics::request_rejoin_with_options(options)?;
+            print_json_value(report);
+            Ok(true)
+        }
         _ => Ok(false),
     }
 }
@@ -782,6 +847,14 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!(
         "                          Operator-approved quarantine marker for an already stopped stale validator"
     );
+    eprintln!("    sync-from-canonical-peer");
+    eprintln!(
+        "                          Record verified canonical head match after snapshot restore"
+    );
+    eprintln!("    start-shadow-observe Start shadow observation after verified head match");
+    eprintln!("    shadow-status        Report shadow observation status");
+    eprintln!("    rejoin-eligibility   Report rejoin eligibility gates");
+    eprintln!("    request-rejoin       Request ACTIVE rejoin after shadow and safety proofs");
     eprintln!("    list-templates        List all available node templates");
     eprintln!("    version               Display version information");
     eprintln!();
@@ -795,6 +868,9 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!("    --source-role GENESIS_VALIDATOR");
     eprintln!("    --manifest <PATH> [--snapshot-root <DIR>]");
     eprintln!("    --target-stopped --operator-approved-containment --quorum-majority-height <H> --quorum-majority-hash <HASH>");
+    eprintln!("    --canonical-height <H> --canonical-hash <HASH> --source-qc-aegis-pqc-verified --parent-continuity-verified --state-root-matches --source-peer-not-quarantined");
+    eprintln!("    --required-blocks <N>");
+    eprintln!("    --common-height <H> --common-hash <HASH> --exact-common-height-match --latest-finalized-qc-aegis-pqc-verified --state-root-matches --rejoin-at-finalized-safe-boundary --cluster-marks-pending-reactivation --operator-approved-reactivation");
     eprintln!();
     eprintln!("START OPTIONS:");
     eprintln!("    --node-type <TYPE>    Specify the node type (uses templates/<TYPE>.toml)");
@@ -2640,6 +2716,21 @@ mod tests {
         args
     }
 
+    fn lifecycle_args(command: &str, extra: &[&str]) -> Vec<String> {
+        let mut args = vec![
+            "synergy-testnet".to_string(),
+            command.to_string(),
+            "--chain-id".to_string(),
+            "1264".to_string(),
+            "--network-id".to_string(),
+            "synergy-testnet-v2".to_string(),
+            "--genesis-hash".to_string(),
+            EXPECTED_GENESIS_HASH.to_string(),
+        ];
+        args.extend(extra.iter().map(|arg| (*arg).to_string()));
+        args
+    }
+
     #[test]
     fn snapshot_operator_args_require_chain_id_1264() {
         let missing = vec![
@@ -2731,6 +2822,25 @@ mod tests {
         let error = run_offline_snapshot_command(&args, "quarantine-stopped-validator")
             .expect_err("ambiguous workspace must fail closed");
         assert!(error.contains("missing --source-workspace"));
+    }
+
+    #[test]
+    fn role_runtime_exposes_recovery_lifecycle_commands_with_workspace_guard() {
+        for command in [
+            "sync-from-canonical-peer",
+            "start-shadow-observe",
+            "shadow-status",
+            "rejoin-eligibility",
+            "request-rejoin",
+        ] {
+            let args = lifecycle_args(command, &[]);
+            let error = run_offline_snapshot_command(&args, command)
+                .expect_err("recognized lifecycle command must fail closed before mutation");
+            assert!(
+                error.contains("missing --source-workspace"),
+                "{command} returned unexpected error: {error}"
+            );
+        }
     }
 
     #[test]
