@@ -1,6 +1,7 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
 use crate::consensus::anti_divergence::current_validator_quarantine_duty_block;
+use crate::consensus::chain_durability::append_committed_block_body;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
     legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
@@ -5331,6 +5332,28 @@ fn apply_block_if_new(
             }
 
             if next_block.block_index > 0 {
+                if let Err(error) = append_committed_block_body(&next_block) {
+                    warn!(
+                        "p2p",
+                        "Rejecting block because durable committed block body could not be written",
+                        "height" => next_block.block_index,
+                        "hash" => next_block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
+                if let Err(error) =
+                    DualQuorumConsensus::record_committed_qc_checked(next_qc.clone())
+                {
+                    warn!(
+                        "p2p",
+                        "Rejecting block because durable committed QC could not be written",
+                        "height" => next_block.block_index,
+                        "hash" => next_block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
                 if let Err(error) = write_legacy_canonical_lock(&next_block, &next_qc) {
                     record_canonical_lock_conflict_from_peer(blockchain, &next_block, &error);
                     warn!(
@@ -5350,7 +5373,6 @@ fn apply_block_if_new(
             }
             final_tip_height = next_block.block_index;
             applied_blocks.push(next_block);
-            DualQuorumConsensus::record_committed_qc(next_qc);
 
             let next_tip = chain.last().cloned();
             candidate = next_tip.as_ref().and_then(take_pending_block_extending_tip);
@@ -5534,6 +5556,27 @@ fn apply_block_batch(
 
             if block.block_index > 0 {
                 if let Some(qc) = qc_by_hash.get(&block.hash) {
+                    if let Err(error) = append_committed_block_body(&block) {
+                        warn!(
+                            "p2p",
+                            "Rejecting block batch because durable committed block body could not be written",
+                            "height" => block.block_index,
+                            "hash" => block.hash.clone(),
+                            "error" => error
+                        );
+                        break;
+                    }
+                    if let Err(error) = DualQuorumConsensus::record_committed_qc_checked(qc.clone())
+                    {
+                        warn!(
+                            "p2p",
+                            "Rejecting block batch because durable committed QC could not be written",
+                            "height" => block.block_index,
+                            "hash" => block.hash.clone(),
+                            "error" => error
+                        );
+                        break;
+                    }
                     if let Err(error) = write_legacy_canonical_lock(&block, qc) {
                         record_canonical_lock_conflict_from_peer(blockchain, &block, &error);
                         warn!(
@@ -5551,9 +5594,6 @@ fn apply_block_batch(
             applied_blocks.push(block.clone());
             if chain.add_block_extending_tip(block.clone()).is_err() {
                 break;
-            }
-            if let Some(qc) = qc_by_hash.get(&block.hash) {
-                DualQuorumConsensus::record_committed_qc(qc.clone());
             }
             applied += 1;
         }

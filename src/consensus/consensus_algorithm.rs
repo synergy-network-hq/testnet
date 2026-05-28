@@ -1,4 +1,5 @@
 use super::cartel_detection::{CartelDetectionEngine, VoteRecord};
+use super::chain_durability::append_committed_block_body;
 use super::dao_governance::{DAOGovernance, GovernanceProposal, ProposalStatus};
 use super::dual_quorum::{
     DualQuorumConsensus, EntropyBeacon, QuorumCertificate, ValidatorRotation, Vote,
@@ -1251,6 +1252,32 @@ impl ProofOfSynergy {
                                     let mut chain_guard = chain.lock().unwrap();
                                     match chain_guard.add_block_extending_tip(new_block.clone()) {
                                         Ok(true) => {
+                                            if let Err(error) =
+                                                append_committed_block_body(&new_block)
+                                            {
+                                                warn!(
+                                                    "consensus",
+                                                    "Durable committed block body write failed before canonical lock",
+                                                    "height" => new_block.block_index,
+                                                    "hash" => new_block.hash.clone(),
+                                                    "error" => error
+                                                );
+                                                process::exit(1);
+                                            }
+                                            if let Err(error) =
+                                                DualQuorumConsensus::record_committed_qc_checked(
+                                                    qc.clone(),
+                                                )
+                                            {
+                                                warn!(
+                                                    "consensus",
+                                                    "Durable committed QC write failed before canonical lock",
+                                                    "height" => new_block.block_index,
+                                                    "hash" => new_block.hash.clone(),
+                                                    "error" => error
+                                                );
+                                                process::exit(1);
+                                            }
                                             if let Err(error) =
                                                 write_legacy_canonical_lock(&new_block, &qc)
                                             {

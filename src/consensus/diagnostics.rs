@@ -1,4 +1,5 @@
 use crate::block::BlockChain;
+use crate::consensus::chain_durability::validate_chain_body_covers_canonical_lock;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
 use crate::consensus::self_realign::{
@@ -1278,6 +1279,15 @@ pub fn diagnose_consensus_stall(chain: &Arc<Mutex<BlockChain>>) -> Value {
         .map(|items| !items.is_empty())
         .unwrap_or(false);
     let qc = latest_committed_qc();
+    let chain_body_canonical_check = latest
+        .as_ref()
+        .map(|_| {
+            chain
+                .lock()
+                .map_err(|_| "failed to lock chain for canonical durability check".to_string())
+                .and_then(|chain| validate_chain_body_covers_canonical_lock(&chain))
+        })
+        .unwrap_or(Ok(()));
     let mut categories = Vec::new();
     if timestamp_delta_seconds.unwrap_or(0) > 30 {
         categories.push("no_finalized_block_for_timeout");
@@ -1295,6 +1305,9 @@ pub fn diagnose_consensus_stall(chain: &Arc<Mutex<BlockChain>>) -> Value {
     {
         categories.push("local_validator_quarantined");
     }
+    if chain_body_canonical_check.is_err() {
+        categories.push("chain_body_behind_canonical_lock");
+    }
 
     json!({
         "chain": chain_identity(),
@@ -1303,6 +1316,10 @@ pub fn diagnose_consensus_stall(chain: &Arc<Mutex<BlockChain>>) -> Value {
         "latest_timestamp": latest_timestamp,
         "timestamp_delta_seconds": timestamp_delta_seconds,
         "canonical_lock_height": finalized_height,
+        "chain_body_canonical_check": match chain_body_canonical_check {
+            Ok(()) => json!({"ok": true}),
+            Err(error) => json!({"ok": false, "error": error}),
+        },
         "latest_committed_qc": qc,
         "vote_locks": vote_locks,
         "categories": categories,

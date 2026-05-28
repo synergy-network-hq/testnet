@@ -632,21 +632,27 @@ impl DualQuorumConsensus {
     }
 
     pub fn record_committed_qc(qc: QuorumCertificate) {
-        Self::ensure_committed_qc_store_loaded();
-        if let Ok(mut store) = COMMITTED_QC_STORE.lock() {
-            if store.contains_key(&qc.block_hash) {
-                return;
-            }
-
-            store.insert(qc.block_hash.clone(), qc.clone());
-            if let Err(error) = Self::append_committed_qc_to_log(&qc) {
-                warn!(
-                    "consensus",
-                    "Failed to append committed quorum certificate",
-                    "error" => error
-                );
-            }
+        if let Err(error) = Self::record_committed_qc_checked(qc) {
+            warn!(
+                "consensus",
+                "Failed to append committed quorum certificate",
+                "error" => error
+            );
         }
+    }
+
+    pub fn record_committed_qc_checked(qc: QuorumCertificate) -> Result<(), String> {
+        Self::ensure_committed_qc_store_loaded();
+        let mut store = COMMITTED_QC_STORE
+            .lock()
+            .map_err(|_| "failed to lock committed QC store".to_string())?;
+        if store.contains_key(&qc.block_hash) {
+            return Ok(());
+        }
+
+        Self::append_committed_qc_to_log(&qc)?;
+        store.insert(qc.block_hash.clone(), qc);
+        Ok(())
     }
 
     pub fn committed_qc_for_block_hash(block_hash: &str) -> Option<QuorumCertificate> {
@@ -1195,7 +1201,6 @@ impl DualQuorumConsensus {
                 sorted_votes
             },
         };
-        Self::record_committed_qc(qc.clone());
         Ok(qc)
     }
 

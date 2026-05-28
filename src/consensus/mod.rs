@@ -5,6 +5,7 @@
 
 pub mod anti_divergence;
 pub mod cartel_detection;
+pub mod chain_durability;
 pub mod consensus_algorithm;
 pub mod dao_governance;
 pub mod diagnostics;

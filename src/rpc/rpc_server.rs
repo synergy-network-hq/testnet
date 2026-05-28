@@ -9,6 +9,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::address::generate_cluster_address;
 use crate::block::BlockChain;
+use crate::consensus::chain_durability::recover_chain_and_validate_canonical;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
@@ -279,6 +280,7 @@ lazy_static! {
         Arc::new(Mutex::new(
             match BlockChain::load_from_file(chain_path.to_str().unwrap_or("data/chain.json")) {
                 Some(chain) => {
+                    let mut chain = chain;
                     chain
                         .ensure_expected_genesis_hash(canonical_genesis.hash())
                         .unwrap_or_else(|error| {
@@ -289,6 +291,15 @@ lazy_static! {
                                 error
                             )
                         });
+                    recover_chain_and_validate_canonical(&mut chain, &chain_path).unwrap_or_else(
+                        |error| {
+                            panic!(
+                                "chain body durability preflight failed for {}: {}",
+                                chain_path.display(),
+                                error
+                            )
+                        },
+                    );
                     chain
                 }
                 None => {

@@ -333,6 +333,10 @@ impl BlockChain {
         }
     }
 
+    pub fn save_to_file_result(&self, path: &str) -> Result<(), String> {
+        self.save_to_file_atomic(path)
+    }
+
     fn save_to_file_atomic(&self, path: &str) -> Result<(), String> {
         let json =
             serde_json::to_vec(&self.chain).map_err(|error| format!("serialize chain: {error}"))?;
@@ -384,7 +388,9 @@ impl BlockChain {
                 if file.read_to_string(&mut contents).is_ok() {
                     let mut deserializer = serde_json::Deserializer::from_str(&contents);
                     if let Ok(blocks) = Vec::<Block>::deserialize(&mut deserializer) {
-                        return Some(BlockChain { chain: blocks });
+                        if deserializer.end().is_ok() {
+                            return Some(BlockChain { chain: blocks });
+                        }
                     }
                 }
             }
@@ -437,7 +443,7 @@ mod tests {
     }
 
     #[test]
-    fn load_from_file_accepts_stale_bytes_after_valid_chain_array() {
+    fn load_from_file_rejects_stale_bytes_after_valid_chain_array() {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -452,13 +458,7 @@ mod tests {
         bytes.extend_from_slice(b"{\"stale_tail\":true}");
         fs::write(&path, bytes).unwrap();
 
-        let loaded = BlockChain::load_from_file(path.to_str().unwrap()).unwrap();
-
-        assert_eq!(loaded.last().map(|block| block.block_index), Some(1));
-        assert_eq!(
-            loaded.last().map(|block| block.hash.as_str()),
-            Some(child.hash.as_str())
-        );
+        assert!(BlockChain::load_from_file(path.to_str().unwrap()).is_none());
         fs::remove_file(path).unwrap();
     }
 
