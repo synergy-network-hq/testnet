@@ -1059,13 +1059,36 @@ fn enforce_snapshot_retention(snapshot_root: &Path, retain_last: usize) -> Resul
         })
         .map(|entry| entry.path())
         .collect::<Vec<_>>();
-    snapshots.sort();
+    snapshots.sort_by(|left, right| {
+        snapshot_retention_key(left)
+            .cmp(&snapshot_retention_key(right))
+            .then_with(|| left.cmp(right))
+    });
     let stale_count = snapshots.len().saturating_sub(retain_last);
     for path in snapshots.into_iter().take(stale_count) {
         fs::remove_dir_all(&path)
             .map_err(|error| format!("remove stale snapshot {}: {error}", path.display()))?;
     }
     Ok(())
+}
+
+fn snapshot_retention_key(path: &Path) -> (u64, u64) {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return (0, 0);
+    };
+    let Some(rest) = name.strip_prefix("snapshot-") else {
+        return (0, 0);
+    };
+    let mut parts = rest.splitn(3, '-');
+    let height = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .unwrap_or(0);
+    let created_at = parts
+        .next()
+        .and_then(|part| part.parse::<u64>().ok())
+        .unwrap_or(0);
+    (height, created_at)
 }
 
 fn current_runtime_checksum() -> Result<String, String> {
@@ -2960,12 +2983,12 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
 mod tests {
     use super::{
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        quarantine_status, quarantine_stopped_validator_with_options, read_block_at_height,
-        read_latest_block_summary, rejoin_eligibility, request_rejoin_with_options,
-        self_heal_from_snapshot, shadow_status, snapshot_metadata_consistency_report,
-        start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
-        CreateSnapshotOptions, OperatorQuarantineOptions, RejoinRequestOptions,
-        StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
+        enforce_snapshot_retention, quarantine_status, quarantine_stopped_validator_with_options,
+        read_block_at_height, read_latest_block_summary, rejoin_eligibility,
+        request_rejoin_with_options, self_heal_from_snapshot, shadow_status,
+        snapshot_metadata_consistency_report, start_shadow_observe_with_options,
+        sync_from_canonical_peer_with_options, CreateSnapshotOptions, OperatorQuarantineOptions,
+        RejoinRequestOptions, StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
         DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
@@ -3476,6 +3499,28 @@ mod tests {
         let qcs = fs::read_to_string(snapshot_dir.join("committed_qcs.jsonl")).unwrap();
         assert!(qcs.contains("h10"));
         assert!(!qcs.contains("h11"));
+    }
+
+    #[test]
+    fn snapshot_retention_keeps_highest_height_instead_of_lexicographic_name() {
+        let root = test_runtime_root("snapshot-retention-height-sort");
+        let snapshot_root = root.join("data/snapshots");
+        fs::create_dir_all(&snapshot_root).expect("snapshot root should exist");
+        for name in [
+            "snapshot-97500-1779964096",
+            "snapshot-97500-1779964308",
+            "snapshot-99908-1779970413",
+            "snapshot-102514-1779977247",
+        ] {
+            fs::create_dir_all(snapshot_root.join(name)).expect("snapshot dir should be created");
+        }
+
+        enforce_snapshot_retention(&snapshot_root, 3).expect("retention should succeed");
+
+        assert!(!snapshot_root.join("snapshot-97500-1779964096").exists());
+        assert!(snapshot_root.join("snapshot-97500-1779964308").exists());
+        assert!(snapshot_root.join("snapshot-99908-1779970413").exists());
+        assert!(snapshot_root.join("snapshot-102514-1779977247").exists());
     }
 
     #[test]
