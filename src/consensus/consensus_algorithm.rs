@@ -1974,10 +1974,10 @@ impl ProofOfSynergy {
         let state = LAST_CONSENSUS_CHAIN_PERSIST.lock().unwrap();
         match *state {
             Some((last_height, last_at)) => {
-                tip_height.saturating_sub(last_height) >= 25
-                    || last_at.elapsed() >= Duration::from_secs(30)
+                tip_height.saturating_sub(last_height) >= 250
+                    || last_at.elapsed() >= Duration::from_secs(600)
             }
-            None => tip_height % 25 == 0,
+            None => tip_height % 250 == 0,
         }
     }
 

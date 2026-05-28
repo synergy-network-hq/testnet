@@ -45,6 +45,8 @@ static COMMITTED_QC_STORE_INIT: Once = Once::new();
 
 const TWO_THIRDS_QUORUM_THRESHOLD: f64 = 2.0 / 3.0;
 pub const MIN_LAUNCH_VOTE_TIMEOUT_SECS: u64 = 4;
+const LOCAL_VOTE_LOCK_COMPACTION_MIN_LOCKS: usize = 1024;
+const LOCAL_VOTE_LOCK_FINALIZED_RETENTION_DEPTH: u64 = 16;
 
 #[cfg(test)]
 lazy_static::lazy_static! {
@@ -509,6 +511,31 @@ impl DualQuorumConsensus {
             self.record_missed_vote_timeouts(&active_validators, &votes);
         }
 
+        if !final_quorum_met {
+            let received_validators = votes
+                .iter()
+                .map(|vote| vote.validator_address.clone())
+                .collect::<BTreeSet<_>>();
+            let missing_validators = expected_validators
+                .iter()
+                .filter(|validator| !received_validators.contains(*validator))
+                .cloned()
+                .collect::<Vec<_>>();
+            warn!(
+                "consensus",
+                "Vote collection ended without quorum",
+                "height" => proposed_block.block_index,
+                "block_hash" => block_hash.to_string(),
+                "epoch" => epoch_number,
+                "round" => round_number,
+                "vote_count" => votes.len() as u64,
+                "required_validator_votes" => self.required_validator_votes(active_validators.len()) as u64,
+                "missing_validators" => serde_json::to_string(&missing_validators).unwrap_or_default(),
+                "elapsed_ms" => timing_trace::duration_ms(collection_started.elapsed()),
+                "effective_vote_timeout_secs" => self.vote_timeout.max(1)
+            );
+        }
+
         Self::reset_network_vote_mailbox(block_hash, epoch_number, round_number);
         self.votes.insert(block_hash.to_string(), votes.clone());
         timing_trace::emit(
@@ -521,6 +548,16 @@ impl DualQuorumConsensus {
                 "epoch": epoch_number,
                 "round": round_number,
                 "vote_count": votes.len(),
+                "required_validator_votes": self.required_validator_votes(active_validators.len()),
+                "missing_validators": expected_validators
+                    .iter()
+                    .filter(|validator| {
+                        !votes
+                            .iter()
+                            .any(|vote| &vote.validator_address == *validator)
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 "quorum_met": final_quorum_met,
                 "elapsed_ms": timing_trace::duration_ms(collection_started.elapsed()),
                 "effective_vote_timeout_secs": self.vote_timeout.max(1)
@@ -1597,6 +1634,136 @@ impl DualQuorumConsensus {
             .map_err(|err| format!("failed to replace local vote lock file: {err}"))
     }
 
+    fn local_vote_lock_to_recovered(lock: &LocalVoteLock) -> RecoveredTransientVoteLock {
+        RecoveredTransientVoteLock {
+            validator_address: lock.validator_address.clone(),
+            block_hash: lock.block_hash.clone(),
+            block_index: lock.block_index,
+            epoch_number: lock.epoch_number,
+            first_round_number: lock.first_round_number,
+            latest_round_number: lock.latest_round_number,
+            proposer: lock.proposer.clone(),
+            created_at: lock.created_at,
+            updated_at: lock.updated_at,
+        }
+    }
+
+    fn preserve_vote_lock_compaction_evidence_unlocked(
+        path: &PathBuf,
+        locks: &HashMap<String, LocalVoteLock>,
+        removed: &[(String, RecoveredTransientVoteLock)],
+        finalized_height: u64,
+        finalized_hash: &str,
+        prune_cutoff_height: u64,
+        reason: &str,
+        now: u64,
+    ) -> Result<PathBuf, String> {
+        let evidence_root = crate::utils::resolve_data_path("data/consensus_recovery_evidence");
+        fs::create_dir_all(&evidence_root)
+            .map_err(|err| format!("failed to create vote-lock evidence directory: {err}"))?;
+        let evidence_nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let evidence_path = evidence_root.join(format!(
+            "{}-{}-finalized-vote-lock-compaction-through-{}.json",
+            now, evidence_nonce, prune_cutoff_height
+        ));
+        let removed_locks = removed
+            .iter()
+            .map(|(_, lock)| lock.clone())
+            .collect::<Vec<_>>();
+        let evidence = serde_json::json!({
+            "action": "compact_finalized_vote_locks_for_hot_path",
+            "reason": reason,
+            "vote_lock_path": path.to_string_lossy(),
+            "finalized_height": finalized_height,
+            "finalized_hash": finalized_hash,
+            "retention_depth": LOCAL_VOTE_LOCK_FINALIZED_RETENTION_DEPTH,
+            "prune_cutoff_height": prune_cutoff_height,
+            "before_count": locks.len(),
+            "removed_count": removed_locks.len(),
+            "kept_count": locks.len().saturating_sub(removed_locks.len()),
+            "removed": removed_locks,
+            "timestamp": now,
+        });
+        let serialized = serde_json::to_vec_pretty(&evidence).map_err(|err| {
+            format!("failed to encode finalized vote-lock compaction evidence: {err}")
+        })?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&evidence_path)
+            .map_err(|err| format!("failed to create finalized vote-lock evidence file: {err}"))?;
+        file.write_all(&serialized)
+            .map_err(|err| format!("failed to write finalized vote-lock evidence file: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync finalized vote-lock evidence file: {err}"))?;
+        Ok(evidence_path)
+    }
+
+    fn compact_finalized_vote_locks_for_hot_path_unlocked(
+        locks: &mut HashMap<String, LocalVoteLock>,
+        now: u64,
+        reason: &str,
+    ) -> Result<Option<(usize, PathBuf)>, String> {
+        if locks.len() < LOCAL_VOTE_LOCK_COMPACTION_MIN_LOCKS {
+            return Ok(None);
+        }
+
+        let Some(canonical) = latest_legacy_canonical_commit_record()? else {
+            return Ok(None);
+        };
+        let prune_cutoff_height = canonical
+            .height
+            .saturating_sub(LOCAL_VOTE_LOCK_FINALIZED_RETENTION_DEPTH);
+        let path = Self::local_vote_lock_path();
+        let mut removed = locks
+            .iter()
+            .filter_map(|(key, lock)| {
+                (lock.block_index <= prune_cutoff_height)
+                    .then(|| (key.clone(), Self::local_vote_lock_to_recovered(lock)))
+            })
+            .collect::<Vec<_>>();
+        removed.sort_by(|(_, left), (_, right)| {
+            (
+                left.block_index,
+                left.epoch_number,
+                left.latest_round_number,
+                left.block_hash.as_str(),
+            )
+                .cmp(&(
+                    right.block_index,
+                    right.epoch_number,
+                    right.latest_round_number,
+                    right.block_hash.as_str(),
+                ))
+        });
+
+        if removed.is_empty() {
+            return Ok(None);
+        }
+
+        let evidence_path = Self::preserve_vote_lock_compaction_evidence_unlocked(
+            &path,
+            locks,
+            &removed,
+            canonical.height,
+            &canonical.block_hash,
+            prune_cutoff_height,
+            reason,
+            now,
+        )?;
+
+        for (key, _) in &removed {
+            locks.remove(key);
+        }
+
+        Ok(Some((removed.len(), evidence_path)))
+    }
+
     pub fn local_locked_vote_for_height(
         validator_address: &str,
         epoch_number: u64,
@@ -1925,6 +2092,24 @@ impl DualQuorumConsensus {
             .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
         let mut locks = Self::load_local_vote_locks_unlocked()?;
         let now = Self::current_timestamp();
+        if let Some((removed_count, evidence_path)) =
+            Self::compact_finalized_vote_locks_for_hot_path_unlocked(
+                &mut locks,
+                now,
+                "automatic finalized vote-lock compaction before local vote persistence",
+            )?
+        {
+            warn!(
+                "consensus",
+                "Compacted finalized local vote locks before signing vote",
+                "validator" => validator_address.to_string(),
+                "height" => proposed_block.block_index,
+                "epoch" => epoch_number,
+                "round" => round_number,
+                "removed_count" => removed_count as u64,
+                "evidence_path" => evidence_path.to_string_lossy().to_string()
+            );
+        }
 
         let matching_keys = locks
             .iter()
@@ -2799,6 +2984,122 @@ mod tests {
             let _ = fs::remove_dir_all(root);
         }
         let _ = fs::remove_file(report.evidence_path);
+    }
+
+    #[test]
+    fn finalized_vote_lock_compaction_preserves_evidence_and_keeps_recent_locks() {
+        let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = temp_vote_lock_path("finalized-lock-compaction");
+        let root = path
+            .parent()
+            .and_then(|data| data.parent())
+            .expect("vote lock path has test root")
+            .to_path_buf();
+        let previous_root = std::env::var("SYNERGY_PROJECT_ROOT").ok();
+        std::env::set_var("SYNERGY_PROJECT_ROOT", &root);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        fs::create_dir_all(path.parent().expect("vote lock path has parent"))
+            .expect("vote lock parent should be created");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(path.clone()));
+
+        let finalized = signed_block(2_000, 1, "validator1");
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &finalized,
+            &test_qc(&finalized.hash),
+        )
+        .expect("canonical finalized lock should be written");
+
+        let now = DualQuorumConsensus::current_timestamp();
+        let mut locks = HashMap::new();
+        for height in 1..=LOCAL_VOTE_LOCK_COMPACTION_MIN_LOCKS as u64 {
+            let hash = format!("old-hash-{height}");
+            let key =
+                DualQuorumConsensus::scoped_local_vote_lock_key("validator2", 40, height, 1, &hash);
+            locks.insert(
+                key,
+                LocalVoteLock {
+                    validator_address: "validator2".to_string(),
+                    block_hash: hash,
+                    block_index: height,
+                    epoch_number: 40,
+                    first_round_number: 1,
+                    latest_round_number: 1,
+                    proposer: "validator1".to_string(),
+                    created_at: now.saturating_sub(60),
+                    updated_at: now.saturating_sub(60),
+                    superseded: Vec::new(),
+                },
+            );
+        }
+        let recent_hash = "recent-finalized-lock".to_string();
+        let recent_key = DualQuorumConsensus::scoped_local_vote_lock_key(
+            "validator2",
+            40,
+            1_990,
+            1,
+            &recent_hash,
+        );
+        locks.insert(
+            recent_key,
+            LocalVoteLock {
+                validator_address: "validator2".to_string(),
+                block_hash: recent_hash.clone(),
+                block_index: 1_990,
+                epoch_number: 40,
+                first_round_number: 1,
+                latest_round_number: 1,
+                proposer: "validator1".to_string(),
+                created_at: now.saturating_sub(60),
+                updated_at: now.saturating_sub(60),
+                superseded: Vec::new(),
+            },
+        );
+        fs::write(&path, serde_json::to_vec(&locks).unwrap())
+            .expect("large vote lock file should be seeded");
+
+        let mut next = signed_block(2_001, 2, "validator1");
+        next.previous_hash = finalized.hash.clone();
+        DualQuorumConsensus::register_local_vote_intent("validator2", &next, 40, 1)
+            .expect("vote intent should compact finalized locks and persist new lock");
+
+        let compacted = DualQuorumConsensus::load_local_vote_locks_unlocked()
+            .expect("compacted vote locks should load");
+        assert!(
+            compacted.values().all(|lock| lock.block_index > 1_984),
+            "locks at or below finalized retention cutoff should be pruned"
+        );
+        assert!(compacted
+            .values()
+            .any(|lock| lock.block_hash == recent_hash && lock.block_index == 1_990));
+        assert!(compacted
+            .values()
+            .any(|lock| lock.block_hash == next.hash && lock.block_index == 2_001));
+
+        let evidence_root = crate::utils::resolve_data_path("data/consensus_recovery_evidence");
+        let evidence_found = fs::read_dir(&evidence_root)
+            .ok()
+            .into_iter()
+            .flat_map(|entries| entries.flatten())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("finalized-vote-lock-compaction-through-1984")
+            });
+        assert!(
+            evidence_found,
+            "compaction must preserve removed lock evidence"
+        );
+
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        match previous_root {
+            Some(value) => std::env::set_var("SYNERGY_PROJECT_ROOT", value),
+            None => std::env::remove_var("SYNERGY_PROJECT_ROOT"),
+        }
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

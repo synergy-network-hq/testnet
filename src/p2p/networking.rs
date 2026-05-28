@@ -5332,6 +5332,17 @@ fn apply_block_if_new(
             }
 
             if next_block.block_index > 0 {
+                if let Err(error) = verify_legacy_canonical_lock(&next_block) {
+                    record_canonical_lock_conflict_from_peer(blockchain, &next_block, &error);
+                    warn!(
+                        "p2p",
+                        "Rejecting pending block because it conflicts with canonical block lock",
+                        "height" => next_block.block_index,
+                        "hash" => next_block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
                 if let Err(error) = append_committed_block_body(&next_block) {
                     warn!(
                         "p2p",
@@ -5342,6 +5353,20 @@ fn apply_block_if_new(
                     );
                     break;
                 }
+            }
+
+            confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
+            if chain.add_block_extending_tip(next_block.clone()).is_err() {
+                warn!(
+                    "p2p",
+                    "Rejecting block because it could not be materialized on the local chain tip after durable body write",
+                    "height" => next_block.block_index,
+                    "hash" => next_block.hash.clone()
+                );
+                break;
+            }
+
+            if next_block.block_index > 0 {
                 if let Err(error) =
                     DualQuorumConsensus::record_committed_qc_checked(next_qc.clone())
                 {
@@ -5367,12 +5392,8 @@ fn apply_block_if_new(
                 }
             }
 
-            confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
-            if chain.add_block_extending_tip(next_block.clone()).is_err() {
-                break;
-            }
             final_tip_height = next_block.block_index;
-            applied_blocks.push(next_block);
+            applied_blocks.push(next_block.clone());
 
             let next_tip = chain.last().cloned();
             candidate = next_tip.as_ref().and_then(take_pending_block_extending_tip);
@@ -5555,7 +5576,7 @@ fn apply_block_batch(
             }
 
             if block.block_index > 0 {
-                if let Some(qc) = qc_by_hash.get(&block.hash) {
+                if qc_by_hash.contains_key(&block.hash) {
                     if let Err(error) = append_committed_block_body(&block) {
                         warn!(
                             "p2p",
@@ -5566,6 +5587,20 @@ fn apply_block_batch(
                         );
                         break;
                     }
+                }
+            }
+
+            if chain.add_block_extending_tip(block.clone()).is_err() {
+                warn!(
+                    "p2p",
+                    "Rejecting block batch entry because it could not be materialized on the local chain tip after durable body write",
+                    "height" => block.block_index,
+                    "hash" => block.hash.clone()
+                );
+                break;
+            }
+            if block.block_index > 0 {
+                if let Some(qc) = qc_by_hash.get(&block.hash) {
                     if let Err(error) = DualQuorumConsensus::record_committed_qc_checked(qc.clone())
                     {
                         warn!(
@@ -5590,11 +5625,7 @@ fn apply_block_batch(
                     }
                 }
             }
-
             applied_blocks.push(block.clone());
-            if chain.add_block_extending_tip(block.clone()).is_err() {
-                break;
-            }
             applied += 1;
         }
 
@@ -5732,19 +5763,13 @@ fn should_persist_chain_tip(tip_height: u64) -> bool {
     let state = LAST_CHAIN_PERSIST.lock().unwrap();
     match *state {
         Some((last_height, last_at)) => {
-            // During sync, persist every 500 blocks or 30s to avoid I/O bottleneck.
-            // Once close to tip, persist more frequently (every 10 blocks or 2s).
+            // Chain bodies are appended to the committed block log before locks/QCs.
+            // Full chain snapshots are restart accelerators, not the hot durability path.
             let gap = tip_height.saturating_sub(last_height);
             let elapsed = last_at.elapsed();
-            if gap > 50 {
-                // Far behind — bulk sync mode: save rarely
-                gap >= 500 || elapsed >= Duration::from_secs(30)
-            } else {
-                // Near tip — normal mode
-                gap >= 10 || elapsed >= Duration::from_secs(2)
-            }
+            gap >= 250 || elapsed >= Duration::from_secs(600)
         }
-        None => true,
+        None => tip_height % 250 == 0,
     }
 }
 

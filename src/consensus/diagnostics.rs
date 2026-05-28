@@ -893,6 +893,36 @@ fn shadow_observation_path() -> PathBuf {
     crate::utils::resolve_data_path("data/shadow_observation.json")
 }
 
+fn preserve_and_remove_stale_shadow_observation(
+    evidence_path: &Path,
+) -> Result<Option<String>, String> {
+    let path = shadow_observation_path();
+    if !path.exists() {
+        return Ok(None);
+    }
+    fs::create_dir_all(evidence_path).map_err(|error| {
+        format!(
+            "create stale shadow observation evidence directory {}: {error}",
+            evidence_path.display()
+        )
+    })?;
+    let preserved_path = evidence_path.join("stale-shadow-observation-before-restore.json");
+    fs::copy(&path, &preserved_path).map_err(|error| {
+        format!(
+            "preserve stale shadow observation {} -> {}: {error}",
+            path.display(),
+            preserved_path.display()
+        )
+    })?;
+    fs::remove_file(&path).map_err(|error| {
+        format!(
+            "remove stale shadow observation after preservation {}: {error}",
+            path.display()
+        )
+    })?;
+    Ok(Some(preserved_path.to_string_lossy().to_string()))
+}
+
 fn read_self_heal_status_file() -> Option<Value> {
     read_json_file_raw(&self_heal_status_path())
 }
@@ -2019,6 +2049,8 @@ pub fn self_heal_from_snapshot(
             snapshot_verified: true,
         },
     )?;
+    let preserved_stale_shadow_observation =
+        preserve_and_remove_stale_shadow_observation(&evidence_path)?;
     let restore_plan = build_snapshot_restore_plan(
         &validator_id,
         &signed,
@@ -2042,6 +2074,8 @@ pub fn self_heal_from_snapshot(
         "restore_plan": restore_plan,
         "wipe_result": wipe_result,
         "restored_files": restored_files,
+        "stale_shadow_observation_invalidated": preserved_stale_shadow_observation.is_some(),
+        "preserved_stale_shadow_observation_path": preserved_stale_shadow_observation,
         "canonical_locks_mutated": true,
         "committed_qcs_mutated": true,
         "chain_state_mutated": true,
@@ -2071,6 +2105,14 @@ pub fn self_heal_from_snapshot(
         "restore_plan": restore_plan,
         "wipe_result": wipe_result,
         "restored_files": restored_files,
+        "stale_shadow_observation_invalidated": status
+            .get("stale_shadow_observation_invalidated")
+            .cloned()
+            .unwrap_or(Value::Bool(false)),
+        "preserved_stale_shadow_observation_path": status
+            .get("preserved_stale_shadow_observation_path")
+            .cloned()
+            .unwrap_or(Value::Null),
         "next_required_action": "restart_or_continue_quarantined_node_speed_sync_then_start_shadow_observe",
         "canonical_locks_mutated": true,
         "committed_qcs_mutated": true,
@@ -3657,6 +3699,61 @@ mod tests {
             report.get("quorum_mutated").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn fresh_self_heal_invalidates_old_shadow_pass_marker() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("self-heal-invalidates-old-shadow");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        fs::write(
+            root.join("data/shadow_observation.json"),
+            json!({
+                "success": true,
+                "typed_status": "SHADOW_PASSED",
+                "start_height": 89957,
+                "canonical_match_count": 1000,
+                "mismatch_count": 0,
+                "restore_generation": "old-restore"
+            })
+            .to_string(),
+        )
+        .expect("stale shadow observation should be written");
+        let (snapshot_root, manifest_path) = write_valid_signed_snapshot(&root);
+
+        let report = with_runtime_root(&root, || {
+            self_heal_from_snapshot(
+                manifest_path.to_str().unwrap(),
+                Some(snapshot_root.to_str().unwrap()),
+            )
+            .expect("self-heal should return typed body")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            report
+                .get("stale_shadow_observation_invalidated")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert!(
+            !root.join("data/shadow_observation.json").exists(),
+            "fresh self-heal must require a fresh shadow window"
+        );
+        let preserved = report
+            .get("preserved_stale_shadow_observation_path")
+            .and_then(Value::as_str)
+            .expect("stale shadow evidence path should be reported");
+        assert!(
+            Path::new(preserved).exists(),
+            "stale shadow marker should be preserved before invalidation"
+        );
+        let rejoin = with_runtime_root(&root, rejoin_eligibility);
+        assert_eq!(rejoin.get("eligible").and_then(Value::as_bool), Some(false));
     }
 
     #[test]
