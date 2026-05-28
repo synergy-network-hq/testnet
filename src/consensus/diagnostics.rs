@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::io::{BufReader, Read};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -802,7 +802,11 @@ fn env_truthy(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn copy_snapshot_state_files(data_dir: &Path, snapshot_dir: &Path) -> Result<usize, String> {
+fn copy_snapshot_state_files(
+    data_dir: &Path,
+    snapshot_dir: &Path,
+    snapshot_height: u64,
+) -> Result<usize, String> {
     fs::create_dir_all(snapshot_dir).map_err(|error| {
         format!(
             "create snapshot state directory {}: {error}",
@@ -828,7 +832,211 @@ fn copy_snapshot_state_files(data_dir: &Path, snapshot_dir: &Path) -> Result<usi
     if copied == 0 {
         return Err("snapshot source contains no launch-approved chain/state files".to_string());
     }
+    constrain_snapshot_metadata_to_height(snapshot_dir, snapshot_height)?;
     Ok(copied)
+}
+
+fn qc_height_from_json(value: &Value) -> Option<u64> {
+    for key in ["height", "block_height", "block_index"] {
+        if let Some(height) = value.get(key).and_then(Value::as_u64) {
+            return Some(height);
+        }
+    }
+    let qc = value.get("qc").unwrap_or(value);
+    for key in ["height", "block_height", "block_index"] {
+        if let Some(height) = qc.get(key).and_then(Value::as_u64) {
+            return Some(height);
+        }
+    }
+    qc.get("votes").and_then(Value::as_array).and_then(|votes| {
+        votes
+            .iter()
+            .filter_map(|vote| {
+                vote.get("block_index")
+                    .or_else(|| vote.get("height"))
+                    .and_then(Value::as_u64)
+            })
+            .max()
+    })
+}
+
+fn constrain_snapshot_metadata_to_height(
+    snapshot_dir: &Path,
+    snapshot_height: u64,
+) -> Result<(), String> {
+    let canonical_path = snapshot_dir.join("canonical_locks.json");
+    if canonical_path.is_file() {
+        let canonical_value: Value =
+            serde_json::from_slice(&fs::read(&canonical_path).map_err(|error| {
+                format!(
+                    "read {} for snapshot height constraint: {error}",
+                    canonical_path.display()
+                )
+            })?)
+            .map_err(|error| format!("parse {}: {error}", canonical_path.display()))?;
+        let mut canonical_map = canonical_value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| format!("{} must be a JSON object", canonical_path.display()))?;
+        canonical_map.retain(|height, _| {
+            height
+                .parse::<u64>()
+                .map(|height| height <= snapshot_height)
+                .unwrap_or(false)
+        });
+        if !canonical_map.contains_key(&snapshot_height.to_string()) {
+            return Err(format!(
+                "snapshot canonical_locks.json has no canonical lock at snapshot height {snapshot_height}"
+            ));
+        }
+        fs::write(
+            &canonical_path,
+            serde_json::to_vec_pretty(&Value::Object(canonical_map))
+                .map_err(|error| format!("serialize {}: {error}", canonical_path.display()))?,
+        )
+        .map_err(|error| format!("write constrained {}: {error}", canonical_path.display()))?;
+    }
+
+    let committed_qcs_path = snapshot_dir.join("committed_qcs.jsonl");
+    if committed_qcs_path.is_file() {
+        let source = fs::File::open(&committed_qcs_path)
+            .map_err(|error| format!("open {}: {error}", committed_qcs_path.display()))?;
+        let tmp_path = committed_qcs_path.with_extension("jsonl.tmp");
+        let mut tmp = fs::File::create(&tmp_path)
+            .map_err(|error| format!("create {}: {error}", tmp_path.display()))?;
+        let mut found_snapshot_qc = false;
+        let mut kept = 0usize;
+        for line in BufReader::new(source).lines() {
+            let line =
+                line.map_err(|error| format!("read {}: {error}", committed_qcs_path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value = serde_json::from_str::<Value>(&line).map_err(|error| {
+                format!(
+                    "parse committed QC in {}: {error}",
+                    committed_qcs_path.display()
+                )
+            })?;
+            let Some(height) = qc_height_from_json(&value) else {
+                return Err(format!(
+                    "committed QC entry in {} has no height",
+                    committed_qcs_path.display()
+                ));
+            };
+            if height > snapshot_height {
+                continue;
+            }
+            if height == snapshot_height {
+                found_snapshot_qc = true;
+            }
+            writeln!(tmp, "{line}")
+                .map_err(|error| format!("write {}: {error}", tmp_path.display()))?;
+            kept += 1;
+        }
+        tmp.flush()
+            .map_err(|error| format!("flush {}: {error}", tmp_path.display()))?;
+        if kept == 0 || !found_snapshot_qc {
+            return Err(format!(
+                "committed_qcs.jsonl has no committed QC at snapshot height {snapshot_height}"
+            ));
+        }
+        fs::rename(&tmp_path, &committed_qcs_path).map_err(|error| {
+            format!(
+                "replace constrained {} with {}: {error}",
+                committed_qcs_path.display(),
+                tmp_path.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+fn snapshot_metadata_consistency_report(
+    signed: &SignedSnapshotManifest,
+    snapshot_root: &Path,
+) -> Result<Value, String> {
+    let snapshot_height = signed.manifest.snapshot_height;
+    let canonical_path = snapshot_root.join("canonical_locks.json");
+    let canonical_max_height = if canonical_path.is_file() {
+        let value: Value = serde_json::from_slice(&fs::read(&canonical_path).map_err(|error| {
+            format!(
+                "read {} for consistency check: {error}",
+                canonical_path.display()
+            )
+        })?)
+        .map_err(|error| format!("parse {}: {error}", canonical_path.display()))?;
+        let object = value
+            .as_object()
+            .ok_or_else(|| format!("{} must be a JSON object", canonical_path.display()))?;
+        let max_height = object
+            .keys()
+            .filter_map(|height| height.parse::<u64>().ok())
+            .max()
+            .ok_or_else(|| format!("{} has no canonical lock entries", canonical_path.display()))?;
+        if max_height > snapshot_height {
+            return Err(format!(
+                "snapshot canonical lock height {max_height} is above manifest snapshot height {snapshot_height}"
+            ));
+        }
+        if !object.contains_key(&snapshot_height.to_string()) {
+            return Err(format!(
+                "snapshot canonical_locks.json has no canonical lock at manifest height {snapshot_height}"
+            ));
+        }
+        Some(max_height)
+    } else {
+        None
+    };
+
+    let committed_qcs_path = snapshot_root.join("committed_qcs.jsonl");
+    let mut committed_qc_max_height: Option<u64> = None;
+    let mut committed_qc_has_snapshot_height = false;
+    if committed_qcs_path.is_file() {
+        let file = fs::File::open(&committed_qcs_path)
+            .map_err(|error| format!("open {}: {error}", committed_qcs_path.display()))?;
+        for line in BufReader::new(file).lines() {
+            let line =
+                line.map_err(|error| format!("read {}: {error}", committed_qcs_path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let value = serde_json::from_str::<Value>(&line).map_err(|error| {
+                format!(
+                    "parse committed QC in {}: {error}",
+                    committed_qcs_path.display()
+                )
+            })?;
+            let Some(height) = qc_height_from_json(&value) else {
+                return Err(format!(
+                    "committed QC entry in {} has no height",
+                    committed_qcs_path.display()
+                ));
+            };
+            if height > snapshot_height {
+                return Err(format!(
+                    "snapshot committed QC height {height} is above manifest snapshot height {snapshot_height}"
+                ));
+            }
+            if height == snapshot_height {
+                committed_qc_has_snapshot_height = true;
+            }
+            committed_qc_max_height =
+                Some(committed_qc_max_height.map_or(height, |max| max.max(height)));
+        }
+        if !committed_qc_has_snapshot_height {
+            return Err(format!(
+                "snapshot committed_qcs.jsonl has no committed QC at manifest height {snapshot_height}"
+            ));
+        }
+    }
+
+    Ok(json!({
+        "snapshot_metadata_consistent": true,
+        "snapshot_height": snapshot_height,
+        "canonical_lock_max_height": canonical_max_height,
+        "committed_qc_max_height": committed_qc_max_height,
+    }))
 }
 
 fn enforce_snapshot_retention(snapshot_root: &Path, retain_last: usize) -> Result<(), String> {
@@ -1866,7 +2074,7 @@ pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Va
             snapshot_dir.display()
         )
     })?;
-    copy_snapshot_state_files(&data_dir, &snapshot_dir)?;
+    copy_snapshot_state_files(&data_dir, &snapshot_dir, snapshot_height)?;
 
     let mut signer = AegisPqvmSigner::initialize_required().map_err(|error| error.to_string())?;
     let signer_uma = format!(
@@ -1939,6 +2147,9 @@ pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Va
             verification.errors.join("; ")
         ));
     }
+    snapshot_metadata_consistency_report(&signed, &snapshot_dir).map_err(|error| {
+        format!("created snapshot failed materialized-state consistency: {error}")
+    })?;
     enforce_snapshot_retention(
         &snapshot_root,
         SnapshotSchedule::launch_default().retain_last,
@@ -1984,7 +2195,28 @@ pub fn verify_snapshot(manifest_path: &str, snapshot_root: Option<&str>) -> Resu
         &SnapshotVerificationPolicy::default(),
         Some(&snapshot_root),
     );
-    Ok(json!(report))
+    let mut value = serde_json::to_value(&report)
+        .map_err(|error| format!("serialize snapshot verification report: {error}"))?;
+    if report.success {
+        match snapshot_metadata_consistency_report(&signed, &snapshot_root) {
+            Ok(consistency) => {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("materialized_state".to_string(), consistency);
+                }
+            }
+            Err(error) => {
+                if let Some(object) = value.as_object_mut() {
+                    object.insert("success".to_string(), Value::Bool(false));
+                    object.insert("fail_closed".to_string(), Value::Bool(true));
+                    object.insert(
+                        "errors".to_string(),
+                        Value::Array(vec![Value::String(error)]),
+                    );
+                }
+            }
+        }
+    }
+    Ok(value)
 }
 
 pub fn self_heal_from_snapshot(
@@ -2006,6 +2238,15 @@ pub fn self_heal_from_snapshot(
                 .unwrap_or_else(|| "unknown-validator".to_string()),
             RealignmentState::Quarantined,
             "snapshot verification failed; self-heal remains quarantined",
+            "data/self-heal-evidence"
+        )));
+    }
+    if let Err(error) = snapshot_metadata_consistency_report(&signed, &snapshot_root) {
+        return Ok(json!(fail_closed_mutation_response(
+            crate::config::resolve_runtime_validator_address()
+                .unwrap_or_else(|| "unknown-validator".to_string()),
+            RealignmentState::Quarantined,
+            format!("snapshot materialized-state consistency failed: {error}"),
             "data/self-heal-evidence"
         )));
     }
@@ -2721,9 +2962,10 @@ mod tests {
         copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
         quarantine_status, quarantine_stopped_validator_with_options, read_block_at_height,
         read_latest_block_summary, rejoin_eligibility, request_rejoin_with_options,
-        self_heal_from_snapshot, shadow_status, start_shadow_observe_with_options,
-        sync_from_canonical_peer_with_options, CreateSnapshotOptions, OperatorQuarantineOptions,
-        RejoinRequestOptions, StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
+        self_heal_from_snapshot, shadow_status, snapshot_metadata_consistency_report,
+        start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
+        CreateSnapshotOptions, OperatorQuarantineOptions, RejoinRequestOptions,
+        StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
         DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
@@ -2859,11 +3101,28 @@ mod tests {
         .expect("snapshot chain should be written");
         fs::write(
             snapshot_root.join("canonical_locks.json"),
-            b"snapshot-locks",
+            serde_json::to_vec(&json!({
+                "100": {
+                    "height": 100,
+                    "hash": "snapshot-block-hash"
+                }
+            }))
+            .expect("snapshot lock should serialize"),
         )
         .expect("snapshot locks should be written");
-        fs::write(snapshot_root.join("committed_qcs.jsonl"), b"snapshot-qcs")
-            .expect("snapshot QCs should be written");
+        fs::write(
+            snapshot_root.join("committed_qcs.jsonl"),
+            serde_json::to_string(&json!({
+                "block_hash": "snapshot-qc-hash",
+                "qc": {
+                    "block_hash": "snapshot-qc-hash",
+                    "votes": [{"block_index": 100}]
+                }
+            }))
+            .expect("snapshot QC should serialize")
+                + "\n",
+        )
+        .expect("snapshot QCs should be written");
 
         let mut signer = AegisPqvmSigner::initialize_required().expect("test signer should init");
         let key_id = signer
@@ -3161,13 +3420,17 @@ mod tests {
         let root = test_runtime_root("snapshot-copy");
         let data_dir = root.join("data");
         fs::write(data_dir.join("chain.json"), b"chain").unwrap();
-        fs::write(data_dir.join("canonical_locks.json"), b"locks").unwrap();
+        fs::write(
+            data_dir.join("canonical_locks.json"),
+            json!({"10": {"height": 10, "hash": "h10"}}).to_string(),
+        )
+        .unwrap();
         fs::write(data_dir.join("validator.key"), b"secret").unwrap();
         fs::write(data_dir.join("node.env"), b"SECRET=value").unwrap();
         fs::write(data_dir.join("runtime.bin"), b"binary").unwrap();
         let snapshot_dir = root.join("snapshot");
 
-        let copied = copy_snapshot_state_files(&data_dir, &snapshot_dir).unwrap();
+        let copied = copy_snapshot_state_files(&data_dir, &snapshot_dir, 10).unwrap();
 
         assert_eq!(copied, 2);
         assert!(snapshot_dir.join("chain.json").exists());
@@ -3175,6 +3438,66 @@ mod tests {
         assert!(!snapshot_dir.join("validator.key").exists());
         assert!(!snapshot_dir.join("node.env").exists());
         assert!(!snapshot_dir.join("runtime.bin").exists());
+    }
+
+    #[test]
+    fn snapshot_copy_truncates_canonical_locks_and_committed_qcs_to_snapshot_height() {
+        let root = test_runtime_root("snapshot-copy-truncates-metadata");
+        let data_dir = root.join("data");
+        fs::write(data_dir.join("chain.json"), b"chain").unwrap();
+        fs::write(
+            data_dir.join("canonical_locks.json"),
+            json!({
+                "10": {"height": 10, "hash": "h10"},
+                "11": {"height": 11, "hash": "h11"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            data_dir.join("committed_qcs.jsonl"),
+            [
+                json!({"qc": {"votes": [{"block_index": 10}], "block_hash": "h10"}}).to_string(),
+                json!({"qc": {"votes": [{"block_index": 11}], "block_hash": "h11"}}).to_string(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let snapshot_dir = root.join("snapshot");
+
+        copy_snapshot_state_files(&data_dir, &snapshot_dir, 10).unwrap();
+
+        let locks: Value =
+            serde_json::from_slice(&fs::read(snapshot_dir.join("canonical_locks.json")).unwrap())
+                .unwrap();
+        assert!(locks.get("10").is_some());
+        assert!(locks.get("11").is_none());
+        let qcs = fs::read_to_string(snapshot_dir.join("committed_qcs.jsonl")).unwrap();
+        assert!(qcs.contains("h10"));
+        assert!(!qcs.contains("h11"));
+    }
+
+    #[test]
+    fn snapshot_metadata_consistency_rejects_lock_above_manifest_height() {
+        let root = test_runtime_root("snapshot-metadata-rejects-lock-ahead");
+        let (snapshot_root, manifest_path) = write_valid_signed_snapshot(&root);
+        let mut signed = super::read_signed_snapshot_manifest(&manifest_path).unwrap();
+        let mut locks: Value =
+            serde_json::from_slice(&fs::read(snapshot_root.join("canonical_locks.json")).unwrap())
+                .unwrap();
+        locks["101"] = json!({"height": 101, "hash": "future-lock"});
+        fs::write(
+            snapshot_root.join("canonical_locks.json"),
+            serde_json::to_vec(&locks).unwrap(),
+        )
+        .unwrap();
+        signed.manifest.snapshot_height = 100;
+
+        let error = snapshot_metadata_consistency_report(&signed, &snapshot_root)
+            .expect_err("metadata above manifest height must fail closed");
+
+        assert!(error.contains("above manifest snapshot height"));
     }
 
     #[test]
