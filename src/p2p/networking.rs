@@ -1195,6 +1195,18 @@ fn handle_status_message(
         let chain = blockchain.lock().unwrap();
         chain.last().map(|block| block.block_index).unwrap_or(0)
     };
+    if quarantined || consensus_duties_disabled {
+        debug!(
+            "p2p",
+            "Skipping block sync request to duty-disabled peer",
+            "peer" => peer_address.to_string(),
+            "reported_height" => block_height,
+            "quarantined" => quarantined,
+            "consensus_duties_disabled" => consensus_duties_disabled,
+            "recovery_state" => recovery_state.clone().unwrap_or_default()
+        );
+        return;
+    }
     if let Some(batch) = status_sync_batch(block_height, local_height) {
         let Some((request_start, request_count)) =
             block_sync_request_range(local_height, block_height, batch)
@@ -1607,13 +1619,7 @@ fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
         .map(|peers| {
             peers
                 .values()
-                .filter(|peer| {
-                    peer.validator_address
-                        .as_deref()
-                        .map(|value| !value.trim().is_empty())
-                        .unwrap_or(false)
-                        && peer_has_remote_status(peer)
-                })
+                .filter(|peer| peer_is_active_validator_sync_source(peer))
                 .map(|peer| peer.last_known_height)
                 .max()
                 .unwrap_or(0)
@@ -1621,10 +1627,22 @@ fn best_connected_validator_height(connected_peers: &PeersArc) -> u64 {
         .unwrap_or(0)
 }
 
+fn peer_is_active_validator_sync_source(peer: &PeerConnection) -> bool {
+    peer.validator_address
+        .as_deref()
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+        && peer_has_remote_status(peer)
+        && !peer.quarantined
+        && !peer.consensus_duties_disabled
+}
+
 fn select_block_sync_targets(peers: &PeerMap, max_targets: usize) -> Vec<String> {
     let mut candidates = peers
         .iter()
-        .filter(|(_, peer)| peer.stream.is_some())
+        .filter(|(_, peer)| {
+            peer.stream.is_some() && !peer.quarantined && !peer.consensus_duties_disabled
+        })
         .map(|(address, peer)| {
             let has_validator_identity = peer
                 .validator_address
@@ -1664,26 +1682,15 @@ fn best_connected_validator_height_with_support(
     connected_peers
         .lock()
         .map(|peers| {
-            let mut support_by_tip = HashMap::<(u64, String), usize>::new();
-
-            for peer in peers.values().filter(|peer| {
-                peer.validator_address
-                    .as_deref()
-                    .map(|value| !value.trim().is_empty())
-                    .unwrap_or(false)
-                    && peer_has_remote_status(peer)
-                    && !peer.best_block_hash.trim().is_empty()
-            }) {
-                *support_by_tip
-                    .entry((peer.last_known_height, peer.best_block_hash.clone()))
-                    .or_insert(0) += 1;
-            }
-
-            support_by_tip
-                .into_iter()
-                .filter(|(_, support)| *support >= min_support)
-                .map(|((height, _hash), _support)| height)
-                .max()
+            let mut active_heights = peers
+                .values()
+                .filter(|peer| peer_is_active_validator_sync_source(peer))
+                .map(|peer| peer.last_known_height)
+                .collect::<Vec<_>>();
+            active_heights.sort_unstable_by(|left, right| right.cmp(left));
+            active_heights
+                .get(min_support.saturating_sub(1))
+                .copied()
                 .unwrap_or(0)
         })
         .unwrap_or(0)
@@ -7969,6 +7976,57 @@ mod tests {
         assert_eq!(
             super::best_connected_validator_height_with_support(&connected_peers, 2),
             12
+        );
+    }
+
+    #[test]
+    fn best_connected_validator_height_with_support_uses_supported_moving_head_floor() {
+        let mut peers = HashMap::new();
+        for (peer_id, validator, height) in [
+            ("peer-a", "synv1peer-a", 105),
+            ("peer-b", "synv1peer-b", 104),
+            ("peer-c", "synv1peer-c", 103),
+            ("peer-d", "synv1peer-d", 101),
+        ] {
+            let mut peer = test_peer_with_validator_address(Some(validator));
+            peer.address = peer_id.to_string();
+            peer.last_known_height = height;
+            peer.best_block_hash = format!("hash-{height}");
+            peer.status_received_at = Some(1);
+            peers.insert(peer_id.to_string(), peer);
+        }
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        assert_eq!(
+            super::best_connected_validator_height_with_support(&connected_peers, 3),
+            103
+        );
+    }
+
+    #[test]
+    fn best_connected_validator_height_with_support_excludes_quarantined_sources() {
+        let mut peers = HashMap::new();
+        for (peer_id, validator, height, quarantined, duty_disabled) in [
+            ("peer-a", "synv1peer-a", 200, true, true),
+            ("peer-b", "synv1peer-b", 180, false, true),
+            ("peer-c", "synv1peer-c", 100, false, false),
+            ("peer-d", "synv1peer-d", 99, false, false),
+            ("peer-e", "synv1peer-e", 98, false, false),
+        ] {
+            let mut peer = test_peer_with_validator_address(Some(validator));
+            peer.address = peer_id.to_string();
+            peer.last_known_height = height;
+            peer.best_block_hash = format!("hash-{height}");
+            peer.status_received_at = Some(1);
+            peer.quarantined = quarantined;
+            peer.consensus_duties_disabled = duty_disabled;
+            peers.insert(peer_id.to_string(), peer);
+        }
+
+        let connected_peers = Arc::new(Mutex::new(peers));
+        assert_eq!(
+            super::best_connected_validator_height_with_support(&connected_peers, 3),
+            98
         );
     }
 

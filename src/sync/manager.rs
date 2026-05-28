@@ -102,6 +102,8 @@ pub struct PeerInfo {
     pub block_height: u64,
     pub best_block_hash: String,
     pub genesis_hash: String,
+    pub quarantined: bool,
+    pub consensus_duties_disabled: bool,
 }
 
 /// Represents a requested range that should be downloaded/applied.
@@ -173,8 +175,25 @@ impl SyncManager {
                 block_height: snap.block_height,
                 best_block_hash: snap.best_block_hash,
                 genesis_hash: snap.genesis_hash,
+                quarantined: snap.quarantined,
+                consensus_duties_disabled: snap.consensus_duties_disabled,
             })
             .collect();
+    }
+
+    fn peer_is_eligible_sync_source(&self, peer: &PeerInfo, local_genesis: &str) -> bool {
+        !peer.quarantined
+            && !peer.consensus_duties_disabled
+            && (local_genesis.is_empty() || peer.genesis_hash == local_genesis)
+    }
+
+    fn eligible_network_height(&self, local_genesis: &str) -> u64 {
+        self.peers
+            .iter()
+            .filter(|peer| self.peer_is_eligible_sync_source(peer, local_genesis))
+            .map(|peer| peer.block_height)
+            .max()
+            .unwrap_or(0)
     }
 
     fn await_peer_snapshots(&self, timeout: Duration) -> Vec<PeerSnapshot> {
@@ -216,13 +235,7 @@ impl SyncManager {
         let mut candidates: Vec<&PeerInfo> = self
             .peers
             .iter()
-            .filter(|peer| {
-                if local_genesis.is_empty() {
-                    true
-                } else {
-                    peer.genesis_hash == local_genesis
-                }
-            })
+            .filter(|peer| self.peer_is_eligible_sync_source(peer, &local_genesis))
             .collect();
         candidates.sort_by(|a, b| b.block_height.cmp(&a.block_height));
         candidates.first().map(|peer| peer.address.clone())
@@ -243,17 +256,7 @@ impl SyncManager {
             .and_then(|chain| chain.get_genesis_hash())
             .unwrap_or_default();
 
-        let eligible = self.peers.iter().filter(|peer| {
-            if local_genesis.is_empty() {
-                true
-            } else {
-                peer.genesis_hash == local_genesis
-            }
-        });
-
-        let max_height = eligible.map(|peer| peer.block_height).max().unwrap_or(0);
-
-        Ok(max_height)
+        Ok(self.eligible_network_height(&local_genesis))
     }
 
     pub fn start_sync(&mut self) -> Result<(), SyncError> {
@@ -436,11 +439,36 @@ fn sync_progress_overlap(batch_size: u64) -> u64 {
 mod tests {
     use super::*;
 
+    fn peer(address: &str, height: u64, quarantined: bool, duty_disabled: bool) -> PeerInfo {
+        PeerInfo {
+            address: address.to_string(),
+            block_height: height,
+            best_block_hash: format!("hash-{height}"),
+            genesis_hash: String::new(),
+            quarantined,
+            consensus_duties_disabled: duty_disabled,
+        }
+    }
+
     #[test]
     fn sync_overlap_is_smaller_than_support_response_budget() {
         assert_eq!(sync_progress_overlap(0), 0);
         assert_eq!(sync_progress_overlap(1), 0);
         assert_eq!(sync_progress_overlap(2), 1);
         assert_eq!(sync_progress_overlap(64), SYNC_PROGRESS_OVERLAP);
+    }
+
+    #[test]
+    fn sync_peer_selection_rejects_quarantined_and_duty_disabled_sources() {
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+        let mut manager = SyncManager::new(blockchain);
+        manager.peers = vec![
+            peer("quarantined", 200, true, true),
+            peer("duty-disabled", 180, false, true),
+            peer("active", 100, false, false),
+        ];
+
+        assert_eq!(manager.select_sync_peer(), Some("active".to_string()));
+        assert_eq!(manager.eligible_network_height(""), 100);
     }
 }
