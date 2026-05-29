@@ -10,6 +10,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use crate::address::generate_cluster_address;
 use crate::block::BlockChain;
 use crate::consensus::chain_durability::recover_chain_and_validate_canonical;
+use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
 use crate::crypto::pqc::PQCManager;
 use crate::genesis::canonical_genesis;
@@ -24,6 +25,7 @@ use crate::validator::{
     INITIAL_VALIDATOR_SYNERGY_SCORE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
+use crate::warn;
 // Temporarily disabled for quick compile
 // use crate::aivm::AIVMRuntime;
 // use crate::aivm::runtime::{ContractType, AIVMExecutionContext};
@@ -559,6 +561,41 @@ pub fn prune_transaction_hashes_from_pool(confirmed_hashes: &HashSet<String>) ->
     let before = pool.len();
     pool.retain(|transaction| !confirmed_hashes.contains(&transaction.hash()));
     before.saturating_sub(pool.len())
+}
+
+fn prune_invalid_transactions_from_pool() -> usize {
+    let invalid_transactions = {
+        let pool = TX_POOL.lock().unwrap();
+        pool.iter()
+            .filter_map(|transaction| {
+                ProofOfSynergy::validate_transaction_for_mempool(transaction)
+                    .err()
+                    .map(|reason| (transaction.hash(), transaction.sender.clone(), reason))
+            })
+            .collect::<Vec<_>>()
+    };
+
+    if invalid_transactions.is_empty() {
+        return 0;
+    }
+
+    let invalid_hashes = invalid_transactions
+        .iter()
+        .map(|(tx_hash, _, _)| tx_hash.clone())
+        .collect::<HashSet<_>>();
+    let pruned = prune_transaction_hashes_from_pool(&invalid_hashes);
+
+    for (tx_hash, sender, reason) in invalid_transactions {
+        warn!(
+            "rpc",
+            "Pruned runtime-invalid transaction from mempool",
+            "tx_hash" => tx_hash,
+            "sender" => sender,
+            "reason" => reason
+        );
+    }
+
+    pruned
 }
 
 fn default_cluster_id(index: usize, active_validator_count: usize) -> Option<u64> {
@@ -1118,6 +1155,19 @@ fn submit_aegis_transaction_envelope(
                         }
                     };
                     let tx_hash = transaction.hash();
+                    if let Err(error) =
+                        ProofOfSynergy::validate_transaction_for_mempool(&transaction)
+                    {
+                        let pruned = prune_transaction_hashes_from_pool(&transaction_hashes(
+                            std::slice::from_ref(&transaction),
+                        ));
+                        return json!({
+                            "error": format!("Transaction failed runtime validation: {error}"),
+                            "tx_hash": tx_hash,
+                            "mempool_status": "rejected",
+                            "pruned_count": pruned,
+                        });
+                    }
                     {
                         let mut pool = tx_pool.lock().unwrap();
                         pool.push(transaction.clone());
@@ -1587,7 +1637,10 @@ fn handle_json_rpc(
                             crate::transaction::TransactionValidationResult {
                                 is_valid: true,
                                 ..
-                            } => {
+                            } => match ProofOfSynergy::validate_transaction_for_mempool(
+                                &normalized.transaction,
+                            ) {
+                                Ok(()) => {
                                 let mut pool = tx_pool.lock().unwrap();
                                 let tx_hash = normalized.transaction.hash();
                                 pool.push(normalized.transaction.clone());
@@ -1604,6 +1657,24 @@ fn handle_json_rpc(
                                     "message": "Transaction submitted"
                                 })
                             }
+                                Err(error) => {
+                                    let tx_hash = normalized.transaction.hash();
+                                    let pruned = prune_transaction_hashes_from_pool(
+                                        &transaction_hashes(std::slice::from_ref(
+                                            &normalized.transaction,
+                                        )),
+                                    );
+                                    json!({
+                                        "error": format!(
+                                            "Transaction failed runtime validation: {error}"
+                                        ),
+                                        "tx_hash": tx_hash,
+                                        "mempool_status": "rejected",
+                                        "policy_warnings": normalized.warnings,
+                                        "pruned_count": pruned,
+                                    })
+                                }
+                            },
                             crate::transaction::TransactionValidationResult {
                                 error_message: Some(msg),
                                 ..
@@ -3408,6 +3479,7 @@ fn handle_json_rpc(
                 .get(1)
                 .and_then(|v| v.as_str())
                 .unwrap_or("timestamp");
+            let _ = prune_invalid_transactions_from_pool();
 
             let pool = tx_pool.lock().unwrap();
             let mut txs: Vec<&Transaction> = pool.iter().collect();
@@ -6206,6 +6278,32 @@ fn block_to_explorer_json(block: &crate::block::Block) -> Value {
 mod tests {
     use super::*;
     use crate::block::{Block, BlockChain};
+    use crate::consensus::consensus_algorithm::ProofOfSynergy;
+    use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
+
+    fn admission_valid_but_runtime_invalid_transaction() -> Transaction {
+        let mut manager = PQCManager::new();
+        let (public_key, private_key) = manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test keypair should generate");
+        let sender = crate::address::generate_wallet_address(&hex::encode(&public_key.key_data));
+        let receiver = crate::address::generate_wallet_address(&hex::encode([7u8; 32]));
+        let mut transaction = Transaction::new(
+            sender,
+            receiver,
+            1,
+            0,
+            Vec::new(),
+            100,
+            21_000,
+            None,
+            "fndsa".to_string(),
+        );
+        transaction
+            .sign_with_public_key(&public_key, &private_key, &mut manager)
+            .expect("test transaction should sign");
+        transaction
+    }
 
     #[test]
     fn normalize_spec_transaction_envelope_maps_to_internal_transaction() {
@@ -6548,6 +6646,29 @@ mod tests {
         assert_eq!(remaining_hashes, vec![tx_b.hash()]);
 
         TX_POOL.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn prune_invalid_transactions_from_pool_removes_runtime_invalid_entries() {
+        let transaction = admission_valid_but_runtime_invalid_transaction();
+        assert!(
+            transaction.validate_for_admission().is_valid,
+            "transaction must pass ingress admission first"
+        );
+        assert_eq!(
+            ProofOfSynergy::validate_transaction_for_mempool(&transaction),
+            Err("sender public key is unavailable".to_string())
+        );
+
+        {
+            let mut pool = TX_POOL.lock().unwrap();
+            pool.clear();
+            pool.push(transaction);
+        }
+
+        let pruned = prune_invalid_transactions_from_pool();
+        assert_eq!(pruned, 1);
+        assert!(TX_POOL.lock().unwrap().is_empty());
     }
 
     #[test]

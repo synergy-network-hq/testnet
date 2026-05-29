@@ -1035,6 +1035,7 @@ impl ProofOfSynergy {
 
                         consensus_log!("Creating processed transactions vec...");
                         let mut processed_transactions = Vec::new();
+                        let mut rejected_transaction_hashes = HashSet::new();
 
                         consensus_log!("Processing {} transactions...", transactions.len());
                         // Process transactions with full validation
@@ -1044,11 +1045,22 @@ impl ProofOfSynergy {
 
                                 // Update wallet nonce
                             } else {
+                                rejected_transaction_hashes.insert(tx.hash());
                                 println!(
                                     "❌ Invalid transaction from {}: failed validation",
                                     tx.sender
                                 );
                             }
+                        }
+                        if !rejected_transaction_hashes.is_empty() {
+                            let pruned_rejected_transactions =
+                                prune_transaction_hashes_from_pool(&rejected_transaction_hashes);
+                            warn!(
+                                "consensus",
+                                "Pruned consensus-rejected transactions from pool",
+                                "rejected_count" => rejected_transaction_hashes.len() as u64,
+                                "pruned_count" => pruned_rejected_transactions as u64
+                            );
                         }
 
                         consensus_log!(
@@ -2827,42 +2839,50 @@ impl ProofOfSynergy {
             .max(6)
     }
 
+    pub(crate) fn validate_transaction_for_mempool(
+        tx: &crate::transaction::Transaction,
+    ) -> Result<(), String> {
+        let pqc_manager = Arc::new(Mutex::new(PQCManager::new()));
+        Self::validate_transaction_detailed(tx, &pqc_manager)
+    }
+
     fn validate_transaction(
         tx: &crate::transaction::Transaction,
         pqc_manager: &Arc<Mutex<PQCManager>>,
     ) -> bool {
+        match Self::validate_transaction_detailed(tx, pqc_manager) {
+            Ok(()) => true,
+            Err(reason) => {
+                warn!(
+                    "consensus",
+                    "Rejecting transaction during consensus validation",
+                    "tx_hash" => tx.hash(),
+                    "sender" => tx.sender.clone(),
+                    "reason" => reason
+                );
+                false
+            }
+        }
+    }
+
+    fn validate_transaction_detailed(
+        tx: &crate::transaction::Transaction,
+        pqc_manager: &Arc<Mutex<PQCManager>>,
+    ) -> Result<(), String> {
         if !crate::address::is_valid_address(&tx.sender) {
-            warn!(
-                "consensus",
-                "Rejecting transaction with invalid sender address",
-                "tx_hash" => tx.hash(),
-                "sender" => tx.sender.clone()
-            );
-            return false;
+            return Err("invalid sender address".to_string());
         }
 
         if !tx.receiver.trim().is_empty()
             && !tx.receiver.starts_with("contract_")
             && !crate::address::is_valid_address(&tx.receiver)
         {
-            warn!(
-                "consensus",
-                "Rejecting transaction with invalid receiver address",
-                "tx_hash" => tx.hash(),
-                "receiver" => tx.receiver.clone()
-            );
-            return false;
+            return Err("invalid receiver address".to_string());
         }
 
         if let Some(validator) = staking_validator_address(tx) {
             if !crate::address::is_valid_address(&validator) {
-                warn!(
-                    "consensus",
-                    "Rejecting staking transaction with invalid validator address",
-                    "tx_hash" => tx.hash(),
-                    "validator" => validator
-                );
-                return false;
+                return Err(format!("invalid staking validator address: {validator}"));
             }
         }
 
@@ -2872,20 +2892,20 @@ impl ProofOfSynergy {
         if crate::aegis_tx_tool::is_legacy_aegis_carrier_transaction(tx) {
             if let Err(error) = crate::aegis_tx_tool::validate_legacy_aegis_carrier_transaction(tx)
             {
-                warn!(
-                    "consensus",
-                    "Rejecting Aegis PQVM transaction carrier",
-                    "tx_hash" => tx.hash(),
-                    "error" => error
-                );
-                return false;
+                return Err(format!(
+                    "Aegis PQVM transaction carrier validation failed: {error}"
+                ));
             }
         } else if let Some(public_key) = Self::get_transaction_public_key(&tx.sender) {
             let pqc = pqc_manager.lock().unwrap();
             // Use raw_hash() for signature verification (without prefix)
             let message_bytes = match hex::decode(tx.raw_hash()) {
                 Ok(bytes) => bytes,
-                Err(_) => return false,
+                Err(error) => {
+                    return Err(format!(
+                        "transaction raw hash decode failed during signature verification: {error}"
+                    ))
+                }
             };
 
             let signature_obj = crate::crypto::pqc::PQCSignature {
@@ -2901,22 +2921,19 @@ impl ProofOfSynergy {
                 .unwrap_or(false);
 
             if !signature_valid {
-                return false;
+                return Err("transaction signature verification failed".to_string());
             }
         } else {
-            warn!(
-                "consensus",
-                "Rejecting transaction because sender public key is unavailable",
-                "sender" => tx.sender.clone()
-            );
-            return false;
+            return Err("sender public key is unavailable".to_string());
         }
 
         // 2. Verify sender balance via token manager to reflect on-chain state
         let token_manager = TOKEN_MANAGER.clone();
         let required = snrg_balance_required_for_transaction(tx);
         if token_manager.get_balance(&tx.sender, "SNRG") < required {
-            return false;
+            return Err(format!(
+                "insufficient SNRG balance for transaction; required {required}"
+            ));
         }
 
         // 3. Verify nonce using wallet manager metadata when available
@@ -2924,7 +2941,10 @@ impl ProofOfSynergy {
             if let Some(wallet) = wallet_manager.get_wallet(&tx.sender) {
                 let expected_nonce = wallet.nonce.saturating_sub(1);
                 if tx.nonce != expected_nonce {
-                    return false;
+                    return Err(format!(
+                        "invalid nonce; expected {expected_nonce}, got {}",
+                        tx.nonce
+                    ));
                 }
             }
         }
@@ -2936,7 +2956,7 @@ impl ProofOfSynergy {
             // For now, assume valid
         }
 
-        true
+        Ok(())
     }
 
     fn update_synergy_scores(
