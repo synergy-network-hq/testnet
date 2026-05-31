@@ -48,6 +48,7 @@ type PeersArc = Arc<Mutex<PeerMap>>;
 type DialTargetsArc = Arc<Mutex<Vec<String>>>;
 type PeerStateCacheArc = Arc<Mutex<HashMap<String, CachedPeerState>>>;
 type DialRegistryArc = Arc<Mutex<HashMap<String, DialReservation>>>;
+type PeerMessage = (String, Option<PeerSessionIdentity>, NetworkMessage);
 
 #[cfg(test)]
 const DEFAULT_BOOTSTRAP_REFRESH_SECS: u64 = 10;
@@ -123,8 +124,8 @@ pub struct P2PNetwork {
     discovered_dial_targets: DialTargetsArc,
     outbound_dial_registry: DialRegistryArc,
     is_running: Arc<Mutex<bool>>,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
-    message_receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
+    message_sender: mpsc::Sender<PeerMessage>,
+    message_receiver: Arc<Mutex<mpsc::Receiver<PeerMessage>>>,
 }
 
 struct PeerConnection {
@@ -175,8 +176,58 @@ struct CachedPeerState {
     connected_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PeerSessionIdentity {
+    local_address: String,
+    remote_address: String,
+}
+
+fn peer_session_identity(stream: &TcpStream) -> io::Result<PeerSessionIdentity> {
+    Ok(PeerSessionIdentity {
+        local_address: stream.local_addr()?.to_string(),
+        remote_address: stream.peer_addr()?.to_string(),
+    })
+}
+
+fn peer_connection_session_identity(peer: &PeerConnection) -> Option<PeerSessionIdentity> {
+    peer.stream
+        .as_ref()
+        .and_then(|stream| peer_session_identity(stream).ok())
+}
+
+fn peer_entry_matches_session(
+    peers: &PeerMap,
+    peer_address: &str,
+    session_identity: &PeerSessionIdentity,
+) -> bool {
+    peers
+        .get(peer_address)
+        .and_then(peer_connection_session_identity)
+        .as_ref()
+        == Some(session_identity)
+}
+
+fn queued_peer_message_session_is_current(
+    peers: &PeerMap,
+    peer_address: &str,
+    session_identity: Option<&PeerSessionIdentity>,
+) -> bool {
+    session_identity
+        .map(|identity| peer_entry_matches_session(peers, peer_address, identity))
+        .unwrap_or(true)
+}
+
+fn insert_peer_entry(peers: &mut PeerMap, peer_address: String, peer: PeerConnection) {
+    if let Some(mut replaced) = peers.insert(peer_address, peer) {
+        if let Some(stream) = replaced.stream.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+    }
+}
+
 struct PeerEntryGuard {
     peer_address: String,
+    session_identity: Option<PeerSessionIdentity>,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
 }
@@ -184,11 +235,13 @@ struct PeerEntryGuard {
 impl PeerEntryGuard {
     fn new(
         peer_address: String,
+        session_identity: Option<PeerSessionIdentity>,
         connected_peers: PeersArc,
         peer_state_cache: PeerStateCacheArc,
     ) -> Self {
         Self {
             peer_address,
+            session_identity,
             connected_peers,
             peer_state_cache,
         }
@@ -198,9 +251,19 @@ impl PeerEntryGuard {
 impl Drop for PeerEntryGuard {
     fn drop(&mut self) {
         if let Ok(mut peers) = self.connected_peers.lock() {
-            if peers.contains_key(&self.peer_address) {
+            let owns_peer_entry = peers
+                .get(&self.peer_address)
+                .map(|peer| peer_connection_session_identity(peer) == self.session_identity)
+                .unwrap_or(false);
+            if owns_peer_entry {
                 disconnect_peer_entry(&self.peer_state_cache, &mut peers, &self.peer_address);
                 info!("p2p", "Peer disconnected", "peer" => self.peer_address.clone());
+            } else if peers.contains_key(&self.peer_address) {
+                debug!(
+                    "p2p",
+                    "Stale peer handler preserving newer replacement session",
+                    "peer" => self.peer_address.clone()
+                );
             }
         }
     }
@@ -2777,7 +2840,7 @@ fn start_listener(
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     config: NodeConfig,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
+    message_sender: mpsc::Sender<PeerMessage>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind(listen_address)?;
     info!("p2p", "P2P listener bound", "listen_address" => listen_address.to_string());
@@ -3734,13 +3797,14 @@ fn dispatch_peer_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
     peer_state_cache: &PeerStateCacheArc,
-    message_sender: &mpsc::Sender<(String, NetworkMessage)>,
+    message_sender: &mpsc::Sender<PeerMessage>,
     config: &NodeConfig,
     peer_address: &str,
+    session_identity: Option<&PeerSessionIdentity>,
     message: NetworkMessage,
-) -> Result<(), mpsc::SendError<(String, NetworkMessage)>> {
+) -> Result<(), mpsc::SendError<PeerMessage>> {
     if !bypasses_shared_message_queue(&message) {
-        return message_sender.send((peer_address.to_string(), message));
+        return message_sender.send((peer_address.to_string(), session_identity.cloned(), message));
     }
 
     match message {
@@ -3889,18 +3953,20 @@ fn handle_incoming_connection(
     blockchain: BlockchainArc,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
+    message_sender: mpsc::Sender<PeerMessage>,
     config: NodeConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
+    let session_identity = peer_session_identity(writer.get_ref())?;
     let previous_write_timeout = enable_initial_peer_handshake_write_timeout(writer.get_ref())?;
 
     // Add peer to connected peers
     {
         let mut peers = connected_peers.lock().unwrap();
-        peers.insert(
+        insert_peer_entry(
+            &mut peers,
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
@@ -3929,6 +3995,7 @@ fn handle_incoming_connection(
     }
     let _peer_entry_guard = PeerEntryGuard::new(
         peer_address.clone(),
+        Some(session_identity.clone()),
         Arc::clone(&connected_peers),
         Arc::clone(&peer_state_cache),
     );
@@ -3954,6 +4021,13 @@ fn handle_incoming_connection(
 
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
+    if !peer_entry_matches_session(
+        &connected_peers.lock().unwrap(),
+        &peer_address,
+        &session_identity,
+    ) {
+        return Ok(());
+    }
     dispatch_peer_message(
         &blockchain,
         &connected_peers,
@@ -3961,6 +4035,7 @@ fn handle_incoming_connection(
         &message_sender,
         &config,
         &peer_address,
+        Some(&session_identity),
         initial_handshake,
     )
     .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "P2P message handler stopped"))?;
@@ -3970,11 +4045,20 @@ fn handle_incoming_connection(
         match receive_message(&mut reader) {
             Ok(message) => {
                 // Update last seen
-                {
+                let owns_peer_entry = {
                     let mut peers = connected_peers.lock().unwrap();
-                    if let Some(peer) = peers.get_mut(&peer_address) {
+                    if peer_entry_matches_session(&peers, &peer_address, &session_identity) {
+                        let peer = peers
+                            .get_mut(&peer_address)
+                            .expect("matched peer session should still exist");
                         peer.last_seen = current_timestamp();
+                        true
+                    } else {
+                        false
                     }
+                };
+                if !owns_peer_entry {
+                    break;
                 }
 
                 if let Err(_) = dispatch_peer_message(
@@ -3984,6 +4068,7 @@ fn handle_incoming_connection(
                     &message_sender,
                     &config,
                     &peer_address,
+                    Some(&session_identity),
                     message,
                 ) {
                     break;
@@ -4006,18 +4091,20 @@ fn handle_outgoing_connection(
     blockchain: BlockchainArc,
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
+    message_sender: mpsc::Sender<PeerMessage>,
     config: NodeConfig,
 ) -> Result<(), Box<dyn std::error::Error>> {
     configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
+    let session_identity = peer_session_identity(writer.get_ref())?;
     let previous_write_timeout = enable_initial_peer_handshake_write_timeout(writer.get_ref())?;
 
     // Add peer to connected peers
     {
         let mut peers = connected_peers.lock().unwrap();
-        peers.insert(
+        insert_peer_entry(
+            &mut peers,
             peer_address.clone(),
             PeerConnection {
                 address: peer_address.clone(),
@@ -4046,6 +4133,7 @@ fn handle_outgoing_connection(
     }
     let _peer_entry_guard = PeerEntryGuard::new(
         peer_address.clone(),
+        Some(session_identity.clone()),
         Arc::clone(&connected_peers),
         Arc::clone(&peer_state_cache),
     );
@@ -4071,6 +4159,13 @@ fn handle_outgoing_connection(
 
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
+    if !peer_entry_matches_session(
+        &connected_peers.lock().unwrap(),
+        &peer_address,
+        &session_identity,
+    ) {
+        return Ok(());
+    }
     dispatch_peer_message(
         &blockchain,
         &connected_peers,
@@ -4078,6 +4173,7 @@ fn handle_outgoing_connection(
         &message_sender,
         &config,
         &peer_address,
+        Some(&session_identity),
         initial_handshake,
     )
     .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "P2P message handler stopped"))?;
@@ -4087,11 +4183,20 @@ fn handle_outgoing_connection(
         match receive_message(&mut reader) {
             Ok(message) => {
                 // Update last seen
-                {
+                let owns_peer_entry = {
                     let mut peers = connected_peers.lock().unwrap();
-                    if let Some(peer) = peers.get_mut(&peer_address) {
+                    if peer_entry_matches_session(&peers, &peer_address, &session_identity) {
+                        let peer = peers
+                            .get_mut(&peer_address)
+                            .expect("matched peer session should still exist");
                         peer.last_seen = current_timestamp();
+                        true
+                    } else {
+                        false
                     }
+                };
+                if !owns_peer_entry {
+                    break;
                 }
 
                 if let Err(_) = dispatch_peer_message(
@@ -4101,6 +4206,7 @@ fn handle_outgoing_connection(
                     &message_sender,
                     &config,
                     &peer_address,
+                    Some(&session_identity),
                     message,
                 ) {
                     break;
@@ -4123,15 +4229,27 @@ fn handle_messages(
     peer_state_cache: PeerStateCacheArc,
     discovered_dial_targets: DialTargetsArc,
     dial_registry: DialRegistryArc,
-    receiver: Arc<Mutex<mpsc::Receiver<(String, NetworkMessage)>>>,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
+    receiver: Arc<Mutex<mpsc::Receiver<PeerMessage>>>,
+    message_sender: mpsc::Sender<PeerMessage>,
     config: NodeConfig,
 ) {
     loop {
         let receiver = receiver.lock().unwrap();
         match receiver.recv() {
-            Ok((peer_address, message)) => {
+            Ok((peer_address, session_identity, message)) => {
                 drop(receiver); // Release lock before processing
+                if !queued_peer_message_session_is_current(
+                    &connected_peers.lock().unwrap(),
+                    &peer_address,
+                    session_identity.as_ref(),
+                ) {
+                    debug!(
+                        "p2p",
+                        "Dropping queued message from stale peer session",
+                        "peer" => peer_address.clone()
+                    );
+                    continue;
+                }
 
                 match message {
                     NetworkMessage::Handshake {
@@ -5979,7 +6097,7 @@ fn dial_peer_async(
     connected_peers: PeersArc,
     peer_state_cache: PeerStateCacheArc,
     dial_registry: DialRegistryArc,
-    message_sender: mpsc::Sender<(String, NetworkMessage)>,
+    message_sender: mpsc::Sender<PeerMessage>,
     config: NodeConfig,
 ) -> Result<(), ()> {
     if !reserve_outbound_dial(
@@ -6032,12 +6150,14 @@ mod tests {
         current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
         disconnect_peer_after_poisoned_write, dispatch_peer_message,
         enable_initial_peer_handshake_write_timeout, ensure_peer_status_allows_chain_data,
-        handle_status_message, hydrate_peer_from_cache, local_node_runs_validator_consensus,
-        local_peer_identity, merge_peer_state_from_existing, parse_bootnode_dial_address,
-        peer_has_identifying_metadata, peer_identity_key, pending_incoming_connections_from_host,
-        preferred_connection_direction, receive_initial_peer_handshake_with_timeout,
-        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
-        send_message, send_peer_control_message, should_disconnect_for_status_genesis_mismatch,
+        handle_status_message, hydrate_peer_from_cache, insert_peer_entry,
+        local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
+        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
+        peer_session_identity, pending_incoming_connections_from_host,
+        preferred_connection_direction, queued_peer_message_session_is_current,
+        receive_initial_peer_handshake_with_timeout, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection, send_message,
+        send_peer_control_message, should_disconnect_for_status_genesis_mismatch,
         should_prune_stale_peer, should_request_missing_blocks, should_request_status_sync,
         should_send_block_sync_request_at, status_ready_validator_addresses_with_local_duty_gate,
         status_ready_validator_participants, status_sync_batch,
@@ -6071,7 +6191,7 @@ mod tests {
     use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::fs;
-    use std::io::{self, BufReader, BufWriter, Write};
+    use std::io::{self, BufReader, BufWriter, Read, Write};
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
@@ -7100,12 +7220,123 @@ mod tests {
         {
             let _guard = PeerEntryGuard::new(
                 peer_address.clone(),
+                None,
                 Arc::clone(&connected_peers),
                 Arc::clone(&peer_state_cache),
             );
         }
 
         assert!(!connected_peers.lock().unwrap().contains_key(&peer_address));
+    }
+
+    #[test]
+    fn stale_peer_entry_guard_preserves_newer_same_address_session() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _old_client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect old test stream: {error}"),
+        };
+        let (old_server, _) = listener.accept().unwrap();
+        let _new_client = std::net::TcpStream::connect(addr).unwrap();
+        let (new_server, _) = listener.accept().unwrap();
+        let peer_address = "127.0.0.1:5622".to_string();
+        let connected_peers = Arc::new(Mutex::new(HashMap::new()));
+        let peer_state_cache = Arc::new(Mutex::new(HashMap::new()));
+        let mut replacement = test_peer_with_validator_address(Some("synv1replacement"));
+        replacement.address = peer_address.clone();
+        replacement.stream = Some(new_server);
+        connected_peers
+            .lock()
+            .unwrap()
+            .insert(peer_address.clone(), replacement);
+
+        {
+            let _guard = PeerEntryGuard::new(
+                peer_address.clone(),
+                Some(peer_session_identity(&old_server).unwrap()),
+                Arc::clone(&connected_peers),
+                Arc::clone(&peer_state_cache),
+            );
+        }
+
+        assert!(connected_peers.lock().unwrap().contains_key(&peer_address));
+    }
+
+    #[test]
+    fn replacing_same_address_peer_entry_shuts_down_old_session() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let mut old_client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect old test stream: {error}"),
+        };
+        old_client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let (old_server, _) = listener.accept().unwrap();
+        let _new_client = std::net::TcpStream::connect(addr).unwrap();
+        let (new_server, _) = listener.accept().unwrap();
+        let peer_address = "127.0.0.1:5622".to_string();
+        let mut peers = HashMap::new();
+        let mut original = test_peer_with_validator_address(Some("synv1replacement"));
+        original.address = peer_address.clone();
+        original.stream = Some(old_server);
+        insert_peer_entry(&mut peers, peer_address.clone(), original);
+
+        let mut replacement = test_peer_with_validator_address(Some("synv1replacement"));
+        replacement.address = peer_address.clone();
+        replacement.stream = Some(new_server);
+        insert_peer_entry(&mut peers, peer_address, replacement);
+
+        let mut buffer = [0u8; 1];
+        assert_eq!(old_client.read(&mut buffer).unwrap(), 0);
+    }
+
+    #[test]
+    fn queued_message_from_stale_same_address_session_is_rejected() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _old_client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect old test stream: {error}"),
+        };
+        let (old_server, _) = listener.accept().unwrap();
+        let _new_client = std::net::TcpStream::connect(addr).unwrap();
+        let (new_server, _) = listener.accept().unwrap();
+        let peer_address = "127.0.0.1:5622".to_string();
+        let old_session = peer_session_identity(&old_server).unwrap();
+        let new_session = peer_session_identity(&new_server).unwrap();
+        let mut replacement = test_peer_with_validator_address(Some("synv1replacement"));
+        replacement.address = peer_address.clone();
+        replacement.stream = Some(new_server);
+        let peers = HashMap::from([(peer_address.clone(), replacement)]);
+
+        assert!(!queued_peer_message_session_is_current(
+            &peers,
+            &peer_address,
+            Some(&old_session)
+        ));
+        assert!(queued_peer_message_session_is_current(
+            &peers,
+            &peer_address,
+            Some(&new_session)
+        ));
     }
 
     #[test]
@@ -7884,6 +8115,7 @@ mod tests {
             &sender,
             &config,
             "peer-a",
+            None,
             NetworkMessage::Vote { vote },
         )
         .expect("vote dispatch should succeed");
