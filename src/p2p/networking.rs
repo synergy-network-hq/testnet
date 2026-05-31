@@ -60,9 +60,11 @@ const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
 const MAX_STATUS_SYNC_BATCH: u32 = 16;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
 const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 64;
-// Archive snapshots are emitted every 5,000 blocks. Keep support recovery
-// bounded while allowing a verified snapshot plus one archive interval of lag.
-const MAX_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 10_000;
+// Archive snapshots are emitted every 5,000 blocks. Explicitly configured,
+// authenticated support roles may recover one archive interval of tail blocks.
+// Unknown public peers retain the smaller fail-closed allowance.
+const MAX_TRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 5_000;
+const MAX_UNTRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 2_048;
 const MAX_P2P_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
 const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
@@ -140,6 +142,8 @@ struct PeerConnection {
     txs_sent: u64,
     txs_received: u64,
     stream: Option<TcpStream>,
+    session_identity: Option<PeerSessionIdentity>,
+    role: Option<String>,
     node_id: Option<String>,
     version: Option<String>,
     capabilities: Vec<String>,
@@ -162,6 +166,7 @@ struct BlockSyncResponsePolicy {
 struct CachedPeerState {
     public_address: Option<String>,
     validator_address: Option<String>,
+    role: Option<String>,
     node_id: Option<String>,
     version: Option<String>,
     capabilities: Vec<String>,
@@ -190,9 +195,11 @@ fn peer_session_identity(stream: &TcpStream) -> io::Result<PeerSessionIdentity> 
 }
 
 fn peer_connection_session_identity(peer: &PeerConnection) -> Option<PeerSessionIdentity> {
-    peer.stream
-        .as_ref()
-        .and_then(|stream| peer_session_identity(stream).ok())
+    peer.session_identity.clone().or_else(|| {
+        peer.stream
+            .as_ref()
+            .and_then(|stream| peer_session_identity(stream).ok())
+    })
 }
 
 fn peer_entry_matches_session(
@@ -946,6 +953,7 @@ fn build_cached_peer_state(peer: &PeerConnection) -> Option<(String, CachedPeerS
         CachedPeerState {
             public_address: peer.public_address.clone(),
             validator_address: peer.validator_address.clone(),
+            role: peer.role.clone(),
             node_id: peer.node_id.clone(),
             version: peer.version.clone(),
             capabilities: peer.capabilities.clone(),
@@ -988,6 +996,9 @@ fn merge_cached_state_into_peer(peer: &mut PeerConnection, state: &CachedPeerSta
         .is_empty()
     {
         peer.validator_address = state.validator_address.clone();
+    }
+    if peer.role.is_none() {
+        peer.role = state.role.clone();
     }
     if peer.node_id.is_none() {
         peer.node_id = state.node_id.clone();
@@ -1038,6 +1049,7 @@ fn merge_peer_state_from_existing(existing: &PeerConnection, replacement: &mut P
         &CachedPeerState {
             public_address: existing.public_address.clone(),
             validator_address: existing.validator_address.clone(),
+            role: existing.role.clone(),
             node_id: existing.node_id.clone(),
             version: existing.version.clone(),
             capabilities: existing.capabilities.clone(),
@@ -2214,6 +2226,7 @@ pub struct PeerSnapshot {
     pub direction: String,
     pub node_id: Option<String>,
     pub validator_address: Option<String>,
+    pub role: Option<String>,
     pub block_height: u64,
     pub best_block_hash: String,
     pub genesis_hash: String,
@@ -2520,6 +2533,7 @@ impl P2PNetwork {
                     "node_id": peer.node_id,
                     "public_address": peer.public_address,
                     "validator_address": peer.validator_address,
+                    "role": peer.role,
                     "version": peer.version,
                     "capabilities": peer.capabilities,
                     "genesis_hash": peer.genesis_hash
@@ -2572,6 +2586,7 @@ impl P2PNetwork {
                 },
                 node_id: peer.node_id.clone(),
                 validator_address: peer.validator_address.clone(),
+                role: peer.role.clone(),
                 block_height: peer.last_known_height,
                 best_block_hash: peer.best_block_hash.clone(),
                 genesis_hash: peer.genesis_hash.clone(),
@@ -3621,7 +3636,7 @@ fn handle_get_blocks_message(
         "count" => count as u64
     );
 
-    let (policy, refuse_deep_support_sync) = {
+    let (policy, support_deep_sync_limit, refuse_deep_support_sync) = {
         let local_height = {
             let chain = blockchain.lock().unwrap();
             chain.last().map(|block| block.block_index).unwrap_or(0)
@@ -3630,7 +3645,8 @@ fn handle_get_blocks_message(
         let peer = peers.get(peer_address);
         (
             block_sync_response_policy(config, peer),
-            support_peer_sync_request_is_too_deep(peer, local_height, from_height),
+            support_peer_deep_sync_limit(config, peer),
+            support_peer_sync_request_is_too_deep(config, peer, local_height, from_height),
         )
     };
     if refuse_deep_support_sync {
@@ -3639,7 +3655,7 @@ fn handle_get_blocks_message(
             "Refusing deep support-peer block sync request",
             "peer" => peer_address.to_string(),
             "from_height" => from_height,
-            "max_support_peer_deep_sync_lag" => MAX_SUPPORT_PEER_DEEP_SYNC_LAG
+            "max_support_peer_deep_sync_lag" => support_deep_sync_limit.unwrap_or(0)
         );
         let mut peers = connected_peers.lock().unwrap();
         disconnect_peer_entry(peer_state_cache, &mut peers, peer_address);
@@ -3768,15 +3784,68 @@ fn peer_is_active_consensus_validator(peer: &PeerConnection) -> bool {
         .any(|validator| validator.address == peer_validator_address)
 }
 
+fn normalized_trusted_support_role(peer: &PeerConnection) -> Option<String> {
+    let role = peer
+        .role
+        .as_deref()?
+        .trim()
+        .to_ascii_lowercase()
+        .replace(['-', ' '], "_");
+    matches!(
+        role.as_str(),
+        "relayer"
+            | "rpc_gateway"
+            | "explorer_indexer"
+            | "archive_observer"
+            | "archive_validator_non_consensus"
+    )
+    .then_some(role)
+}
+
+fn configured_support_peer_hosts(config: &NodeConfig) -> HashSet<String> {
+    config
+        .network
+        .trusted_support_peers
+        .iter()
+        .filter_map(|dial| dial_target_host(dial))
+        .collect()
+}
+
+fn peer_host_candidates(peer: &PeerConnection) -> HashSet<String> {
+    [
+        &peer.address,
+        peer.public_address.as_deref().unwrap_or_default(),
+    ]
+    .into_iter()
+    .filter_map(|address| dial_target_host(address))
+    .collect()
+}
+
+fn peer_is_configured_trusted_support_peer(config: &NodeConfig, peer: &PeerConnection) -> bool {
+    normalized_trusted_support_role(peer).is_some()
+        && !configured_support_peer_hosts(config).is_disjoint(&peer_host_candidates(peer))
+}
+
+fn support_peer_deep_sync_limit(config: &NodeConfig, peer: Option<&PeerConnection>) -> Option<u64> {
+    let peer = peer?;
+    if peer_is_active_consensus_validator(peer) {
+        return None;
+    }
+    Some(if peer_is_configured_trusted_support_peer(config, peer) {
+        MAX_TRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG
+    } else {
+        MAX_UNTRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG
+    })
+}
+
 fn block_sync_response_policy(
-    _config: &NodeConfig,
+    config: &NodeConfig,
     peer: Option<&PeerConnection>,
 ) -> BlockSyncResponsePolicy {
-    let serving_support_peer = !peer
-        .map(peer_is_active_consensus_validator)
-        .unwrap_or(false);
-
-    if serving_support_peer {
+    if peer
+        .map(|peer| peer_is_configured_trusted_support_peer(config, peer))
+        .unwrap_or(false)
+    {
         BlockSyncResponsePolicy {
             max_blocks: MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS,
             write_timeout: Duration::from_millis(
@@ -3792,15 +3861,14 @@ fn block_sync_response_policy(
 }
 
 fn support_peer_sync_request_is_too_deep(
+    config: &NodeConfig,
     peer: Option<&PeerConnection>,
     local_height: u64,
     from_height: u64,
 ) -> bool {
-    let serving_support_peer = !peer
-        .map(peer_is_active_consensus_validator)
-        .unwrap_or(false);
-    serving_support_peer
-        && local_height.saturating_sub(from_height) > MAX_SUPPORT_PEER_DEEP_SYNC_LAG
+    support_peer_deep_sync_limit(config, peer)
+        .map(|limit| local_height.saturating_sub(from_height) > limit)
+        .unwrap_or(false)
 }
 
 fn background_poll_interval(behind: u64, heartbeat: Duration, sync_active: bool) -> Duration {
@@ -4009,7 +4077,12 @@ fn handle_incoming_connection(
                 blocks_received: 0,
                 txs_sent: 0,
                 txs_received: 0,
-                stream: Some(writer.get_ref().try_clone()?),
+                // Do not expose a writable control stream until the initial
+                // handshake exchange completes. Background ping/status
+                // workers must not race the protocol's first frame.
+                stream: None,
+                session_identity: Some(session_identity.clone()),
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -4030,12 +4103,16 @@ fn handle_incoming_connection(
         Arc::clone(&peer_state_cache),
     );
 
-    // Send handshake
+    // Accepted sockets read first so two peers do not both block while writing
+    // the comparatively large PQC handshake frame. Defer PQC signing until the
+    // initiator has supplied a valid first frame so unauthenticated sockets
+    // cannot consume signing work while holding pending-session capacity.
+    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
     let handshake = build_local_handshake(&config)
         .map_err(|error| io::Error::new(io::ErrorKind::Other, error))?;
-
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
+    writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
     let status = build_local_status_message(&blockchain, &config);
     if let Err(error) = send_message(&mut writer, &status) {
@@ -4049,14 +4126,15 @@ fn handle_incoming_connection(
         writer.flush()?;
     }
 
-    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
-    writer.get_mut().set_write_timeout(previous_write_timeout)?;
-    if !peer_entry_matches_session(
-        &connected_peers.lock().unwrap(),
-        &peer_address,
-        &session_identity,
-    ) {
-        return Ok(());
+    {
+        let mut peers = connected_peers.lock().unwrap();
+        if !peer_entry_matches_session(&peers, &peer_address, &session_identity) {
+            return Ok(());
+        }
+        let peer = peers
+            .get_mut(&peer_address)
+            .expect("matched peer session should still exist");
+        peer.stream = Some(writer.get_ref().try_clone()?);
     }
     dispatch_peer_message(
         &blockchain,
@@ -4147,7 +4225,12 @@ fn handle_outgoing_connection(
                 blocks_received: 0,
                 txs_sent: 0,
                 txs_received: 0,
-                stream: Some(writer.get_ref().try_clone()?),
+                // Do not expose a writable control stream until the initial
+                // handshake exchange completes. Background ping/status
+                // workers must not race the protocol's first frame.
+                stream: None,
+                session_identity: Some(session_identity.clone()),
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -4175,6 +4258,9 @@ fn handle_outgoing_connection(
     send_message(&mut writer, &handshake)?;
     writer.flush()?;
 
+    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
+    writer.get_mut().set_write_timeout(previous_write_timeout)?;
+
     let status = build_local_status_message(&blockchain, &config);
     if let Err(error) = send_message(&mut writer, &status) {
         warn!(
@@ -4187,14 +4273,15 @@ fn handle_outgoing_connection(
         writer.flush()?;
     }
 
-    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
-    writer.get_mut().set_write_timeout(previous_write_timeout)?;
-    if !peer_entry_matches_session(
-        &connected_peers.lock().unwrap(),
-        &peer_address,
-        &session_identity,
-    ) {
-        return Ok(());
+    {
+        let mut peers = connected_peers.lock().unwrap();
+        if !peer_entry_matches_session(&peers, &peer_address, &session_identity) {
+            return Ok(());
+        }
+        let peer = peers
+            .get_mut(&peer_address)
+            .expect("matched peer session should still exist");
+        peer.stream = Some(writer.get_ref().try_clone()?);
     }
     dispatch_peer_message(
         &blockchain,
@@ -4526,6 +4613,7 @@ fn handle_messages(
                                                     peer.node_id = Some(node_id.clone());
                                                     peer.version = Some(version.clone());
                                                     peer.capabilities = capabilities.clone();
+                                                    peer.role = role.clone();
                                                     if normalized_public_address
                                                         .as_deref()
                                                         .map(str::trim)
@@ -4595,6 +4683,8 @@ fn handle_messages(
                                                         txs_sent: 0,
                                                         txs_received: 0,
                                                         stream: None,
+                                                        session_identity: None,
+                                                        role: existing_state.role.clone(),
                                                         node_id: existing_state.node_id.clone(),
                                                         version: existing_state.version.clone(),
                                                         capabilities: existing_state
@@ -4658,6 +4748,7 @@ fn handle_messages(
                                 peer.node_id = Some(node_id.clone());
                                 peer.version = Some(version.clone());
                                 peer.capabilities = capabilities.clone();
+                                peer.role = role.clone();
                                 peer.public_address = normalized_public_address.clone();
                                 peer.validator_address = announced_validator_address.clone();
                                 hydrate_peer_from_cache(&peer_state_cache, &peer_identity, peer);
@@ -6190,7 +6281,7 @@ mod tests {
         send_peer_control_message, should_disconnect_for_status_genesis_mismatch,
         should_prune_stale_peer, should_request_missing_blocks, should_request_status_sync,
         should_send_block_sync_request_at, status_ready_validator_addresses_with_local_duty_gate,
-        status_ready_validator_participants, status_sync_batch,
+        status_ready_validator_participants, status_sync_batch, support_peer_deep_sync_limit,
         support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
@@ -6198,6 +6289,7 @@ mod tests {
         P2PNetwork, PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
         DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
         INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS, MAX_P2P_FRAME_BYTES, MAX_STATUS_SYNC_BATCH,
+        MAX_TRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG, MAX_UNTRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG,
         MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
         STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
     };
@@ -6247,6 +6339,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("peer-a".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
@@ -6798,6 +6892,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("testnet-peer-b".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
@@ -6823,6 +6919,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("testnet-peer-b".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
@@ -6858,6 +6956,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("testnet-peer-a".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],
@@ -6881,6 +6981,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("testnet-peer-a".to_string()),
             version: None,
             capabilities: Vec::new(),
@@ -7025,6 +7127,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("testnet-incoming".to_string()),
                 version: None,
                 capabilities: Vec::new(),
@@ -7051,6 +7155,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("testnet-outgoing".to_string()),
                 version: None,
                 capabilities: Vec::new(),
@@ -7088,6 +7194,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: None,
             version: None,
             capabilities: Vec::new(),
@@ -7111,6 +7219,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("testnet-peer-a".to_string()),
             version: None,
             capabilities: Vec::new(),
@@ -7144,6 +7254,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("bootnode2".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: Vec::new(),
@@ -7170,6 +7282,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("genesisval2".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: Vec::new(),
@@ -7196,6 +7310,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -7233,6 +7349,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -7428,6 +7546,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("validator-pending".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: Vec::new(),
@@ -7474,6 +7594,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("validator-mismatch".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: Vec::new(),
@@ -7987,7 +8109,11 @@ mod tests {
     fn validator_nodes_throttle_support_peer_block_sync_responses() {
         let mut config = NodeConfig::default();
         config.identity.role = "validator".to_string();
-        let support_peer = test_peer_with_validator_address(Some("synv1support"));
+        config.network.trusted_support_peers = vec!["snr://sentry1@10.69.0.201:5622".to_string()];
+        let mut support_peer = test_peer_with_validator_address(None);
+        support_peer.address = "10.69.0.201:49152".to_string();
+        support_peer.public_address = Some("10.69.0.201:5622".to_string());
+        support_peer.role = Some("relayer".to_string());
 
         let policy = block_sync_response_policy(&config, Some(&support_peer));
 
@@ -8002,7 +8128,11 @@ mod tests {
     fn non_validator_nodes_throttle_support_peer_block_sync_responses() {
         let mut config = NodeConfig::default();
         config.identity.role = "relayer".to_string();
-        let support_peer = test_peer_with_validator_address(Some("synv1support"));
+        config.network.trusted_support_peers = vec!["snr://sentry1@10.69.0.201:5622".to_string()];
+        let mut support_peer = test_peer_with_validator_address(None);
+        support_peer.address = "10.69.0.201:49152".to_string();
+        support_peer.public_address = Some("10.69.0.201:5622".to_string());
+        support_peer.role = Some("relayer".to_string());
 
         let policy = block_sync_response_policy(&config, Some(&support_peer));
 
@@ -8019,28 +8149,64 @@ mod tests {
         let active_validator = "synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs";
         ensure_test_validator_key(active_validator);
 
+        let config = NodeConfig::default();
         let support_peer = test_peer_with_validator_address(Some("synv1support"));
         let active_peer = test_peer_with_validator_address(Some(active_validator));
 
         assert!(support_peer_sync_request_is_too_deep(
+            &config,
             Some(&support_peer),
             50_000,
             11_666
         ));
-        assert!(!support_peer_sync_request_is_too_deep(
+        assert!(support_peer_sync_request_is_too_deep(
+            &config,
             Some(&support_peer),
             50_000,
             44_000
         ));
         assert!(support_peer_sync_request_is_too_deep(
+            &config,
             Some(&support_peer),
             50_000,
             39_000
         ));
         assert!(!support_peer_sync_request_is_too_deep(
+            &config,
             Some(&active_peer),
             50_000,
             11_666
+        ));
+        assert_eq!(
+            support_peer_deep_sync_limit(&config, Some(&support_peer)),
+            Some(MAX_UNTRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG)
+        );
+    }
+
+    #[test]
+    fn configured_authenticated_support_peer_receives_one_archive_interval_tail_allowance() {
+        let mut config = NodeConfig::default();
+        config.network.trusted_support_peers = vec!["snr://sentry1@10.69.0.201:5622".to_string()];
+        let mut support_peer = test_peer_with_validator_address(None);
+        support_peer.address = "10.69.0.201:49152".to_string();
+        support_peer.public_address = Some("10.69.0.201:5622".to_string());
+        support_peer.role = Some("relayer".to_string());
+
+        assert_eq!(
+            support_peer_deep_sync_limit(&config, Some(&support_peer)),
+            Some(MAX_TRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG)
+        );
+        assert!(!support_peer_sync_request_is_too_deep(
+            &config,
+            Some(&support_peer),
+            50_000,
+            46_000
+        ));
+        assert!(support_peer_sync_request_is_too_deep(
+            &config,
+            Some(&support_peer),
+            50_000,
+            44_000
         ));
     }
 
@@ -8119,6 +8285,31 @@ mod tests {
     }
 
     #[test]
+    fn background_control_writes_skip_peer_until_initial_handshake_completes() {
+        let network = P2PNetwork::new(
+            Arc::new(Mutex::new(BlockChain::new())),
+            &NodeConfig::default(),
+        );
+        let mut peer = test_peer_with_validator_address(None);
+        peer.stream = None;
+        network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .insert("peer-handshake-pending".to_string(), peer);
+
+        network.request_peers();
+        network.ping_peers();
+        network.request_peer_statuses();
+
+        let peers = network.connected_peers.lock().unwrap();
+        let peer = peers
+            .get("peer-handshake-pending")
+            .expect("handshake-pending peer should remain registered");
+        assert!(peer.stream.is_none());
+    }
+
+    #[test]
     fn background_poll_interval_uses_heartbeat_during_active_sync() {
         let heartbeat = Duration::from_secs(7);
         assert_eq!(background_poll_interval(100, heartbeat, true), heartbeat);
@@ -8147,6 +8338,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: Some("testnet-peer-a".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: vec!["blocks".to_string()],
@@ -8236,6 +8429,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: Some(client),
+                session_identity: None,
+                role: None,
                 node_id: Some("testnet-peer-a".to_string()),
                 version: Some("1.0.0".to_string()),
                 capabilities: vec!["blocks".to_string()],
@@ -8359,6 +8554,8 @@ mod tests {
                     txs_sent: 0,
                     txs_received: 0,
                     stream: None,
+                    session_identity: None,
+                    role: None,
                     node_id: None,
                     version: None,
                     capabilities: Vec::new(),
@@ -8404,6 +8601,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8430,6 +8629,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8471,6 +8672,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8497,6 +8700,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8531,6 +8736,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8557,6 +8764,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8583,6 +8792,8 @@ mod tests {
                 txs_sent: 0,
                 txs_received: 0,
                 stream: None,
+                session_identity: None,
+                role: None,
                 node_id: None,
                 version: None,
                 capabilities: Vec::new(),
@@ -8778,6 +8989,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: None,
             version: None,
             capabilities: Vec::new(),
@@ -8814,6 +9027,8 @@ mod tests {
             txs_sent: 0,
             txs_received: 0,
             stream: None,
+            session_identity: None,
+            role: None,
             node_id: Some("synv1peer-b".to_string()),
             version: Some("1.0.0".to_string()),
             capabilities: vec!["blocks".to_string()],

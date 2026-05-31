@@ -241,6 +241,75 @@ def transfer_file(
                 pass
 
 
+def prepare_askpass_env(host: HostRow) -> tuple[dict[str, str], str | None]:
+    env = os.environ.copy()
+    password = host.password or host.passphrase
+    askpass_path = None
+    if password:
+        fd, askpass_path = tempfile.mkstemp(prefix="synergy-ssh-askpass-", text=True)
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write("#!/bin/sh\n")
+            handle.write('printf "%s\\n" "$SYNERGY_SSH_SECRET"\n')
+        os.chmod(askpass_path, 0o700)
+        env["SYNERGY_SSH_SECRET"] = password
+        env["SSH_ASKPASS"] = askpass_path
+        env["SSH_ASKPASS_REQUIRE"] = "force"
+        env.setdefault("DISPLAY", ":0")
+    return env, askpass_path
+
+
+def stream_remote_file(
+    source_host: HostRow,
+    target_host: HostRow,
+    source_path: str,
+    target_path: str,
+    timeout: int,
+) -> int:
+    if not source_host.ssh_command or not target_host.ssh_command:
+        print("missing SSH command for streamed transfer endpoint", file=sys.stderr)
+        return 2
+
+    print(f"source_{sanitized_host_line(source_host)}", flush=True)
+    print(f"target_{sanitized_host_line(target_host)}", flush=True)
+    source_env, source_askpass = prepare_askpass_env(source_host)
+    target_env, target_askpass = prepare_askpass_env(target_host)
+    source = None
+    target = None
+    try:
+        source = subprocess.Popen(
+            [*shlex.split(source_host.ssh_command), f"cat {shlex.quote(source_path)}"],
+            env=source_env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+        )
+        assert source.stdout is not None
+        target = subprocess.Popen(
+            [*shlex.split(target_host.ssh_command), f"cat > {shlex.quote(target_path)}"],
+            env=target_env,
+            stdin=source.stdout,
+        )
+        source.stdout.close()
+        target_returncode = target.wait(timeout=timeout)
+        source_returncode = source.wait(timeout=timeout)
+        if source_returncode != 0:
+            return source_returncode
+        return target_returncode
+    except subprocess.TimeoutExpired:
+        if target:
+            target.kill()
+        if source:
+            source.kill()
+        print("streamed transfer timed out", file=sys.stderr)
+        return 124
+    finally:
+        for askpass_path in (source_askpass, target_askpass):
+            if askpass_path:
+                try:
+                    os.unlink(askpass_path)
+                except FileNotFoundError:
+                    pass
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workbook", type=Path, default=DEFAULT_WORKBOOK)
@@ -285,6 +354,13 @@ def main() -> int:
     upload.add_argument("--timeout", type=int, default=120)
     upload.add_argument("--password-auth", action="store_true")
 
+    stream_copy = subparsers.add_parser("stream-copy")
+    stream_copy.add_argument("source_node")
+    stream_copy.add_argument("source_path")
+    stream_copy.add_argument("target_node")
+    stream_copy.add_argument("target_path")
+    stream_copy.add_argument("--timeout", type=int, default=120)
+
     args = parser.parse_args()
     hosts = load_hosts(args.workbook)
 
@@ -299,6 +375,27 @@ def main() -> int:
                 return 2
             print(sanitized_host_line(host))
         return 0
+
+    if args.command == "stream-copy":
+        source_host = hosts.get(args.source_node.lower()) or hosts.get(
+            args.source_node.replace(" ", "").replace("-", "").lower()
+        )
+        target_host = hosts.get(args.target_node.lower()) or hosts.get(
+            args.target_node.replace(" ", "").replace("-", "").lower()
+        )
+        if source_host is None:
+            print(f"missing workbook row for node={args.source_node}", file=sys.stderr)
+            return 2
+        if target_host is None:
+            print(f"missing workbook row for node={args.target_node}", file=sys.stderr)
+            return 2
+        return stream_remote_file(
+            source_host,
+            target_host,
+            args.source_path,
+            args.target_path,
+            args.timeout,
+        )
 
     if args.command == "run":
         host = hosts.get(args.node.lower()) or hosts.get(

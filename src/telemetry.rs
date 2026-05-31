@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -11,6 +12,25 @@ use crate::sync::SyncState;
 use crate::validator::{ValidatorStatus, VALIDATOR_MANAGER};
 
 const PROMETHEUS_CONTENT_TYPE: &str = "text/plain; version=0.0.4; charset=utf-8";
+type ChainMetricsSnapshot = (u64, u64, u64, u64, u64, u64, u64, u64, f64, f64, f64);
+type MempoolMetricsSnapshot = (u64, u64, u64, u64, f64, u64);
+static LAST_CHAIN_METRICS: LazyLock<Mutex<ChainMetricsSnapshot>> =
+    LazyLock::new(|| Mutex::new((0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0)));
+static LAST_MEMPOOL_METRICS: LazyLock<Mutex<MempoolMetricsSnapshot>> =
+    LazyLock::new(|| Mutex::new((0, 0, 0, 0, 0.0, 0)));
+
+fn cached_or_latest<T: Clone>(cache: &Mutex<T>, latest: Option<T>) -> T {
+    if let Some(latest) = latest {
+        if let Ok(mut cached) = cache.lock() {
+            *cached = latest.clone();
+        }
+        return latest;
+    }
+    match cache.lock() {
+        Ok(cached) => cached.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    }
+}
 
 pub fn start_metrics_server(bind_address: &str, config: NodeConfig, start_time: SystemTime) {
     let listener = match TcpListener::bind(bind_address) {
@@ -140,92 +160,95 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
         recent_avg_block_time_seconds,
         recent_avg_txs_per_block,
         recent_avg_gas_nwei,
-    ) = match SHARED_CHAIN.try_lock() {
-        Ok(chain) => {
-            let height = chain.last().map(|block| block.block_index).unwrap_or(0);
-            let block_count = chain.chain.len() as u64;
-            let last_timestamp = chain.last().map(|block| block.timestamp).unwrap_or(0);
-            let latest_transactions = chain
-                .last()
-                .map(|block| block.transactions.len() as u64)
-                .unwrap_or(0);
-            let latest_gas = chain
-                .last()
-                .map(|block| {
-                    block
-                        .transactions
-                        .iter()
-                        .map(|transaction| transaction.get_fee())
-                        .sum::<u64>()
-                })
-                .unwrap_or(0);
-            let latest_interval = chain
-                .chain
-                .iter()
-                .rev()
-                .take(2)
-                .map(|block| block.timestamp)
-                .collect::<Vec<_>>();
-            let latest_interval = if latest_interval.len() == 2 {
-                latest_interval[0].saturating_sub(latest_interval[1])
-            } else {
-                0
-            };
-            let total_transactions = chain
-                .chain
-                .iter()
-                .map(|block| block.transactions.len() as u64)
-                .sum::<u64>();
-            let recent_blocks = chain.chain.iter().rev().take(100).collect::<Vec<_>>();
-            let recent_transactions = recent_blocks
-                .iter()
-                .map(|block| block.transactions.len() as u64)
-                .sum::<u64>();
-            let recent_gas = recent_blocks
-                .iter()
-                .map(|block| {
-                    block
-                        .transactions
-                        .iter()
-                        .map(|transaction| transaction.get_fee())
-                        .sum::<u64>()
-                })
-                .sum::<u64>();
-            let recent_avg_txs = if recent_blocks.is_empty() {
-                0.0
-            } else {
-                recent_transactions as f64 / recent_blocks.len() as f64
-            };
-            let mut intervals = Vec::new();
-            for pair in recent_blocks.windows(2) {
-                intervals.push(pair[0].timestamp.saturating_sub(pair[1].timestamp));
-            }
-            let recent_avg_block_time = if intervals.is_empty() {
-                0.0
-            } else {
-                intervals.iter().sum::<u64>() as f64 / intervals.len() as f64
-            };
-            let recent_avg_gas = if recent_blocks.is_empty() {
-                0.0
-            } else {
-                recent_gas as f64 / recent_blocks.len() as f64
-            };
-            (
-                height,
-                block_count,
-                last_timestamp,
-                latest_transactions,
-                latest_gas,
-                latest_interval,
-                total_transactions,
-                recent_transactions,
-                recent_avg_block_time,
-                recent_avg_txs,
-                recent_avg_gas,
-            )
-        }
-        Err(_) => (0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0),
-    };
+    ) = cached_or_latest(
+        &LAST_CHAIN_METRICS,
+        match SHARED_CHAIN.try_lock() {
+            Ok(chain) => Some({
+                let height = chain.last().map(|block| block.block_index).unwrap_or(0);
+                let block_count = chain.chain.len() as u64;
+                let last_timestamp = chain.last().map(|block| block.timestamp).unwrap_or(0);
+                let latest_transactions = chain
+                    .last()
+                    .map(|block| block.transactions.len() as u64)
+                    .unwrap_or(0);
+                let latest_gas = chain
+                    .last()
+                    .map(|block| {
+                        block
+                            .transactions
+                            .iter()
+                            .map(|transaction| transaction.get_fee())
+                            .sum::<u64>()
+                    })
+                    .unwrap_or(0);
+                let latest_interval = chain
+                    .chain
+                    .iter()
+                    .rev()
+                    .take(2)
+                    .map(|block| block.timestamp)
+                    .collect::<Vec<_>>();
+                let latest_interval = if latest_interval.len() == 2 {
+                    latest_interval[0].saturating_sub(latest_interval[1])
+                } else {
+                    0
+                };
+                let total_transactions = chain
+                    .chain
+                    .iter()
+                    .map(|block| block.transactions.len() as u64)
+                    .sum::<u64>();
+                let recent_blocks = chain.chain.iter().rev().take(100).collect::<Vec<_>>();
+                let recent_transactions = recent_blocks
+                    .iter()
+                    .map(|block| block.transactions.len() as u64)
+                    .sum::<u64>();
+                let recent_gas = recent_blocks
+                    .iter()
+                    .map(|block| {
+                        block
+                            .transactions
+                            .iter()
+                            .map(|transaction| transaction.get_fee())
+                            .sum::<u64>()
+                    })
+                    .sum::<u64>();
+                let recent_avg_txs = if recent_blocks.is_empty() {
+                    0.0
+                } else {
+                    recent_transactions as f64 / recent_blocks.len() as f64
+                };
+                let mut intervals = Vec::new();
+                for pair in recent_blocks.windows(2) {
+                    intervals.push(pair[0].timestamp.saturating_sub(pair[1].timestamp));
+                }
+                let recent_avg_block_time = if intervals.is_empty() {
+                    0.0
+                } else {
+                    intervals.iter().sum::<u64>() as f64 / intervals.len() as f64
+                };
+                let recent_avg_gas = if recent_blocks.is_empty() {
+                    0.0
+                } else {
+                    recent_gas as f64 / recent_blocks.len() as f64
+                };
+                (
+                    height,
+                    block_count,
+                    last_timestamp,
+                    latest_transactions,
+                    latest_gas,
+                    latest_interval,
+                    total_transactions,
+                    recent_transactions,
+                    recent_avg_block_time,
+                    recent_avg_txs,
+                    recent_avg_gas,
+                )
+            }),
+            Err(_) => None,
+        },
+    );
     let last_block_age_seconds = if last_block_timestamp_seconds == 0 {
         0
     } else {
@@ -239,29 +262,32 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
         mempool_min_gas_price_nwei,
         mempool_avg_gas_price_nwei,
         mempool_max_gas_price_nwei,
-    ) = match TX_POOL.try_lock() {
-        Ok(pool) => {
-            let pending = pool.len() as u64;
-            let gas_limit_total = pool.iter().map(|tx| tx.gas_limit).sum::<u64>();
-            let fee_total = pool.iter().map(|tx| tx.get_fee()).sum::<u64>();
-            let min_gas_price = pool.iter().map(|tx| tx.gas_price).min().unwrap_or(0);
-            let max_gas_price = pool.iter().map(|tx| tx.gas_price).max().unwrap_or(0);
-            let avg_gas_price = if pending == 0 {
-                0.0
-            } else {
-                pool.iter().map(|tx| tx.gas_price).sum::<u64>() as f64 / pending as f64
-            };
-            (
-                pending,
-                gas_limit_total,
-                fee_total,
-                min_gas_price,
-                avg_gas_price,
-                max_gas_price,
-            )
-        }
-        Err(_) => (0, 0, 0, 0, 0.0, 0),
-    };
+    ) = cached_or_latest(
+        &LAST_MEMPOOL_METRICS,
+        match TX_POOL.try_lock() {
+            Ok(pool) => Some({
+                let pending = pool.len() as u64;
+                let gas_limit_total = pool.iter().map(|tx| tx.gas_limit).sum::<u64>();
+                let fee_total = pool.iter().map(|tx| tx.get_fee()).sum::<u64>();
+                let min_gas_price = pool.iter().map(|tx| tx.gas_price).min().unwrap_or(0);
+                let max_gas_price = pool.iter().map(|tx| tx.gas_price).max().unwrap_or(0);
+                let avg_gas_price = if pending == 0 {
+                    0.0
+                } else {
+                    pool.iter().map(|tx| tx.gas_price).sum::<u64>() as f64 / pending as f64
+                };
+                (
+                    pending,
+                    gas_limit_total,
+                    fee_total,
+                    min_gas_price,
+                    avg_gas_price,
+                    max_gas_price,
+                )
+            }),
+            Err(_) => None,
+        },
+    );
 
     let (
         sync_state_label,
@@ -302,8 +328,9 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
                 let node_id = escape_label_value(peer.node_id.as_deref().unwrap_or(""));
                 let validator_address =
                     escape_label_value(peer.validator_address.as_deref().unwrap_or(""));
+                let role = escape_label_value(peer.role.as_deref().unwrap_or(""));
                 lines.push_str(&format!(
-                    "synergy_p2p_peer_info{{peer=\"{peer_label}\",direction=\"{direction}\",node_id=\"{node_id}\",validator_address=\"{validator_address}\"}} 1\n"
+                    "synergy_p2p_peer_info{{peer=\"{peer_label}\",direction=\"{direction}\",node_id=\"{node_id}\",validator_address=\"{validator_address}\",role=\"{role}\"}} 1\n"
                 ));
                 lines.push_str(&format!(
                     "synergy_p2p_peer_height{{peer=\"{peer_label}\"}} {}\n",
@@ -387,7 +414,8 @@ fn render_metrics(config: &NodeConfig, start_time: SystemTime) -> String {
         + config.network.seed_servers.len()
         + config.network.bootstrap_dns_records.len()
         + config.network.additional_dial_targets.len()
-        + config.network.persistent_peers.len()) as u64;
+        + config.network.persistent_peers.len()
+        + config.network.trusted_support_peers.len()) as u64;
 
     let mut body = String::new();
     push_metric_header(
@@ -983,7 +1011,7 @@ fn validator_status_name(status: &ValidatorStatus) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::render_metrics;
+    use super::{cached_or_latest, render_metrics};
     use crate::config::NodeConfig;
     use std::env;
     use std::fs;
@@ -1076,5 +1104,12 @@ mod tests {
         assert!(body.contains("synergy_p2p_peers_connected"));
         assert!(body.contains("synergy_consensus_config"));
         assert!(body.contains("synergy_validator_blocks_produced_total"));
+    }
+
+    #[test]
+    fn metrics_snapshot_retains_last_successful_value_when_runtime_lock_is_busy() {
+        let cache = Mutex::new((0_u64, 0_u64));
+        assert_eq!(cached_or_latest(&cache, Some((175_511, 3))), (175_511, 3));
+        assert_eq!(cached_or_latest(&cache, None), (175_511, 3));
     }
 }

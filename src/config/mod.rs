@@ -47,6 +47,8 @@ pub struct NetworkConfig {
     pub persistent_peers: Vec<String>,
     #[serde(default)]
     pub additional_dial_targets: Vec<String>,
+    #[serde(default)]
+    pub trusted_support_peers: Vec<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -289,6 +291,7 @@ impl Default for NodeConfig {
                 bootstrap_dns_records: vec![],
                 persistent_peers: vec![],
                 additional_dial_targets: vec![],
+                trusted_support_peers: vec![],
             },
             blockchain: BlockchainConfig {
                 block_time: 2,
@@ -628,6 +631,14 @@ fn apply_env_overrides(mut config: NodeConfig) -> Result<NodeConfig, Box<dyn Err
     }
     if let Ok(val) = env::var("SYNERGY_ADDITIONAL_DIAL_TARGETS") {
         config.network.additional_dial_targets = val
+            .split(',')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .collect();
+    }
+    if let Ok(val) = env::var("SYNERGY_TRUSTED_SUPPORT_PEERS") {
+        config.network.trusted_support_peers = val
             .split(',')
             .map(|s| s.trim())
             .filter(|s| !s.is_empty())
@@ -1010,6 +1021,14 @@ fn apply_compatibility_overrides(config: &mut NodeConfig, raw: &toml::Value) {
             additional_targets,
         );
     }
+    if let Some(trusted_support_peers) =
+        get_string_array(raw, &["network", "trusted_support_peers"])
+    {
+        merge_unique_strings(
+            &mut config.network.trusted_support_peers,
+            trusted_support_peers,
+        );
+    }
 
     if let Some(bootstrap_only) = get_bool(raw, &["node", "bootstrap_only"]) {
         config.node.bootstrap_only = bootstrap_only;
@@ -1113,6 +1132,14 @@ fn merge_companion_peers_file(
         merge_unique_strings(
             &mut config.network.additional_dial_targets,
             additional_targets,
+        );
+    }
+    if let Some(trusted_support_peers) =
+        get_string_array(&raw, &["global", "trusted_support_peers"])
+    {
+        merge_unique_strings(
+            &mut config.network.trusted_support_peers,
+            trusted_support_peers,
         );
     }
 
@@ -1264,6 +1291,7 @@ seed_servers = ["http://seed1.synergynode.xyz:5621"]
 bootstrap_dns_records = ["_dnsaddr.bootstrap.synergynode.xyz"]
 persistent_peers = ["genesisval2.synergynode.xyz:5622"]
 additional_dial_targets = ["24.181.87.76:5622"]
+trusted_support_peers = ["10.69.0.201:5622", "10.69.0.202:5622"]
 max_peers = 128
 
 [role]
@@ -1304,6 +1332,13 @@ log_level = "debug"
         assert_eq!(
             config.network.additional_dial_targets,
             vec!["24.181.87.76:5622".to_string()]
+        );
+        assert_eq!(
+            config.network.trusted_support_peers,
+            vec![
+                "10.69.0.201:5622".to_string(),
+                "10.69.0.202:5622".to_string()
+            ]
         );
         assert_eq!(config.logging.log_level, "debug");
         assert!(!config.telemetry.enabled);
@@ -1632,6 +1667,10 @@ state_sync_before_join = true
             "SYNERGY_PERSISTENT_PEERS",
             "genesisval2.synergynode.xyz:5622,62.146.182.208:5622",
         );
+        let _trusted_support_peers = EnvVarGuard::set(
+            "SYNERGY_TRUSTED_SUPPORT_PEERS",
+            "10.69.0.201:5622,10.69.0.202:5622",
+        );
         let _status_gate = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_GATE_ENABLED", "false");
         let _status_min = EnvVarGuard::set("SYNERGY_CONSENSUS_STATUS_READY_MIN_VALIDATORS", "3");
         let _status_grace =
@@ -1649,6 +1688,13 @@ state_sync_before_join = true
             vec![
                 "genesisval2.synergynode.xyz:5622".to_string(),
                 "62.146.182.208:5622".to_string()
+            ]
+        );
+        assert_eq!(
+            config.network.trusted_support_peers,
+            vec![
+                "10.69.0.201:5622".to_string(),
+                "10.69.0.202:5622".to_string()
             ]
         );
         assert!(!config.consensus.status_ready_gate_enabled);
