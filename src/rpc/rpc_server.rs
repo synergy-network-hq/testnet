@@ -3,7 +3,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -49,8 +49,10 @@ lazy_static! {
 }
 
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static PENDING_TRANSACTION_REBROADCAST_WORKER: Once = Once::new();
 const MAX_HTTP_HEADER_BYTES: usize = 32 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
+const PENDING_TRANSACTION_REBROADCAST_INTERVAL_SECS: u64 = 5;
 
 fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
@@ -343,6 +345,7 @@ pub fn start_rpc_server(
             *start_time = Some(current_timestamp());
         }
     }
+    start_pending_transaction_rebroadcast_worker();
 
     // Load validator registry from disk if it exists
     let validator_registry_path = "data/validator_registry.json";
@@ -545,6 +548,34 @@ pub fn start_rpc_server(
     }
 }
 
+fn start_pending_transaction_rebroadcast_worker() {
+    PENDING_TRANSACTION_REBROADCAST_WORKER.call_once(|| {
+        thread::spawn(|| loop {
+            thread::sleep(Duration::from_secs(
+                PENDING_TRANSACTION_REBROADCAST_INTERVAL_SECS,
+            ));
+
+            if let Ok(chain) = SHARED_CHAIN.try_lock() {
+                let _ = prune_stale_canonical_nonces_from_pool(&chain);
+            }
+
+            let pending_transactions = TX_POOL
+                .try_lock()
+                .map(|pool| pool.iter().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            if pending_transactions.is_empty() {
+                continue;
+            }
+
+            if let Some(p2p) = crate::p2p::get_p2p_network() {
+                for transaction in pending_transactions {
+                    p2p.broadcast_transaction(&transaction);
+                }
+            }
+        });
+    });
+}
+
 pub fn transaction_hashes(transactions: &[Transaction]) -> HashSet<String> {
     transactions
         .iter()
@@ -596,6 +627,36 @@ fn prune_invalid_transactions_from_pool() -> usize {
     }
 
     pruned
+}
+
+fn prune_stale_canonical_nonces_from_pool(chain: &BlockChain) -> usize {
+    let canonical_nonces = chain
+        .chain
+        .iter()
+        .flat_map(|block| block.transactions.iter())
+        .fold(HashMap::<String, u64>::new(), |mut nonces, tx| {
+            let sender = tx.sender.to_ascii_lowercase();
+            let next_nonce = tx.nonce.saturating_add(1);
+            nonces
+                .entry(sender)
+                .and_modify(|current| *current = (*current).max(next_nonce))
+                .or_insert(next_nonce);
+            nonces
+        });
+
+    if canonical_nonces.is_empty() {
+        return 0;
+    }
+
+    let mut pool = TX_POOL.lock().unwrap();
+    let before = pool.len();
+    pool.retain(|transaction| {
+        canonical_nonces
+            .get(&transaction.sender.to_ascii_lowercase())
+            .map(|canonical_nonce| transaction.nonce >= *canonical_nonce)
+            .unwrap_or(true)
+    });
+    before.saturating_sub(pool.len())
 }
 
 fn default_cluster_id(index: usize, active_validator_count: usize) -> Option<u64> {
@@ -2845,7 +2906,7 @@ fn handle_json_rpc(
             let uptime_percentage =
                 uptime_seconds.map(|secs| ((secs as f64 / 86400.0) * 100.0).min(100.0));
             let sync_status = SYNC_MANAGER
-                .lock()
+                .try_lock()
                 .ok()
                 .map(|manager| match manager.get_state() {
                     SyncState::Synced | SyncState::Idle => "synced",
@@ -3091,27 +3152,16 @@ fn handle_json_rpc(
         // Get the transaction count (nonce) for an address.
         "synergy_getTransactionCount" => {
             if let Some(address) = params.get(0).and_then(|v| v.as_str()) {
-                let _block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
-
-                // Count confirmed transactions sent by this address
-                let chain = chain.lock().unwrap();
-                let mut count: u64 = 0;
-                for block in &chain.chain {
-                    for tx in &block.transactions {
-                        if tx.sender.eq_ignore_ascii_case(address) {
-                            count += 1;
-                        }
-                    }
-                }
+                let block_tag = params.get(1).and_then(|v| v.as_str()).unwrap_or("latest");
+                let mut count = {
+                    let chain = chain.lock().unwrap();
+                    confirmed_account_nonce(address, &chain)
+                };
 
                 // If block_tag is "pending", also count pending txs
-                if _block_tag == "pending" {
+                if block_tag == "pending" {
                     let pool = tx_pool.lock().unwrap();
-                    for tx in pool.iter() {
-                        if tx.sender.eq_ignore_ascii_case(address) {
-                            count += 1;
-                        }
-                    }
+                    count = advance_nonce_through_contiguous_pending(address, count, &pool);
                 }
 
                 json!(count)
@@ -3480,6 +3530,9 @@ fn handle_json_rpc(
                 .and_then(|v| v.as_str())
                 .unwrap_or("timestamp");
             let _ = prune_invalid_transactions_from_pool();
+            if let Ok(chain) = chain.try_lock() {
+                let _ = prune_stale_canonical_nonces_from_pool(&chain);
+            }
 
             let pool = tx_pool.lock().unwrap();
             let mut txs: Vec<&Transaction> = pool.iter().collect();
@@ -5621,25 +5674,42 @@ fn get_account_nonce(
 
     {
         let chain = chain.lock().unwrap();
-        for block in &chain.chain {
-            for tx in &block.transactions {
-                if tx.sender.eq_ignore_ascii_case(address) {
-                    next_nonce = next_nonce.max(tx.nonce.saturating_add(1));
-                }
-            }
-        }
+        next_nonce = next_nonce.max(confirmed_account_nonce(address, &chain));
     }
 
-    {
-        let pool = tx_pool.lock().unwrap();
-        for tx in pool.iter() {
-            if tx.sender.eq_ignore_ascii_case(address) {
-                next_nonce = next_nonce.max(tx.nonce.saturating_add(1));
-            }
-        }
-    }
+    let pool = tx_pool.lock().unwrap();
+    next_nonce = advance_nonce_through_contiguous_pending(address, next_nonce, &pool);
 
     Ok(json!(next_nonce))
+}
+
+fn confirmed_account_nonce(address: &str, chain: &BlockChain) -> u64 {
+    chain
+        .chain
+        .iter()
+        .flat_map(|block| block.transactions.iter())
+        .filter(|tx| tx.sender.eq_ignore_ascii_case(address))
+        .map(|tx| tx.nonce.saturating_add(1))
+        .max()
+        .unwrap_or(0)
+}
+
+fn advance_nonce_through_contiguous_pending(
+    address: &str,
+    mut next_nonce: u64,
+    pool: &[Transaction],
+) -> u64 {
+    let pending_nonces = pool
+        .iter()
+        .filter(|tx| tx.sender.eq_ignore_ascii_case(address))
+        .map(|tx| tx.nonce)
+        .collect::<HashSet<_>>();
+
+    while pending_nonces.contains(&next_nonce) {
+        next_nonce = next_nonce.saturating_add(1);
+    }
+
+    next_nonce
 }
 
 fn simulate_transaction(
@@ -6620,6 +6690,93 @@ mod tests {
             .map(|transaction| transaction.hash())
             .collect::<Vec<_>>();
         assert_eq!(remaining_hashes, vec![tx_b.hash()]);
+
+        TX_POOL.lock().unwrap().clear();
+    }
+
+    #[test]
+    fn account_nonce_advances_only_through_contiguous_pending_transactions() {
+        let sender = "syna1sender";
+        let receiver = "syna1receiver";
+        let transaction = |nonce| {
+            Transaction::new(
+                sender.to_string(),
+                receiver.to_string(),
+                1,
+                nonce,
+                vec![1, 2, 3],
+                1000,
+                21000,
+                None,
+                "fndsa".to_string(),
+            )
+        };
+
+        assert_eq!(
+            advance_nonce_through_contiguous_pending(sender, 0, &[transaction(2)]),
+            0,
+            "a gap transaction must not poison the advertised next nonce"
+        );
+        assert_eq!(
+            advance_nonce_through_contiguous_pending(sender, 0, &[transaction(0), transaction(2)]),
+            1,
+            "the first gap must stop pending nonce advancement"
+        );
+        assert_eq!(
+            advance_nonce_through_contiguous_pending(
+                sender,
+                0,
+                &[transaction(2), transaction(0), transaction(1)]
+            ),
+            3,
+            "pending nonce order must not affect contiguous advancement"
+        );
+    }
+
+    #[test]
+    fn prune_stale_canonical_nonce_transactions_from_pool() {
+        let sender = "syna1sender";
+        let receiver = "syna1receiver";
+        let transaction = |nonce| {
+            Transaction::new(
+                sender.to_string(),
+                receiver.to_string(),
+                1,
+                nonce,
+                vec![1, 2, 3],
+                1000,
+                21000,
+                None,
+                "fndsa".to_string(),
+            )
+        };
+        let confirmed = transaction(0);
+        let mut chain = BlockChain::new();
+        chain.add_block(Block::new_with_timestamp(
+            1,
+            vec![confirmed.clone()],
+            "parent".to_string(),
+            "validator".to_string(),
+            1,
+            1,
+        ));
+
+        {
+            let mut pool = TX_POOL.lock().unwrap();
+            pool.clear();
+            pool.push(confirmed);
+            pool.push(transaction(1));
+            pool.push(transaction(2));
+        }
+
+        assert_eq!(prune_stale_canonical_nonces_from_pool(&chain), 1);
+        let remaining_nonces = TX_POOL
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|transaction| transaction.nonce)
+            .collect::<Vec<_>>();
+        assert_eq!(remaining_nonces, vec![1, 2]);
 
         TX_POOL.lock().unwrap().clear();
     }
