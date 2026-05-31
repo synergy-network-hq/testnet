@@ -7,9 +7,7 @@
   <string>io.synergynetwork.archive-snapshot-worker</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/synergy/bin/synergy-archive</string>
-    <string>create-snapshot</string>
-    <string>--latest-eligible</string>
+    <string>/usr/local/synergy/share/archive-validator/run-snapshot-worker.sh</string>
   </array>
   <key>EnvironmentVariables</key>
   <dict>
@@ -18,12 +16,7 @@
   </dict>
   <key>RunAtLoad</key>
   <true/>
-  <key>KeepAlive</key>
-  <dict>
-    <key>SuccessfulExit</key>
-    <false/>
-  </dict>
-  <key>ThrottleInterval</key>
+  <key>StartInterval</key>
   <integer>60</integer>
   <key>StandardOutPath</key>
   <string>/Library/Logs/Synergy/archive-validator/snapshot-worker.out.log</string>

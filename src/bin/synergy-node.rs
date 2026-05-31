@@ -107,6 +107,23 @@ fn run() -> Result<(), String> {
                 Err(error) => return Err(error),
             }
         }
+        "create-snapshot-if-due" => {
+            require_testnet_args(&args)?;
+            let options = synergy_testnet::consensus::diagnostics::CreateSnapshotOptions {
+                source_node_majority_branch_proven: arg_flag(
+                    &args,
+                    "--source-node-majority-branch-proven",
+                ),
+                source_role: arg_value(&args, "--source-role"),
+                conflict_height_hash: arg_value(&args, "--conflict-height-hash"),
+            };
+            match synergy_testnet::consensus::diagnostics::create_snapshot_if_due_with_options(
+                options,
+            ) {
+                Ok(report) => print_json(report)?,
+                Err(error) => return Err(error),
+            }
+        }
         "list-snapshots" => {
             require_testnet_args(&args)?;
             print_json(synergy_testnet::consensus::diagnostics::list_snapshots())?;
@@ -242,6 +259,7 @@ fn run() -> Result<(), String> {
             println!("  synergy-node self-heal --chain-id 1264 --network-id synergy-testnet-v2");
             println!("  synergy-node sync-from-canonical-peer --chain-id 1264 --network-id synergy-testnet-v2 --canonical-height <height> --canonical-hash <hash> --source-qc-aegis-pqc-verified --parent-continuity-verified --state-root-matches --source-peer-not-quarantined [--source-peer <id>]");
             println!("  synergy-node create-snapshot --chain-id 1264 --network-id synergy-testnet-v2 --source-node-majority-branch-proven [--source-role GENESIS_VALIDATOR] [--conflict-height-hash <hash>]");
+            println!("  synergy-node create-snapshot-if-due --chain-id 1264 --network-id synergy-testnet-v2 --source-node-majority-branch-proven [--source-role ARCHIVE_OBSERVER]");
             println!(
                 "  synergy-node list-snapshots --chain-id 1264 --network-id synergy-testnet-v2"
             );

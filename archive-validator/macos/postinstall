@@ -9,7 +9,7 @@ command -v aegis-pqvm >/dev/null 2>&1 || {
 install -d -m 0755 /usr/local/synergy/bin
 install -d -m 0755 "/Library/Application Support/Synergy/archive-validator/config"
 install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/data"
-install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/snapshots"
+install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/data/snapshots"
 install -d -m 0750 "/Library/Application Support/Synergy/archive-validator/tmp"
 install -d -m 0755 "/Library/Logs/Synergy/archive-validator"
 

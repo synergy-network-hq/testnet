@@ -1,5 +1,6 @@
 [snapshots]
-snapshot_interval_blocks = 10000
+snapshot_interval_blocks = 5000
+retain_snapshot_count = 2
 create_only_at_finalized_height = true
 require_valid_qc = true
 compression = "zstd"

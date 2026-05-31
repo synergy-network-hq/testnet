@@ -1,0 +1,11 @@
+# Render this template outside the release bundle, then pass the rendered file
+# to macos/setup-extracted-zip.sh with --wireguard-config or --wireguard-template.
+[Interface]
+PrivateKey = <operator-supplied-private-key>
+Address = <operator-supplied-private-address>
+
+[Peer]
+PublicKey = <operator-supplied-relayer-public-key>
+AllowedIPs = <operator-supplied-relayer-private-cidr>
+Endpoint = <operator-supplied-relayer-endpoint>
+PersistentKeepalive = 25

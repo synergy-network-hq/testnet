@@ -26,15 +26,31 @@ Data deletion requires the explicit `--purge-data` flag.
 
 ## Temporary Testnet Archive Testing Workaround
 
-If the signed and notarized macOS `.pkg` is not available yet, authorized Synergy Testnet archive-validator testing may use the portable zip after checksum verification. Do not disable Gatekeeper globally and do not run `spctl --master-disable`.
+For local operator-controlled deployment from extracted source, build the dedicated macOS extracted zip. Do not disable Gatekeeper globally and do not run `spctl --master-disable`.
 
 ```bash
-shasum -a 256 synergy-archive-validator-testnet-v2.zip
-xattr -d com.apple.quarantine synergy-archive-validator-testnet-v2.zip 2>/dev/null || true
-unzip synergy-archive-validator-testnet-v2.zip
+./package-archive-validator.sh --macos-extracted
+shasum -a 256 synergy-archive-validator-testnet-v2-macos-extracted.zip
+unzip synergy-archive-validator-testnet-v2-macos-extracted.zip
 xattr -dr com.apple.quarantine ./archive-validator
 cd archive-validator
-sudo ./setup-archive-validator.sh
+sudo ./macos/setup-extracted-zip.sh \
+  --archive-binary /trusted/path/synergy-archive \
+  --node-binary /trusted/path/synergy-node \
+  --genesis-file /trusted/path/genesis.testnet.json \
+  --expected-genesis-hash <hash> \
+  --wireguard-config /secure/path/archive-validator.conf
 ```
 
-This is a temporary operator workaround only. The release-grade macOS path remains a signed, notarized, and stapled installer package.
+The WireGuard input is operator supplied and copied locally with mode `0600`. The public zip contains only `config/wireguard/archive-validator.conf.template`, which has placeholders and no credentials.
+
+After the archive state is verified on the majority branch, authorize initial snapshot creation through supported tooling:
+
+```bash
+sudo /usr/local/synergy/share/archive-validator/create-initial-snapshot.sh \
+  --source-node-majority-branch-proven
+```
+
+Launchd persists WireGuard, the archive service, the snapshot API, and the scheduled snapshot worker. The scheduled worker invokes `synergy-node create-snapshot-if-due`, which uses the same supported signed snapshot path and keeps exactly two snapshots.
+
+The extracted-zip path is local operator packaging only. The release-grade macOS path remains a signed, notarized, and stapled installer package.

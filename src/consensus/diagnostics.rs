@@ -2083,6 +2083,47 @@ pub fn create_snapshot() -> Result<Value, String> {
     })
 }
 
+pub fn create_snapshot_if_due_with_options(
+    options: CreateSnapshotOptions,
+) -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    let schedule = SnapshotSchedule::launch_default();
+    let snapshot_root = crate::utils::resolve_data_path("data/snapshots");
+    let latest_snapshot = fs::read_dir(&snapshot_root)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter(|entry| {
+            entry
+                .file_type()
+                .map(|file_type| file_type.is_dir())
+                .unwrap_or(false)
+        })
+        .map(|entry| snapshot_retention_key(&entry.path()))
+        .max();
+    let (current_finalized_height, _) = latest_canonical_lock().ok_or_else(|| {
+        "missing canonical_locks.json finalized head; refusing scheduled snapshot creation"
+            .to_string()
+    })?;
+    let snapshot_due = latest_snapshot
+        .map(|(height, _)| {
+            current_finalized_height.saturating_sub(height) >= schedule.interval_finalized_blocks
+        })
+        .unwrap_or(true);
+    if !snapshot_due {
+        return Ok(json!({
+            "success": true,
+            "typed_status": "SNAPSHOT_NOT_DUE",
+            "chain": chain_identity(),
+            "current_finalized_height": current_finalized_height,
+            "latest_snapshot_height": latest_snapshot.map(|(height, _)| height),
+            "schedule": schedule,
+        }));
+    }
+    create_snapshot_with_options(options)
+}
+
 pub fn create_snapshot_with_options(options: CreateSnapshotOptions) -> Result<Value, String> {
     require_local_testnet_v2()?;
     if !options.source_node_majority_branch_proven {

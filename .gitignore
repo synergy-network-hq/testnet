@@ -37,6 +37,11 @@ node-control-panel/
 *.exe
 archive-validator/dist/
 archive-validator/synergy-archive-validator-testnet-v2*.zip
+archive-validator/**/*.key
+archive-validator/**/*.pem
+archive-validator/**/*.p12
+archive-validator/**/id_*
+archive-validator/config/wireguard/*.conf
 
 # Temporary files
 *.log

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.synergynetwork.archive-wireguard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/synergy/share/archive-validator/wireguard-control.sh</string>
+    <string>up</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Library/Logs/Synergy/archive-validator/wireguard.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Library/Logs/Synergy/archive-validator/wireguard.err.log</string>
+</dict>
+</plist>

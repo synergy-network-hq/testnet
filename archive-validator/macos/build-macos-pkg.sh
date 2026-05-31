@@ -11,6 +11,7 @@ COMPONENT_PKG="${DIST_DIR}/SynergyArchiveValidator.component.pkg"
 SIGNED_PKG="${DIST_DIR}/SynergyArchiveValidator.pkg"
 
 : "${SYNERGY_ARCHIVE_BINARY:?Set SYNERGY_ARCHIVE_BINARY to the trusted universal synergy-archive executable.}"
+: "${SYNERGY_NODE_BINARY:?Set SYNERGY_NODE_BINARY to the trusted universal synergy-node executable.}"
 : "${DEVELOPER_ID_APPLICATION:?Set DEVELOPER_ID_APPLICATION to the Synergy Developer ID Application signing identity.}"
 : "${DEVELOPER_ID_INSTALLER:?Set DEVELOPER_ID_INSTALLER to the Synergy Developer ID Installer signing identity.}"
 : "${APPLE_TEAM_ID:?Set APPLE_TEAM_ID to the Synergy Apple Developer Team ID.}"
@@ -20,6 +21,7 @@ SIGNED_PKG="${DIST_DIR}/SynergyArchiveValidator.pkg"
 
 [[ "$(uname -s)" == "Darwin" ]] || { echo "macOS package build must run on macOS." >&2; exit 1; }
 [[ -x "${SYNERGY_ARCHIVE_BINARY}" ]] || { echo "SYNERGY_ARCHIVE_BINARY is not executable." >&2; exit 1; }
+[[ -x "${SYNERGY_NODE_BINARY}" ]] || { echo "SYNERGY_NODE_BINARY is not executable." >&2; exit 1; }
 command -v codesign >/dev/null 2>&1 || { echo "codesign is required." >&2; exit 1; }
 command -v pkgbuild >/dev/null 2>&1 || { echo "pkgbuild is required." >&2; exit 1; }
 command -v productbuild >/dev/null 2>&1 || { echo "productbuild is required." >&2; exit 1; }
@@ -33,8 +35,12 @@ mkdir -p "${PAYLOAD_DIR}/Library/LaunchDaemons"
 mkdir -p "${SCRIPTS_DIR}" "${DIST_DIR}"
 
 install -m 0755 "${SYNERGY_ARCHIVE_BINARY}" "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-archive"
+install -m 0755 "${SYNERGY_NODE_BINARY}" "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-node"
 install -m 0755 "${MACOS_DIR}/uninstall-macos.sh" "${PAYLOAD_DIR}/usr/local/synergy/share/archive-validator/uninstall-macos.sh"
-install -m 0644 "${ROOT_DIR}/config/archive-validator.testnet.toml" "${PAYLOAD_DIR}/Library/Application Support/Synergy/archive-validator/config/archive-validator.toml"
+install -m 0755 "${MACOS_DIR}/create-initial-snapshot.sh" "${PAYLOAD_DIR}/usr/local/synergy/share/archive-validator/create-initial-snapshot.sh"
+install -m 0755 "${MACOS_DIR}/run-snapshot-worker.sh" "${PAYLOAD_DIR}/usr/local/synergy/share/archive-validator/run-snapshot-worker.sh"
+install -m 0755 "${MACOS_DIR}/wireguard-control.sh" "${PAYLOAD_DIR}/usr/local/synergy/share/archive-validator/wireguard-control.sh"
+install -m 0644 "${ROOT_DIR}/config/archive-validator.macos.testnet.toml" "${PAYLOAD_DIR}/Library/Application Support/Synergy/archive-validator/config/archive-validator.toml"
 install -m 0644 "${ROOT_DIR}/config/snapshot-policy.testnet.toml" "${PAYLOAD_DIR}/Library/Application Support/Synergy/archive-validator/config/snapshot-policy.toml"
 install -m 0644 "${ROOT_DIR}/config/archive-api.testnet.toml" "${PAYLOAD_DIR}/Library/Application Support/Synergy/archive-validator/config/archive-api.toml"
 install -m 0644 "${ROOT_DIR}/launchd/"*.plist "${PAYLOAD_DIR}/Library/LaunchDaemons/"
@@ -46,6 +52,11 @@ codesign --force --options runtime --timestamp \
   --sign "${DEVELOPER_ID_APPLICATION}" \
   "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-archive"
 codesign --verify --strict --verbose=2 "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-archive"
+codesign --force --options runtime --timestamp \
+  --entitlements "${MACOS_DIR}/entitlements.plist" \
+  --sign "${DEVELOPER_ID_APPLICATION}" \
+  "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-node"
+codesign --verify --strict --verbose=2 "${PAYLOAD_DIR}/usr/local/synergy/bin/synergy-node"
 
 pkgbuild \
   --root "${PAYLOAD_DIR}" \

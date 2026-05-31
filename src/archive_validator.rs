@@ -37,6 +37,7 @@ pub struct ArchiveValidatorConfig {
     pub network_id: NetworkId,
     pub role: String,
     pub snapshot_interval_blocks: u64,
+    pub snapshot_retention_count: usize,
     pub fail_closed_on_verification_error: bool,
     pub archive_peer_key_role: AegisPqKeyRole,
     pub snapshot_signing_key_role: AegisPqKeyRole,
@@ -48,7 +49,8 @@ impl ArchiveValidatorConfig {
             chain_id: ChainId::synergy_testnet_v2(),
             network_id: NetworkId::synergy_testnet_v2(),
             role: "ARCHIVE_OBSERVER".to_string(),
-            snapshot_interval_blocks: 10_000,
+            snapshot_interval_blocks: 5_000,
+            snapshot_retention_count: 2,
             fail_closed_on_verification_error: true,
             archive_peer_key_role: AegisPqKeyRole::ArchivePeer,
             snapshot_signing_key_role: AegisPqKeyRole::ArchiveSnapshotSigner,
@@ -63,8 +65,11 @@ impl ArchiveValidatorConfig {
                 "archive validator package must use a non-consensus archive role".to_string(),
             );
         }
-        if self.snapshot_interval_blocks != 10_000 {
-            return Err("testnet archive snapshot interval must be 10000 blocks".to_string());
+        if self.snapshot_interval_blocks != 5_000 {
+            return Err("testnet archive snapshot interval must be 5000 blocks".to_string());
+        }
+        if self.snapshot_retention_count != 2 {
+            return Err("testnet archive snapshot retention count must be 2".to_string());
         }
         if !self.fail_closed_on_verification_error {
             return Err("archive validator must fail closed on verification error".to_string());
@@ -276,6 +281,16 @@ mod tests {
     }
 
     #[test]
+    fn archive_snapshot_schedule_matches_operator_policy() {
+        let config = ArchiveValidatorConfig::testnet_default();
+        assert_eq!(config.snapshot_interval_blocks, 5_000);
+        assert_eq!(config.snapshot_retention_count, 2);
+        let schedule = crate::consensus::self_realign::SnapshotSchedule::launch_default();
+        assert_eq!(schedule.interval_finalized_blocks, 5_000);
+        assert_eq!(schedule.retain_last, 2);
+    }
+
+    #[test]
     fn snapshot_manifest_must_be_signed_with_real_aegis_pqc() {
         let mut signer = AegisPqvmSigner::initialize_required().unwrap();
         let key_id = signer
@@ -290,13 +305,13 @@ mod tests {
             chain_id: ChainId::synergy_testnet_v2(),
             network_id: NetworkId::synergy_testnet_v2(),
             genesis_hash: Hash::from_domain_bytes("genesis", b"test"),
-            snapshot_height: Height(10_000),
+            snapshot_height: Height(5_000),
             snapshot_block_id: "block".to_string(),
-            snapshot_block_hash: Hash::from_domain_bytes("block", b"10000"),
+            snapshot_block_hash: Hash::from_domain_bytes("block", b"5000"),
             snapshot_parent_hash: Hash::zero(),
-            snapshot_state_root: Hash::from_domain_bytes("state", b"10000"),
+            snapshot_state_root: Hash::from_domain_bytes("state", b"5000"),
             snapshot_receipt_root: Hash::zero(),
-            snapshot_qc_hash: Hash::from_domain_bytes("qc", b"10000"),
+            snapshot_qc_hash: Hash::from_domain_bytes("qc", b"5000"),
             snapshot_epoch: Epoch(0),
             snapshot_cluster_id: ClusterId(0),
             active_validator_set_hash: Hash::zero(),
@@ -310,7 +325,7 @@ mod tests {
             archive_node_aegis_key_id: key_id.clone(),
             snapshot_signing_key_id: key_id,
             created_at_unix_ms: 0,
-            snapshot_interval_blocks: 10_000,
+            snapshot_interval_blocks: 5_000,
             previous_snapshot_height: Height(0),
             previous_snapshot_manifest_hash: Hash::zero(),
             content_root: Hash::from_domain_bytes("content", b"snapshot"),
@@ -321,8 +336,8 @@ mod tests {
             chunk_size_bytes: 67_108_864,
             total_uncompressed_bytes: 1,
             total_compressed_bytes: 1,
-            required_replay_start_height: Height(10_001),
-            required_replay_end_height: Height(10_000),
+            required_replay_start_height: Height(5_001),
+            required_replay_end_height: Height(5_000),
             manifest_domain_separator: SYNERGY_ARCHIVE_SNAPSHOT_MANIFEST_V1.to_string(),
         };
         let archive = ArchiveValidatorNode::new(ArchiveValidatorConfig::testnet_default()).unwrap();
@@ -365,14 +380,22 @@ mod tests {
             "launchd/io.synergynetwork.archive-validator.plist",
             "launchd/io.synergynetwork.archive-snapshot-api.plist",
             "launchd/io.synergynetwork.archive-snapshot-worker.plist",
+            "launchd/io.synergynetwork.archive-wireguard.plist",
             "macos/build-macos-pkg.sh",
+            "macos/setup-extracted-zip.sh",
+            "macos/create-initial-snapshot.sh",
+            "macos/run-snapshot-worker.sh",
+            "macos/wireguard-control.sh",
             "macos/preinstall",
             "macos/postinstall",
             "macos/uninstall-macos.sh",
             "macos/entitlements.plist",
             "macos/README-GATEKEEPER.md",
             "docs/MACOS_INSTALL.md",
+            "docs/RELAYER_SNAPSHOT_RETRIEVAL.md",
             "docs/SNAPSHOT_VERIFICATION.md",
+            "config/archive-validator.macos.testnet.toml",
+            "config/wireguard/archive-validator.conf.template",
             "bin/README.md",
         ] {
             assert!(
@@ -389,14 +412,17 @@ mod tests {
             .expect("package script");
         assert!(package_script.contains("synergy-archive-validator-testnet-v2-linux-x64.zip"));
         assert!(package_script.contains("synergy-archive-validator-testnet-v2-macos-universal.zip"));
+        assert!(package_script.contains("synergy-archive-validator-testnet-v2-macos-extracted.zip"));
         assert!(package_script.contains("synergy-archive-validator-testnet-v2.zip"));
         assert!(package_script.contains("Refusing to package private keys"));
         assert!(package_script.contains("snapshots"));
         assert!(package_script.contains("evidence"));
+        assert!(package_script.contains("wireguard"));
 
         let macos_script =
             std::fs::read_to_string(root.join("macos/build-macos-pkg.sh")).expect("macos script");
         for required in [
+            "SYNERGY_NODE_BINARY",
             "DEVELOPER_ID_APPLICATION",
             "DEVELOPER_ID_INSTALLER",
             "notarytool submit",
@@ -409,5 +435,27 @@ mod tests {
                 "macOS package script must require {required}"
             );
         }
+
+        let extracted_installer =
+            std::fs::read_to_string(root.join("macos/setup-extracted-zip.sh"))
+                .expect("extracted installer");
+        for required in [
+            "--wireguard-config",
+            "--wireguard-template",
+            "--source-node-majority-branch-proven",
+            "create-initial-snapshot.sh",
+            "launchctl bootstrap",
+        ] {
+            assert!(
+                extracted_installer.contains(required),
+                "macOS extracted installer must contain {required}"
+            );
+        }
+
+        let archive_config =
+            std::fs::read_to_string(root.join("config/archive-validator.macos.testnet.toml"))
+                .expect("macOS archive config");
+        assert!(archive_config.contains("snapshot_interval_blocks = 5000"));
+        assert!(archive_config.contains("retain_snapshot_count = 2"));
     }
 }

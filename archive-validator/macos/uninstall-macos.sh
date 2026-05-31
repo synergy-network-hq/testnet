@@ -9,15 +9,21 @@ fi
 for label in \
   io.synergynetwork.archive-snapshot-worker \
   io.synergynetwork.archive-snapshot-api \
-  io.synergynetwork.archive-validator
+  io.synergynetwork.archive-validator \
+  io.synergynetwork.archive-wireguard
 do
   launchctl bootout "system/${label}" >/dev/null 2>&1 || true
 done
 
+"/usr/local/synergy/share/archive-validator/wireguard-control.sh" down >/dev/null 2>&1 || true
+
 rm -f /Library/LaunchDaemons/io.synergynetwork.archive-validator.plist
 rm -f /Library/LaunchDaemons/io.synergynetwork.archive-snapshot-api.plist
 rm -f /Library/LaunchDaemons/io.synergynetwork.archive-snapshot-worker.plist
+rm -f /Library/LaunchDaemons/io.synergynetwork.archive-wireguard.plist
 rm -f /usr/local/synergy/bin/synergy-archive
+rm -f /usr/local/synergy/bin/synergy-node
+rm -rf /usr/local/synergy/share/archive-validator
 
 if [[ "${PURGE_DATA}" == "true" ]]; then
   rm -rf "/Library/Application Support/Synergy/archive-validator"
