@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -16,6 +17,27 @@ const MAX_SUPPORT_SYNC_RESPONSE_BLOCKS: u64 = 8;
 const MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST: u64 =
     MAX_SUPPORT_SYNC_RESPONSE_BLOCKS - SYNC_PROGRESS_OVERLAP - 1;
 const SYNC_BATCH_RETRY_TIMEOUT_SECS: u64 = 6;
+
+static ACTIVE_SYNC_MANAGERS: AtomicUsize = AtomicUsize::new(0);
+
+struct ActiveSyncGuard;
+
+impl ActiveSyncGuard {
+    fn new() -> Self {
+        ACTIVE_SYNC_MANAGERS.fetch_add(1, Ordering::SeqCst);
+        Self
+    }
+}
+
+impl Drop for ActiveSyncGuard {
+    fn drop(&mut self) {
+        ACTIVE_SYNC_MANAGERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn sync_manager_is_active() -> bool {
+    ACTIVE_SYNC_MANAGERS.load(Ordering::SeqCst) > 0
+}
 
 /// Represents where the sync engine currently is in the lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +286,7 @@ impl SyncManager {
     }
 
     pub fn start_sync(&mut self) -> Result<(), SyncError> {
+        let _active_sync = ActiveSyncGuard::new();
         self.refresh_local_height();
         self.state = SyncState::Discovering;
         let network_height = self.discover_network_height()?;
@@ -471,6 +494,16 @@ mod tests {
         assert_eq!(sync_progress_overlap(2), 1);
         assert_eq!(sync_progress_overlap(64), SYNC_PROGRESS_OVERLAP);
         assert_eq!(MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST, 5);
+    }
+
+    #[test]
+    fn active_sync_guard_tracks_lifetime_without_initializing_global_sync_state() {
+        assert!(!sync_manager_is_active());
+        {
+            let _guard = ActiveSyncGuard::new();
+            assert!(sync_manager_is_active());
+        }
+        assert!(!sync_manager_is_active());
     }
 
     #[test]

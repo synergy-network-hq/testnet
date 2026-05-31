@@ -14,10 +14,8 @@ use crate::crypto::aegis_pqvm::{
 use crate::crypto::pqc::{PQCAlgorithm, PQCPublicKey};
 use crate::genesis::canonical_genesis;
 use crate::p2p::messages::NetworkMessage;
-use crate::rpc::rpc_server::{
-    prune_transaction_hashes_from_pool, transaction_hashes, SYNC_MANAGER, TX_POOL,
-};
-use crate::sync::SyncState;
+use crate::rpc::rpc_server::{prune_transaction_hashes_from_pool, transaction_hashes, TX_POOL};
+use crate::sync::manager::sync_manager_is_active as any_sync_manager_is_active;
 use crate::synergy_types::{AegisPqKeyId, AegisPqKeyRole, Epoch};
 use crate::transaction::Transaction;
 use crate::validator::{
@@ -1210,6 +1208,16 @@ fn handle_status_message(
             "quarantined" => quarantined,
             "consensus_duties_disabled" => consensus_duties_disabled,
             "recovery_state" => recovery_state.clone().unwrap_or_default()
+        );
+        return;
+    }
+    if !should_request_status_sync(sync_manager_is_active()) {
+        debug!(
+            "p2p",
+            "Skipping status-triggered block sync request while sync manager is active",
+            "peer" => peer_address.to_string(),
+            "reported_height" => block_height,
+            "local_height" => local_height
         );
         return;
     }
@@ -3538,23 +3546,15 @@ fn handle_blocks_message(
 }
 
 fn sync_manager_is_active() -> bool {
-    SYNC_MANAGER
-        .lock()
-        .ok()
-        .map(|manager| {
-            matches!(
-                manager.get_state(),
-                SyncState::Discovering
-                    | SyncState::Downloading
-                    | SyncState::Validating
-                    | SyncState::Applying
-            )
-        })
-        .unwrap_or(false)
+    any_sync_manager_is_active()
 }
 
 fn should_request_missing_blocks(config: &NodeConfig, sync_active: bool) -> bool {
     !config.node.bootstrap_only && !sync_active
+}
+
+fn should_request_status_sync(sync_active: bool) -> bool {
+    !sync_active
 }
 
 fn local_node_runs_validator_consensus(config: &NodeConfig) -> bool {
@@ -5901,10 +5901,10 @@ mod tests {
         pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
-        should_request_missing_blocks, status_ready_validator_addresses_with_local_duty_gate,
-        status_ready_validator_participants, status_sync_batch,
-        support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
-        validator_status_genesis_grace_remaining_secs,
+        should_request_missing_blocks, should_request_status_sync,
+        status_ready_validator_addresses_with_local_duty_gate, status_ready_validator_participants,
+        status_sync_batch, support_peer_sync_request_is_too_deep,
+        validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
         vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
         PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
@@ -7441,6 +7441,12 @@ mod tests {
         let config = NodeConfig::default();
         assert!(should_request_missing_blocks(&config, false));
         assert!(!should_request_missing_blocks(&config, true));
+    }
+
+    #[test]
+    fn status_triggered_sync_requests_pause_while_sync_manager_is_active() {
+        assert!(should_request_status_sync(false));
+        assert!(!should_request_status_sync(true));
     }
 
     #[test]
