@@ -13,7 +13,7 @@ use crate::sync::validation;
 const SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
 const SYNC_PROGRESS_OVERLAP: u64 = 2;
 const MAX_SYNC_BATCH_BLOCKS: u64 = 128;
-const MAX_SUPPORT_SYNC_RESPONSE_BLOCKS: u64 = 8;
+const MAX_SUPPORT_SYNC_RESPONSE_BLOCKS: u64 = 64;
 const MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST: u64 =
     MAX_SUPPORT_SYNC_RESPONSE_BLOCKS - SYNC_PROGRESS_OVERLAP - 1;
 const SYNC_BATCH_RETRY_TIMEOUT_SECS: u64 = 6;
@@ -493,7 +493,7 @@ mod tests {
         assert_eq!(sync_progress_overlap(1), 0);
         assert_eq!(sync_progress_overlap(2), 1);
         assert_eq!(sync_progress_overlap(64), SYNC_PROGRESS_OVERLAP);
-        assert_eq!(MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST, 5);
+        assert_eq!(MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST, 61);
     }
 
     #[test]
@@ -508,9 +508,9 @@ mod tests {
 
     #[test]
     fn sync_request_plan_fits_one_support_response_budget() {
-        assert_eq!(sync_request_plan(10_000, 20_000), (9_998, 8, 10_005));
+        assert_eq!(sync_request_plan(10_000, 20_000), (9_998, 64, 10_061));
         assert_eq!(sync_request_plan(10_000, 10_004), (9_998, 7, 10_004));
-        assert_eq!(sync_request_plan(0, 20_000), (0, 6, 5));
+        assert_eq!(sync_request_plan(0, 20_000), (0, 62, 61));
     }
 
     #[test]

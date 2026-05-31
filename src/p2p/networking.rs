@@ -57,8 +57,10 @@ const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
 const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
 const MAX_STATUS_SYNC_BATCH: u32 = 16;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
-const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 8;
-const MAX_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 2_048;
+const MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS: u32 = 64;
+// Archive snapshots are emitted every 5,000 blocks. Keep support recovery
+// bounded while allowing a verified snapshot plus one archive interval of lag.
+const MAX_SUPPORT_PEER_DEEP_SYNC_LAG: u64 = 10_000;
 const MAX_P2P_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
 const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
@@ -7095,13 +7097,13 @@ mod tests {
         let local_height = 3;
         let (from_height, count) =
             block_sync_request_range(local_height, 1_080, MAX_STATUS_SYNC_BATCH).unwrap();
+        let served_count = count.min(MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS);
 
         assert!(from_height <= local_height);
         assert!(
-            from_height + MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS as u64 - 1 > local_height,
+            from_height + served_count as u64 - 1 > local_height,
             "first throttled validator response must include at least one block above local height"
         );
-        assert!(count >= MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS);
     }
 
     #[test]
@@ -7589,7 +7591,12 @@ mod tests {
         assert!(!support_peer_sync_request_is_too_deep(
             Some(&support_peer),
             50_000,
-            49_500
+            44_000
+        ));
+        assert!(support_peer_sync_request_is_too_deep(
+            Some(&support_peer),
+            50_000,
+            39_000
         ));
         assert!(!support_peer_sync_request_is_too_deep(
             Some(&active_peer),
