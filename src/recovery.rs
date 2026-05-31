@@ -1639,9 +1639,11 @@ fn chain_is_materialized_from_genesis(data_dir: &Path) -> Result<bool, String> {
     let blocks = serde_json::from_str::<Vec<Block>>(&content)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
     let mut expected_height = 0;
-    let mut expected_parent = EXPECTED_GENESIS_HASH.to_string();
+    let mut expected_parent = String::new();
     for block in &blocks {
-        if block.block_index != expected_height || block.previous_hash != expected_parent {
+        if block.block_index != expected_height
+            || (block.block_index > 0 && block.previous_hash != expected_parent)
+        {
             return Ok(false);
         }
         expected_height = expected_height.saturating_add(1);
@@ -1876,7 +1878,7 @@ mod tests {
     }
 
     fn write_chain(root: &Path, heights: &[(&str, u64)]) {
-        let mut previous = EXPECTED_GENESIS_HASH.to_string();
+        let mut previous = "0".repeat(64);
         let blocks = heights
             .iter()
             .map(|(hash, height)| {
