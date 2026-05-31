@@ -63,6 +63,7 @@ const MAX_P2P_FRAME_BYTES: usize = 64 * 1024 * 1024;
 const BLOCK_SYNC_RESPONSE_WRITE_TIMEOUT_SECS: u64 = 1;
 const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS: u64 = 5;
+const BLOCK_SYNC_MIN_REQUEST_INTERVAL_MILLIS: u64 = 250;
 const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS: u64 = 900;
 const VOTE_REQUEST_PARENT_SYNC_POLL_MILLIS: u64 = 25;
@@ -106,6 +107,8 @@ lazy_static! {
         Mutex::new(BTreeMap::new());
     static ref CHAIN_PERSIST_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
     static ref BLOCK_SYNC_LAST_SERVED: Mutex<HashMap<String, u64>> = Mutex::new(HashMap::new());
+    static ref BLOCK_SYNC_LAST_REQUESTED: Mutex<HashMap<String, Instant>> =
+        Mutex::new(HashMap::new());
 }
 
 pub struct P2PNetwork {
@@ -761,6 +764,29 @@ fn peer_identity_from_connection(peer: &PeerConnection) -> Option<String> {
 fn block_sync_rate_limit_key(peer_address: &str, peer: Option<&PeerConnection>) -> String {
     peer.and_then(peer_identity_from_connection)
         .unwrap_or_else(|| format!("host:{}", peer_socket_host(peer_address)))
+}
+
+fn should_send_block_sync_request_at(peer_address: &str, now: Instant) -> bool {
+    BLOCK_SYNC_LAST_REQUESTED
+        .lock()
+        .map(|mut requested| {
+            let should_send = requested
+                .get(peer_address)
+                .map(|last_requested| {
+                    now.saturating_duration_since(*last_requested)
+                        >= Duration::from_millis(BLOCK_SYNC_MIN_REQUEST_INTERVAL_MILLIS)
+                })
+                .unwrap_or(true);
+            if should_send {
+                requested.insert(peer_address.to_string(), now);
+            }
+            should_send
+        })
+        .unwrap_or(false)
+}
+
+fn should_send_block_sync_request(peer_address: &str) -> bool {
+    should_send_block_sync_request_at(peer_address, Instant::now())
 }
 
 fn peer_has_remote_status(peer: &PeerConnection) -> bool {
@@ -2470,6 +2496,16 @@ impl P2PNetwork {
             let Some(peer) = peers.get_mut(&address) else {
                 continue;
             };
+            if !should_send_block_sync_request(&address) {
+                debug!(
+                    "p2p",
+                    "Suppressing duplicate outbound block sync request",
+                    "peer" => address.clone(),
+                    "from_height" => from_height,
+                    "count" => count as u64
+                );
+                continue;
+            }
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_message(stream, &message) {
                     eprintln!("❌ Failed to request blocks from {}: {}", address, e);
@@ -2487,6 +2523,16 @@ impl P2PNetwork {
         let message = NetworkMessage::GetBlocks { from_height, count };
         let mut peers = self.connected_peers.lock().unwrap();
         if let Some(peer) = peers.get_mut(peer_address) {
+            if !should_send_block_sync_request(peer_address) {
+                debug!(
+                    "p2p",
+                    "Suppressing duplicate outbound block sync request",
+                    "peer" => peer_address.to_string(),
+                    "from_height" => from_height,
+                    "count" => count as u64
+                );
+                return true;
+            }
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_message(stream, &message) {
                     warn!(
@@ -2772,6 +2818,16 @@ fn request_blocks_from_connected_peer(
 ) {
     let message = NetworkMessage::GetBlocks { from_height, count };
     if let Some(peer) = peers.get_mut(peer_address) {
+        if !should_send_block_sync_request(peer_address) {
+            debug!(
+                "p2p",
+                "Suppressing duplicate outbound block sync request",
+                "peer" => peer_address.to_string(),
+                "from_height" => from_height,
+                "count" => count as u64
+            );
+            return;
+        }
         if let Some(ref mut stream) = peer.stream {
             if let Err(error) = send_message(stream, &message) {
                 warn!(
@@ -3397,14 +3453,6 @@ fn handle_get_blocks_message(
         return;
     }
 
-    info!(
-        "p2p",
-        "Block request",
-        "peer" => peer_address.to_string(),
-        "from_height" => from_height,
-        "count" => count as u64
-    );
-
     let now = current_timestamp();
     let rate_limit_key = {
         let peers = connected_peers.lock().unwrap();
@@ -3432,6 +3480,14 @@ fn handle_get_blocks_message(
         );
         return;
     }
+
+    info!(
+        "p2p",
+        "Block request",
+        "peer" => peer_address.to_string(),
+        "from_height" => from_height,
+        "count" => count as u64
+    );
 
     let (policy, refuse_deep_support_sync) = {
         let local_height = {
@@ -5902,9 +5958,10 @@ mod tests {
         resolve_bootstrap_dial_targets, resolve_duplicate_connection,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, should_request_status_sync,
-        status_ready_validator_addresses_with_local_duty_gate, status_ready_validator_participants,
-        status_sync_batch, support_peer_sync_request_is_too_deep,
-        validate_vote_request_extends_local_tip, validator_status_genesis_grace_remaining_secs,
+        should_send_block_sync_request_at, status_ready_validator_addresses_with_local_duty_gate,
+        status_ready_validator_participants, status_sync_batch,
+        support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
+        validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
         vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
         PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
@@ -5937,7 +5994,7 @@ mod tests {
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     fn configure_canonical_genesis_path_for_tests() {
         std::env::set_var(
@@ -6235,6 +6292,25 @@ mod tests {
             block_sync_rate_limit_key("74.208.227.23:41000", None),
             "host:74.208.227.23".to_string()
         );
+    }
+
+    #[test]
+    fn outbound_block_sync_requests_are_paced_per_peer() {
+        let now = Instant::now();
+        let peer = "test-outbound-sync-pacing-peer";
+        assert!(should_send_block_sync_request_at(peer, now));
+        assert!(!should_send_block_sync_request_at(
+            peer,
+            now + Duration::from_millis(249)
+        ));
+        assert!(should_send_block_sync_request_at(
+            peer,
+            now + Duration::from_millis(250)
+        ));
+        assert!(should_send_block_sync_request_at(
+            "test-outbound-sync-pacing-peer-2",
+            now
+        ));
     }
 
     #[test]
