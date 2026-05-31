@@ -5,9 +5,9 @@ TEMPLATES_DIR="templates"
 BOOTNODE_TARGETS='["snr://bootstrap@bootnode1.synergyvps.xyz:5620", "snr://bootstrap@bootnode2.synergyvps.xyz:5620", "snr://bootstrap@bootnode3.synergyvps.xyz:5620"]'
 SEED_SERVER_TARGETS='["http://seed1.synergyvps.xyz:5621", "http://seed2.synergyvps.xyz:5621", "http://seed3.synergyvps.xyz:5621"]'
 BOOTSTRAP_DNS_RECORDS='["_dnsaddr.bootstrap.synergyvps.xyz"]'
-SENTRY1_TARGETS='["relay1.synergynode.xyz:5622"]'
-SENTRY2_TARGETS='["relay2.synergynode.xyz:5622"]'
-SENTRY_EDGE_TARGETS='["relay1.synergynode.xyz:5622", "relay2.synergynode.xyz:5622"]'
+SENTRY1_TARGETS='["195.26.241.95:5622"]'
+SENTRY2_TARGETS='["94.72.117.108:5622"]'
+SENTRY_EDGE_TARGETS='["195.26.241.95:5622", "94.72.117.108:5622"]'
 VALIDATOR_MESH_TARGETS='["10.69.0.1:5622", "10.69.0.2:5622", "10.69.0.3:5622", "10.69.0.4:5622", "10.69.0.5:5622"]'
 ALLOWED_VALIDATOR_ADDRESSES='["synv11qen9x0g9p0f2pqznpqzfrwkrgnsussdwmvs", "synv11s4wc6l4kg4jr0k5meg42cyzxa03cf863srt", "synv11e3ephsarcw6mey0fx5xtnygg2ewegnum4re", "synv11mka64uz049aekwhdvfrq6dvh75d0k7kmdp5", "synv11kguave5fpdpm9hru4acfvw0hcp4fcc7zv9f"]'
 

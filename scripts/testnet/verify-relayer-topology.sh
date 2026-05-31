@@ -38,7 +38,7 @@ ssh_json_rpc() {
 is_allowed_validator_peer() {
   local address="$1"
   case "${address}" in
-    10.69.0.1:*|10.69.0.2:*|10.69.0.3:*|10.69.0.4:*|10.69.0.5:*|10.69.0.20:*|10.69.0.202:*|10.69.0.250:*)
+    10.69.0.1:*|10.69.0.2:*|10.69.0.3:*|10.69.0.4:*|10.69.0.5:*|10.69.0.201:*|10.69.0.202:*|10.69.0.250:*)
       return 0
       ;;
     *)
@@ -67,7 +67,7 @@ for peer in peers:
         or address.startswith("10.69.0.3:")
         or address.startswith("10.69.0.4:")
         or address.startswith("10.69.0.5:")
-        or address.startswith("10.69.0.20:")
+        or address.startswith("10.69.0.201:")
         or address.startswith("10.69.0.202:")
         or address.startswith("10.69.0.250:")
     ):

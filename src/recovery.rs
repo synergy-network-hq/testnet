@@ -1,4 +1,7 @@
 use crate::block::Block;
+use crate::consensus::self_realign::{
+    verify_signed_snapshot_manifest, SignedSnapshotManifest, SnapshotVerificationPolicy,
+};
 use crate::consensus::validator_keys::parse_validator_public_key;
 use crate::crypto::aegis_pqvm::{AegisPqvmKeyRegistry, AegisPqvmVerifier};
 use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCPublicKey, PQCSignature};
@@ -94,6 +97,8 @@ pub struct RecoveryPlan {
     pub source_qc_vote_count: u64,
     pub source_qc_signers: Vec<String>,
     pub source_qc_aegis_pqc_verified: bool,
+    #[serde(default)]
+    pub signed_snapshot_manifest_verified: bool,
     pub majority_branch_proven: bool,
     pub target_is_minority_or_lagged: bool,
     pub recovery_type: RecoveryType,
@@ -209,6 +214,7 @@ pub struct QcProofSummary {
     pub vote_count: u64,
     pub signers: Vec<String>,
     pub verified: bool,
+    pub signed_snapshot_manifest_verified: bool,
     pub failure: Option<String>,
 }
 
@@ -341,21 +347,25 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
     let proof = load_recovery_proof(&source_dir);
     let qc_summary = match proof {
         Ok(proof) => verify_recovery_proof(&proof),
-        Err(sidecar_error) => {
-            match verify_legacy_committed_qc(&source_dir, input.conflict_height) {
-                Ok(summary) => summary,
-                Err(legacy_error) => QcProofSummary {
-                    height: 0,
-                    hash: String::new(),
-                    vote_count: 0,
-                    signers: Vec::new(),
-                    verified: false,
-                    failure: Some(format!(
-                        "{sidecar_error}; legacy committed QC rejected: {legacy_error}"
-                    )),
-                },
+        Err(sidecar_error) => match verify_signed_snapshot_qc(&source_dir) {
+            Ok(summary) => summary,
+            Err(snapshot_error) => {
+                match verify_legacy_committed_qc(&source_dir, input.conflict_height) {
+                    Ok(summary) => summary,
+                    Err(legacy_error) => QcProofSummary {
+                        height: 0,
+                        hash: String::new(),
+                        vote_count: 0,
+                        signers: Vec::new(),
+                        verified: false,
+                        signed_snapshot_manifest_verified: false,
+                        failure: Some(format!(
+                            "{sidecar_error}; signed snapshot rejected: {snapshot_error}; legacy committed QC rejected: {legacy_error}"
+                        )),
+                    },
+                }
             }
-        }
+        },
     };
     if let Some(error) = qc_summary.failure.as_ref() {
         failures.push(format!("QC proof rejected: {error}"));
@@ -461,6 +471,7 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
         source_common_height,
         source_canonical_lock_height,
         qc_summary.height,
+        qc_summary.signed_snapshot_manifest_verified,
     ));
     let mut preconditions = vec![
         "chain_id=1264".to_string(),
@@ -477,6 +488,9 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
             "target_stopped_or_quarantined={}",
             input.target_stopped_or_quarantined
         ));
+    }
+    if qc_summary.signed_snapshot_manifest_verified {
+        preconditions.push("signed_snapshot_manifest_verified=true".to_string());
     }
 
     let mut operator_approval_required = !failures.is_empty()
@@ -510,6 +524,7 @@ pub fn build_plan(input: BuildPlanInput) -> RecoveryPlan {
         source_qc_vote_count: qc_summary.vote_count,
         source_qc_signers: qc_summary.signers,
         source_qc_aegis_pqc_verified: qc_summary.verified,
+        signed_snapshot_manifest_verified: qc_summary.signed_snapshot_manifest_verified,
         majority_branch_proven,
         target_is_minority_or_lagged,
         recovery_type,
@@ -874,6 +889,114 @@ fn load_recovery_proof(source_dir: &Path) -> Result<RecoveryProof, String> {
     )
 }
 
+fn verify_signed_snapshot_qc(source_dir: &Path) -> Result<QcProofSummary, String> {
+    let manifests = fs::read_dir(source_dir)
+        .map_err(|error| {
+            format!(
+                "read signed snapshot directory {}: {error}",
+                source_dir.display()
+            )
+        })?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| {
+                    name == "snapshot-manifest.json" || name.ends_with("-manifest.json")
+                })
+        })
+        .collect::<Vec<_>>();
+    let manifest_path = match manifests.as_slice() {
+        [path] => path,
+        [] => return Err("missing signed snapshot manifest".to_string()),
+        _ => {
+            return Err(format!(
+                "multiple signed snapshot manifests found in {}",
+                source_dir.display()
+            ))
+        }
+    };
+    let content = fs::read_to_string(manifest_path).map_err(|error| {
+        format!(
+            "read signed snapshot manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let signed = serde_json::from_str::<SignedSnapshotManifest>(&content).map_err(|error| {
+        format!(
+            "parse signed snapshot manifest {}: {error}",
+            manifest_path.display()
+        )
+    })?;
+    let source_data_dir = data_dir(source_dir);
+    let report = verify_signed_snapshot_manifest(
+        &signed,
+        &SnapshotVerificationPolicy::default(),
+        Some(&source_data_dir),
+    );
+    if !report.success {
+        return Err(format!(
+            "signed snapshot manifest verification failed: {}",
+            report.errors.join("; ")
+        ));
+    }
+
+    let manifest = &signed.manifest;
+    if manifest.snapshot_height != manifest.canonical_lock_height
+        || manifest.snapshot_height != report.committed_qc_height
+    {
+        return Err(format!(
+            "signed snapshot materialized heights disagree: snapshot={}, canonical_lock={}, committed_qc={}",
+            manifest.snapshot_height, manifest.canonical_lock_height, report.committed_qc_height
+        ));
+    }
+    if manifest.snapshot_block_hash != manifest.canonical_lock_hash
+        || manifest.snapshot_block_hash != report.committed_qc_hash
+    {
+        return Err(
+            "signed snapshot block, canonical lock, and committed QC hashes disagree".to_string(),
+        );
+    }
+
+    let chain_hash = read_block_hash_at(source_dir, &source_data_dir, manifest.snapshot_height)
+        .ok_or_else(|| {
+            format!(
+                "signed snapshot chain body is missing height {}",
+                manifest.snapshot_height
+            )
+        })?;
+    if chain_hash != manifest.snapshot_block_hash {
+        return Err(format!(
+            "signed snapshot chain body hash {chain_hash} does not match manifest hash {} at height {}",
+            manifest.snapshot_block_hash, manifest.snapshot_height
+        ));
+    }
+    let canonical_lock = read_canonical_lock(&source_data_dir)
+        .ok_or_else(|| "signed snapshot canonical lock is missing".to_string())?;
+    if canonical_lock.height > manifest.snapshot_height {
+        return Err(format!(
+            "signed snapshot canonical lock height {} is above manifest snapshot height {}",
+            canonical_lock.height, manifest.snapshot_height
+        ));
+    }
+    if canonical_lock.height == manifest.snapshot_height
+        && canonical_lock.hash != manifest.canonical_lock_hash
+    {
+        return Err("signed snapshot canonical lock hash does not match manifest".to_string());
+    }
+
+    Ok(QcProofSummary {
+        height: report.committed_qc_height,
+        hash: report.committed_qc_hash,
+        vote_count: report.committed_qc_vote_count,
+        signers: report.committed_qc_signers,
+        verified: report.source_qc_aegis_pqc_verified,
+        signed_snapshot_manifest_verified: true,
+        failure: None,
+    })
+}
+
 fn verify_legacy_committed_qc(
     source_dir: &Path,
     min_height: Option<u64>,
@@ -1075,6 +1198,7 @@ fn verify_legacy_qc(
         vote_count: seen.len() as u64,
         signers: seen.into_iter().collect(),
         verified: true,
+        signed_snapshot_manifest_verified: false,
         failure: None,
     })
 }
@@ -1222,6 +1346,7 @@ fn verify_recovery_proof(proof: &RecoveryProof) -> QcProofSummary {
         vote_count: proof.qc.aegis_pq_key_ids.len() as u64,
         signers,
         verified,
+        signed_snapshot_manifest_verified: false,
         failure: (!failure.is_empty()).then(|| failure.join("; ")),
     }
 }
@@ -1400,6 +1525,7 @@ fn validate_source_state_consistency(
     source_common_height: u64,
     source_canonical_lock_height: u64,
     source_committed_qc_height: u64,
+    signed_snapshot_manifest_verified: bool,
 ) -> Vec<String> {
     if *recovery_type == RecoveryType::NoAction {
         return Vec::new();
@@ -1445,7 +1571,20 @@ fn validate_source_state_consistency(
         match committed_qc_span(&source_data_dir) {
             Ok(span) => {
                 let bridge_from = target_current_height.min(target_canonical_lock_height);
-                if span.first_height > bridge_from.saturating_add(1) {
+                let signed_snapshot_genesis_restore = signed_snapshot_manifest_verified
+                    && matches!(
+                        recovery_type,
+                        RecoveryType::SupportChainFastSync | RecoveryType::ArchiveSnapshotRestore
+                    )
+                    && target_current_height == 0
+                    && target_canonical_lock_height == 0
+                    && matches!(
+                        chain_is_materialized_from_genesis(&source_data_dir),
+                        Ok(true)
+                    );
+                if span.first_height > bridge_from.saturating_add(1)
+                    && !signed_snapshot_genesis_restore
+                {
                     failures.push(format!(
                         "source committed_qcs.jsonl begins at height {}, which cannot bridge target height {}; provide a complete committed-QC source, not a tail",
                         span.first_height, bridge_from
@@ -1471,13 +1610,44 @@ struct CommittedQcSpan {
     last_height: u64,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ChainHeightSpan {
+    last_height: u64,
+}
+
 fn chain_latest_height(data_dir: &Path) -> Result<Option<u64>, String> {
+    chain_height_span(data_dir).map(|span| Some(span.last_height))
+}
+
+fn chain_height_span(data_dir: &Path) -> Result<ChainHeightSpan, String> {
     let path = data_dir.join("chain.json");
     let content =
         fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
     let blocks = serde_json::from_str::<Vec<Block>>(&content)
         .map_err(|error| format!("parse {}: {error}", path.display()))?;
-    Ok(blocks.last().map(|block| block.block_index))
+    let last_height = blocks
+        .last()
+        .map(|block| block.block_index)
+        .ok_or_else(|| format!("{} has no blocks", path.display()))?;
+    Ok(ChainHeightSpan { last_height })
+}
+
+fn chain_is_materialized_from_genesis(data_dir: &Path) -> Result<bool, String> {
+    let path = data_dir.join("chain.json");
+    let content =
+        fs::read_to_string(&path).map_err(|error| format!("read {}: {error}", path.display()))?;
+    let blocks = serde_json::from_str::<Vec<Block>>(&content)
+        .map_err(|error| format!("parse {}: {error}", path.display()))?;
+    let mut expected_height = 0;
+    let mut expected_parent = EXPECTED_GENESIS_HASH.to_string();
+    for block in &blocks {
+        if block.block_index != expected_height || block.previous_hash != expected_parent {
+            return Ok(false);
+        }
+        expected_height = expected_height.saturating_add(1);
+        expected_parent = block.hash.clone();
+    }
+    Ok(!blocks.is_empty())
 }
 
 fn committed_qc_span(data_dir: &Path) -> Result<CommittedQcSpan, String> {
@@ -1682,6 +1852,9 @@ fn decode_base64_public_key(encoded: &str) -> Result<Vec<u8>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::consensus::self_realign::{
+        create_snapshot_manifest, sign_snapshot_manifest, SnapshotBuildInput, SnapshotQcEvidence,
+    };
     use crate::crypto::aegis_pqvm::AegisPqvmSigner;
     use crate::synergy_types::{
         BlockId, ChainId, ClusterAssignment, ClusterId, Epoch, Height, NetworkId, Round, UmaId,
@@ -1742,6 +1915,83 @@ mod tests {
                 fs::write(path, format!("{file}\n")).unwrap();
             }
         }
+    }
+
+    fn write_signed_snapshot_manifest(root: &Path, snapshot_height: u64, snapshot_hash: &str) {
+        let mut signer = AegisPqvmSigner::initialize_required().unwrap();
+        let key_id = signer
+            .generate_and_register_key(
+                "archive-1",
+                vec![AegisPqKeyRole::ArchiveSnapshotSigner],
+                Epoch(0),
+            )
+            .unwrap();
+        let public = signer.public_key_record(&key_id).unwrap();
+        let manifest = create_snapshot_manifest(SnapshotBuildInput {
+            state_dir: root.join("data"),
+            snapshot_height,
+            snapshot_block_hash: snapshot_hash.to_string(),
+            parent_hash: format!("parent-{snapshot_height}"),
+            state_root: None,
+            canonical_lock_height: snapshot_height,
+            canonical_lock_hash: snapshot_hash.to_string(),
+            qc_evidence: SnapshotQcEvidence {
+                committed_qc_height: snapshot_height,
+                committed_qc_hash: snapshot_hash.to_string(),
+                vote_count: REQUIRED_QUORUM as u64,
+                signer_set: (1..=REQUIRED_QUORUM)
+                    .map(|index| format!("validator-{index}"))
+                    .collect(),
+                aegis_pqc_verified: true,
+                duplicate_signer_check_passed: true,
+                active_validator_set_is_genesis_5: true,
+                relayers_rpc_support_counted_toward_quorum: false,
+            },
+            active_validator_set: (1..=GENESIS_VALIDATOR_COUNT)
+                .map(|index| format!("validator-{index}"))
+                .collect(),
+            source_node_id: "validator-3".to_string(),
+            source_role: "GENESIS_VALIDATOR".to_string(),
+            runtime_checksum: "trusted-runtime-sha".to_string(),
+            source_node_quarantined: false,
+            source_node_majority_branch: true,
+            conflict_height_hash: Some(snapshot_hash.to_string()),
+            manifest_signer_uma_id: "archive-1".to_string(),
+            manifest_signing_key_id: key_id,
+            manifest_signer_public_key: public,
+            manifest_signature_epoch: 0,
+            created_at: 1,
+        })
+        .unwrap();
+        let signed = sign_snapshot_manifest(&mut signer, manifest).unwrap();
+        fs::write(
+            root.join(format!("snapshot-{snapshot_height}-manifest.json")),
+            serde_json::to_vec_pretty(&signed).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn prepare_signed_snapshot_tail_source(name: &str) -> PathBuf {
+        let source = temp_root(name);
+        let heights = (0..=10)
+            .map(|height| {
+                if height == 10 {
+                    ("majority-hash".to_string(), height)
+                } else {
+                    (format!("source-hash-{height}"), height)
+                }
+            })
+            .collect::<Vec<_>>();
+        let heights = heights
+            .iter()
+            .map(|(hash, height)| (hash.as_str(), *height))
+            .collect::<Vec<_>>();
+        write_chain(&source, &heights);
+        write_lock(&source, 10, "majority-hash");
+        write_recoverable_files(&source);
+        write_legacy_qc_fixture(&source, REQUIRED_QUORUM);
+        write_signed_snapshot_manifest(&source, 10, "majority-hash");
+        source
     }
 
     fn signed_qc_fixture(
@@ -2303,6 +2553,66 @@ mod tests {
         let plan = build_plan(input);
         assert_eq!(plan.recovery_type, RecoveryType::SupportChainFastSync);
         assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn rpc_genesis_restore_accepts_verified_signed_snapshot_with_qc_tail() {
+        let target = temp_root("signed-snapshot-rpc-target");
+        let source = prepare_signed_snapshot_tail_source("signed-snapshot-rpc-source");
+        write_chain(&target, &[("target-genesis", 0)]);
+        write_lock(&target, 0, "target-genesis");
+        verify_signed_snapshot_qc(&source).unwrap();
+        let mut input = base_input(&target, &source);
+        input.target_role = TargetRole::Rpc;
+        input.target_node_id = "RPC-Gateway".to_string();
+        input.expected_target_conflict_hash = None;
+        input.expected_source_conflict_hash = None;
+        let plan = build_plan(input);
+
+        assert_eq!(plan.recovery_type, RecoveryType::SupportChainFastSync);
+        assert!(
+            plan.failure_reason.is_none(),
+            "{:?}",
+            plan.failure_reason.as_deref()
+        );
+        assert!(plan.signed_snapshot_manifest_verified);
+        assert!(plan.source_qc_aegis_pqc_verified);
+        assert!(plan.majority_branch_proven);
+    }
+
+    #[test]
+    fn validator_restore_keeps_qc_tail_bridge_requirement_for_signed_snapshot() {
+        let target = temp_root("signed-snapshot-validator-target");
+        let source = prepare_signed_snapshot_tail_source("signed-snapshot-validator-source");
+        write_chain(&target, &[("target-genesis", 0)]);
+        write_lock(&target, 0, "target-genesis");
+        verify_signed_snapshot_qc(&source).unwrap();
+        let mut input = base_input(&target, &source);
+        input.expected_target_conflict_hash = None;
+        input.expected_source_conflict_hash = None;
+        let plan = build_plan(input);
+        let failure = plan.failure_reason.unwrap_or_default();
+
+        assert!(
+            failure.contains("cannot bridge target height 0"),
+            "{failure}"
+        );
+        assert!(plan.signed_snapshot_manifest_verified);
+        assert!(plan.operator_approval_required);
+    }
+
+    #[test]
+    fn signed_snapshot_qc_rejects_tampered_manifest() {
+        let source = prepare_signed_snapshot_tail_source("tampered-signed-snapshot-source");
+        let manifest_path = source.join("snapshot-10-manifest.json");
+        let mut signed =
+            serde_json::from_slice::<SignedSnapshotManifest>(&fs::read(&manifest_path).unwrap())
+                .unwrap();
+        signed.manifest.runtime_checksum = "tampered-runtime".to_string();
+        fs::write(&manifest_path, serde_json::to_vec_pretty(&signed).unwrap()).unwrap();
+
+        let error = verify_signed_snapshot_qc(&source).unwrap_err();
+        assert!(error.contains("signature"), "{error}");
     }
 
     #[test]
