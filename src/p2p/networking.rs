@@ -1,7 +1,10 @@
 use crate::block::{Block, BlockChain};
 use crate::config::NodeConfig;
-use crate::consensus::anti_divergence::current_validator_quarantine_duty_block;
+use crate::consensus::anti_divergence::{
+    current_self_quarantine_record, current_validator_quarantine_duty_block,
+};
 use crate::consensus::chain_durability::append_committed_block_body;
+use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
     legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
@@ -4508,6 +4511,24 @@ fn handle_messages(
                                 "error" => validation
                                     .error_message
                                     .unwrap_or_else(|| "invalid transaction".to_string())
+                            );
+                            continue;
+                        }
+
+                        if let Err(error) =
+                            ProofOfSynergy::validate_transaction_for_mempool(&transaction_data)
+                        {
+                            let tx_hash = transaction_data.hash();
+                            let pruned = prune_transaction_hashes_from_pool(&transaction_hashes(
+                                std::slice::from_ref(&transaction_data),
+                            ));
+                            warn!(
+                                "p2p",
+                                "Rejecting transaction after runtime validation",
+                                "peer" => peer_address.clone(),
+                                "tx_hash" => tx_hash,
+                                "error" => error,
+                                "pruned_count" => pruned as u64
                             );
                             continue;
                         }

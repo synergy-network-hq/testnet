@@ -27,6 +27,7 @@ pub mod sxcp;
 pub mod sync;
 pub mod synergy_types;
 pub mod synid;
+pub mod synq_admission;
 pub mod telemetry;
 pub mod token;
 pub mod transaction;

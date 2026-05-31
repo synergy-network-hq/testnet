@@ -4,6 +4,7 @@ use crate::synergy_types::{
     AegisPqKeyId, AegisPqKeyRole, AegisPqPublicKey, AegisPqSignature, CanonicalSerialize, ChainId,
     Epoch, Height, NetworkId, Transaction, TxDependency, TxDependencyType, TxId, UmaId,
 };
+use crate::synq_admission::SynQVerificationSummary;
 use base64::{engine::general_purpose, Engine as _};
 use serde::{Deserialize, Serialize};
 use std::convert::TryFrom;
@@ -62,6 +63,7 @@ pub struct AegisSignedTxReport {
     pub transaction: Transaction,
     pub submission_envelope: AegisTxSubmissionEnvelope,
     pub rpc_transaction: crate::transaction::Transaction,
+    pub synq_verification: Option<SynQVerificationSummary>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -288,6 +290,11 @@ fn report_for_transaction_in_mempool(
         lifecycle_record,
     };
     let rpc_transaction = legacy_transaction_from_aegis_envelope(&submission_envelope)?;
+    let synq_verification = crate::synq_admission::verify_transaction_payload_for_chain_admission(
+        &tx,
+        current_timestamp(),
+    )
+    .map_err(|error| error.to_string())?;
     let canonical_tx_bytes = tx.canonical_bytes()?;
     let admission_result = mempool.admit_transaction(tx.clone())?;
     Ok(AegisSignedTxReport {
@@ -303,6 +310,7 @@ fn report_for_transaction_in_mempool(
         transaction: tx,
         submission_envelope,
         rpc_transaction,
+        synq_verification,
     })
 }
 
@@ -345,6 +353,11 @@ pub fn verify_aegis_submission_envelope(
             envelope.transaction.sender_uma_or_account
         ));
     }
+    crate::synq_admission::verify_transaction_payload_for_chain_admission(
+        &envelope.transaction,
+        current_timestamp(),
+    )
+    .map_err(|error| format!("SynQ admission rejected [{}]: {error}", error.code()))?;
     let verifier = AegisPqvmVerifier::initialize_required_for_public_key(
         envelope.public_key.clone(),
         envelope.lifecycle_record.clone(),

@@ -1,11 +1,14 @@
 use crate::crypto::aegis_pqvm::{SYNERGY_RECEIPT_ROOT_V1, SYNERGY_STATE_ROOT_V1};
 use crate::synergy_types::{Block, CanonicalSerialize, Hash, Transaction, TxId};
+use crate::synq_admission::SynQVerificationSummary;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionState {
     pub balances_nwei: BTreeMap<String, u128>,
     pub verified_authorizations: BTreeMap<TxId, Hash>,
+    pub synq_verifications: BTreeMap<TxId, SynQVerificationSummary>,
+    pub synq_errors: BTreeMap<TxId, (String, String)>,
 }
 
 impl ExecutionState {
@@ -13,6 +16,8 @@ impl ExecutionState {
         Self {
             balances_nwei: BTreeMap::new(),
             verified_authorizations: BTreeMap::new(),
+            synq_verifications: BTreeMap::new(),
+            synq_errors: BTreeMap::new(),
         }
     }
 
@@ -25,6 +30,20 @@ impl ExecutionState {
         let tx_id = tx_id(tx)?;
         self.verified_authorizations
             .insert(tx_id.clone(), tx.canonical_tx_bytes_hash()?);
+        match crate::synq_admission::verify_transaction_payload_for_chain_admission(
+            tx,
+            current_unix_timestamp(),
+        ) {
+            Ok(Some(summary)) => {
+                self.synq_verifications.insert(tx_id.clone(), summary);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.synq_errors
+                    .insert(tx_id.clone(), (error.code().to_string(), error.to_string()));
+                return Err(error.to_string());
+            }
+        }
         Ok(tx_id)
     }
 }
@@ -48,6 +67,9 @@ pub struct TransactionReceipt {
     pub gas_used: u64,
     pub error: String,
     pub state_root_after: Hash,
+    pub synq_verification: Option<SynQVerificationSummary>,
+    pub synq_error_code: Option<String>,
+    pub synq_error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -174,6 +196,8 @@ fn execute_transaction(
     let receiver = tx.receiver_uma_or_account.clone();
     let total_debit = tx.amount_nwei.saturating_add(tx.max_fee_nwei);
     let sender_balance = state.balances_nwei.get(&sender).copied().unwrap_or(0);
+    let synq_verification = state.synq_verifications.get(&id).cloned();
+    let synq_error = state.synq_errors.get(&id).cloned();
     let receipt = if sender_balance >= total_debit {
         state
             .balances_nwei
@@ -188,6 +212,9 @@ fn execute_transaction(
             gas_used: tx.gas_limit.min(21_000),
             error: String::new(),
             state_root_after: compute_state_root_after(state)?,
+            synq_verification,
+            synq_error_code: synq_error.as_ref().map(|(code, _)| code.clone()),
+            synq_error_message: synq_error.map(|(_, message)| message),
         }
     } else {
         TransactionReceipt {
@@ -196,9 +223,19 @@ fn execute_transaction(
             gas_used: tx.gas_limit.min(21_000),
             error: "INSUFFICIENT_FUNDS".to_string(),
             state_root_after: compute_state_root_after(state)?,
+            synq_verification,
+            synq_error_code: synq_error.as_ref().map(|(code, _)| code.clone()),
+            synq_error_message: synq_error.map(|(_, message)| message),
         }
     };
     Ok(receipt)
+}
+
+fn current_unix_timestamp() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 fn tx_id(tx: &Transaction) -> Result<TxId, String> {
@@ -340,6 +377,40 @@ mod tests {
             .receipts
             .iter()
             .any(|receipt| receipt.status == ReceiptStatus::Failed));
+    }
+
+    #[test]
+    fn receipt_preserves_synq_verification_summary() {
+        let transaction = tx("alice", "carol", 0, 10, "synq-contract");
+        let id = tx_id(&transaction).unwrap();
+        let block = block(vec![transaction.clone()]);
+        let mut state = authorized_state(&[transaction]);
+        state.synq_verifications.insert(
+            id,
+            crate::synq_admission::SynQVerificationSummary {
+                chain_id: crate::synergy_types::SYNERGY_TESTNET_V2_CHAIN_ID,
+                normalized_network_id: "synergy-testnet".to_string(),
+                node_network_id: crate::synergy_types::SYNERGY_TESTNET_V2_NETWORK_ID.to_string(),
+                domain: "SYNQ_CONTRACT_DEPLOY_V1".to_string(),
+                algorithm: "ML-DSA-65".to_string(),
+                signer: "tsynq1fixture".to_string(),
+                payload_hash: [7; 32],
+                bytecode_hash: Some([1; 32]),
+                manifest_hash: Some([2; 32]),
+                abi_hash: Some([3; 32]),
+                verified_at_admission: true,
+            },
+        );
+
+        let result = execute_block(&block, &state).unwrap();
+        let receipt = result.receipts.first().expect("receipt");
+        assert_eq!(
+            receipt
+                .synq_verification
+                .as_ref()
+                .map(|summary| summary.domain.as_str()),
+            Some("SYNQ_CONTRACT_DEPLOY_V1")
+        );
     }
 
     #[test]

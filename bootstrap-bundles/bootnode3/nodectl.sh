@@ -189,7 +189,14 @@ stop_node() {
 reset_chain() {
   stop_node || true
   rm -rf "$CHAIN_DIR" "$DATA_DIR/testnet/$NODE_SLOT_ID/chain" "$DATA_DIR/testnet/$NODE_SLOT_ID/logs"
-  rm -f "$DATA_DIR/chain.json" "$DATA_DIR/token_state.json" "$DATA_DIR/validator_registry.json" "$DATA_DIR/synergy-testnet.pid" "$DATA_DIR/.reset_flag" "$PID_FILE"
+  rm -f "$DATA_DIR/chain.json" "$DATA_DIR/token_state.json" "$DATA_DIR/validator_registry.json" \
+    "$DATA_DIR/committed_qcs.json" "$DATA_DIR/committed_qcs.json.tmp" "$DATA_DIR/committed_qcs.jsonl" \
+    "$DATA_DIR/canonical_locks.json" "$DATA_DIR/canonical_locks.json.tmp" \
+    "$DATA_DIR/consensus_vote_locks.json" "$DATA_DIR/consensus_vote_locks.json.tmp" "$DATA_DIR/dag_state.json" \
+    "$DATA_DIR/testnet/$NODE_SLOT_ID/committed_qcs.json" "$DATA_DIR/testnet/$NODE_SLOT_ID/committed_qcs.json.tmp" "$DATA_DIR/testnet/$NODE_SLOT_ID/committed_qcs.jsonl" \
+    "$DATA_DIR/testnet/$NODE_SLOT_ID/canonical_locks.json" "$DATA_DIR/testnet/$NODE_SLOT_ID/canonical_locks.json.tmp" \
+    "$DATA_DIR/testnet/$NODE_SLOT_ID/consensus_vote_locks.json" "$DATA_DIR/testnet/$NODE_SLOT_ID/consensus_vote_locks.json.tmp" "$DATA_DIR/testnet/$NODE_SLOT_ID/dag_state.json" \
+    "$DATA_DIR/synergy-testnet.pid" "$DATA_DIR/.reset_flag" "$PID_FILE"
   mkdir -p "$CHAIN_DIR" "$LOG_DIR" "$DATA_DIR/testnet/$NODE_SLOT_ID/chain" "$DATA_DIR/testnet/$NODE_SLOT_ID/logs"
   echo "Reset chain state for $NODE_SLOT_ID. Node remains stopped."
 }

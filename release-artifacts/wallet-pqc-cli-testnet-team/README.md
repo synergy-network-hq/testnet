@@ -11,7 +11,7 @@ Do not use this embedded-key pattern for mainnet or any wallet with real value.
 - RPC: `https://testnet-core-rpc.synergy-network.io`
 - Atlas API: `https://testnet-atlas.synergy-network.io/api/v1`
 
-Any `testnet` endpoint is wrong for this package.
+Any `testbeta` endpoint is wrong for this package.
 
 ## Included platforms
 
@@ -27,11 +27,8 @@ Windows users can run the bundle through WSL with the included Linux x64 binary 
 From macOS, Linux, or WSL:
 
 ```bash
-cd wallet-pqc-cli-testnet-team
-chmod +x ./synergy-testnet-tx.py ./wallet-pqc-cli-* 2>/dev/null || true
-python3 ./synergy-testnet-tx.py list-wallets
-python3 ./synergy-testnet-tx.py chain-id
-python3 ./synergy-testnet-tx.py height
+
+
 ```
 
 The helper auto-detects the right local `wallet-pqc-cli` binary. Override it only if needed:
@@ -98,8 +95,8 @@ From Faucet:
 ```bash
 python3 ./synergy-testnet-tx.py send \
   --from faucet \
-  --to synw1jmtpyjw62nxgattrcjc2tx2hezwj6rka5war \
-  --amount-snrg 200000 \
+  --to synw1replacewithdestinationwallet \
+  --amount-snrg 1 \
   --wait \
   --yes
 ```
@@ -132,7 +129,7 @@ Use this command to send the required 50,000 SNRG stake amount from the embedded
 
 ```bash
 python3 ./synergy-testnet-tx.py fund-validator \
-  --to synv1replacewithnewvalidatoraddress \
+  --to synw1wkeaxhs5sm2hw8r6cmelacvky4a4jd7jns6y \
   --wait \
   --yes
 ```
@@ -141,7 +138,7 @@ The default amount is `50,000` SNRG. Override only when intentionally sending a 
 
 ```bash
 python3 ./synergy-testnet-tx.py fund-validator \
-  --to synv1replacewithnewvalidatoraddress \
+  --to synw1jmtpyjw62nxgattrcjc2tx2hezwj6rka5war \
   --amount-snrg 50000 \
   --wait \
   --yes

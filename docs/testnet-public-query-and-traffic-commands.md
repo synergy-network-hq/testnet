@@ -123,8 +123,8 @@ python3 ./synergy-testnet-tx.py nonce synw1replacewithanytestnetwallet
 Look up a transaction:
 
 ```bash
-python3 ./synergy-testnet-tx.py tx syntxn-replace-with-real-hash
-python3 ./synergy-testnet-tx.py receipt syntxn-replace-with-real-hash
+python3 ./synergy-testnet-tx.py tx syntxn-71b65db280d4d73164ddd40d6f81ca5c767ab504471d1f7ade6b3d9bda25c22b
+python3 ./synergy-testnet-tx.py receipt syntxn-71b65db280d4d73164ddd40d6f81ca5c767ab504471d1f7ade6b3d9bda25c22b
 ```
 
 ## Fund the Faucet wallet
@@ -417,7 +417,7 @@ curl --silent --show-error \
 Check a wallet balance:
 
 ```bash
-ADDRESS="synw1replacewithanytestnetwallet"
+ADDRESS="synw1wkeaxhs5sm2hw8r6cmelacvky4a4jd7jns6y"
 curl --silent --show-error \
   -H "Content-Type: application/json" \
   --data "{\"jsonrpc\":\"2.0\",\"method\":\"synergy_getTokenBalance\",\"params\":[\"$ADDRESS\",\"SNRG\"],\"id\":1}" \
