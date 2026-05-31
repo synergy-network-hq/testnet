@@ -2654,12 +2654,22 @@ impl P2PNetwork {
     pub fn request_peers(&self) {
         let message = NetworkMessage::GetPeers;
         let mut peers = self.connected_peers.lock().unwrap();
+        let mut failed_peers = Vec::new();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to request peers", "peer" => address.clone(), "error" => e.to_string());
+                    failed_peers.push(address.clone());
                 }
             }
+        }
+        for address in failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                &address,
+                "failed GetPeers control write",
+            );
         }
     }
 
@@ -2667,24 +2677,44 @@ impl P2PNetwork {
         let message = NetworkMessage::Ping;
 
         let mut peers = self.connected_peers.lock().unwrap();
+        let mut failed_peers = Vec::new();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     eprintln!("❌ Failed to ping {}: {}", address, e);
+                    failed_peers.push(address.clone());
                 }
             }
+        }
+        for address in failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                &address,
+                "failed Ping control write",
+            );
         }
     }
 
     pub fn request_peer_statuses(&self) {
         let message = NetworkMessage::GetStatus;
         let mut peers = self.connected_peers.lock().unwrap();
+        let mut failed_peers = Vec::new();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to request status", "peer" => address.clone(), "error" => e.to_string());
+                    failed_peers.push(address.clone());
                 }
             }
+        }
+        for address in failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                &address,
+                "failed GetStatus control write",
+            );
         }
     }
 
@@ -6165,7 +6195,7 @@ mod tests {
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
         vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
-        PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
+        P2PNetwork, PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
         DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
         INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS, MAX_P2P_FRAME_BYTES, MAX_STATUS_SYNC_BATCH,
         MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
@@ -6192,7 +6222,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::io::{self, BufReader, BufWriter, Read, Write};
-    use std::net::TcpListener;
+    use std::net::{Shutdown, TcpListener};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -8041,6 +8071,48 @@ mod tests {
 
         assert!(!peers.contains_key("peer-a"));
         assert!(peer_state_cache
+            .lock()
+            .unwrap()
+            .contains_key("validator:synv1support"));
+    }
+
+    #[test]
+    fn failed_status_control_write_disconnects_peer_to_release_session_capacity() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (server, _) = listener.accept().unwrap();
+        server.shutdown(Shutdown::Both).unwrap();
+
+        let network = P2PNetwork::new(
+            Arc::new(Mutex::new(BlockChain::new())),
+            &NodeConfig::default(),
+        );
+        let mut peer = test_peer_with_validator_address(Some("synv1support"));
+        peer.stream = Some(server);
+        network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .insert("peer-a".to_string(), peer);
+
+        network.request_peer_statuses();
+
+        assert!(!network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .contains_key("peer-a"));
+        assert!(network
+            .peer_state_cache
             .lock()
             .unwrap()
             .contains_key("validator:synv1support"));
