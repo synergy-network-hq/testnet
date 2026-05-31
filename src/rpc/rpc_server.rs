@@ -48,6 +48,11 @@ lazy_static! {
         Mutex::new(HashMap::new());
 }
 
+lazy_static! {
+    static ref RPC_CHAIN_TIP_CACHE: Mutex<ChainTipSnapshot> =
+        Mutex::new(ChainTipSnapshot::default());
+}
+
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static PENDING_TRANSACTION_REBROADCAST_WORKER: Once = Once::new();
 const MAX_HTTP_HEADER_BYTES: usize = 32 * 1024;
@@ -87,6 +92,14 @@ impl RpcError {
 struct CachedSimulation {
     simulation_hash: String,
     created_at: u64,
+}
+
+#[derive(Debug, Clone, Default)]
+struct ChainTipSnapshot {
+    height: u64,
+    hash: Option<String>,
+    timestamp: Option<u64>,
+    cached_at: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1328,13 +1341,13 @@ fn handle_json_rpc(
         "synergy_getPeers" => peer_info_json(),
 
         "synergy_blockNumber" => {
-            let chain = chain.lock().unwrap();
-            json!(chain.last().map_or(0, |b| b.block_index))
+            let (tip, _) = rpc_chain_tip_snapshot(chain);
+            json!(tip.height)
         }
 
         "synergy_getBlockNumber" => {
-            let chain = chain.lock().unwrap();
-            json!(chain.last().map_or(0, |b| b.block_index))
+            let (tip, _) = rpc_chain_tip_snapshot(chain);
+            json!(tip.height)
         }
 
         "synergy_getBlockByNumber" => {
@@ -1917,10 +1930,7 @@ fn handle_json_rpc(
 
         // Node status
         "synergy_nodeInfo" => {
-            let current_block = {
-                let chain = chain.lock().unwrap();
-                chain.last().map_or(0, |b| b.block_index)
-            };
+            let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(chain);
             let config = crate::config::load_node_config(None).ok();
             let node_name = config
                 .as_ref()
@@ -1931,7 +1941,7 @@ fn handle_json_rpc(
             let chain_id = config.as_ref().map(|cfg| cfg.blockchain.chain_id);
             let consensus = config.as_ref().map(|cfg| cfg.consensus.algorithm.clone());
             let syncing = SYNC_MANAGER
-                .lock()
+                .try_lock()
                 .ok()
                 .map(|manager| !matches!(manager.get_state(), SyncState::Synced | SyncState::Idle));
             json!({
@@ -1942,13 +1952,27 @@ fn handle_json_rpc(
                 "chainId": chain_id,
                 "consensus": consensus,
                 "syncing": syncing,
-                "currentBlock": current_block,
+                "currentBlock": tip.height,
+                "currentBlockHash": tip.hash,
+                "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+                "chain_tip_cached_at": tip.cached_at,
                 "timestamp": current_timestamp()
             })
         }
 
         "synergy_getDeterminismDigest" => {
-            let chain = chain.lock().unwrap();
+            let Ok(chain) = chain.try_lock() else {
+                let tip = cached_rpc_chain_tip();
+                return json!({
+                    "error": "chain_lock_busy",
+                    "fail_closed": true,
+                    "block_height": tip.height,
+                    "block_hash": tip.hash,
+                    "chain_tip_cached_at": tip.cached_at,
+                    "chain": chain_identity_json(),
+                });
+            };
+            let _ = update_rpc_chain_tip_cache(&chain);
             let latest_block = chain.last().cloned();
             let latest_height = latest_block.as_ref().map(|b| b.block_index).unwrap_or(0);
             let latest_hash = latest_block
@@ -2887,15 +2911,16 @@ fn handle_json_rpc(
 
         // Node monitoring methods for control panel
         "synergy_getNodeStatus" => {
-            let (last_block, avg_block_time) = {
-                let chain = chain.lock().unwrap();
-                (
-                    chain.last().map_or(0, |b| b.block_index),
+            let (tip, chain_lock_busy, avg_block_time) = match chain.try_lock() {
+                Ok(chain) => (
+                    update_rpc_chain_tip_cache(&chain),
+                    false,
                     calculate_average_block_time(&chain),
-                )
+                ),
+                Err(_) => (cached_rpc_chain_tip(), true, 0.0),
             };
             let peer_count = crate::p2p::get_p2p_network()
-                .map(|p2p| p2p.get_peer_count() as u64)
+                .and_then(|p2p| p2p.try_get_peer_count().map(|count| count as u64))
                 .unwrap_or(0);
             let config = crate::config::load_node_config(None).ok();
             let network_name = config.as_ref().map(|cfg| cfg.network.name.clone());
@@ -2924,31 +2949,44 @@ fn handle_json_rpc(
                 "version": env!("CARGO_PKG_VERSION"),
                 "network": network_name,
                 "sync_status": sync_status,
-                "last_block": last_block,
+                "last_block": tip.height,
+                "last_block_hash": tip.hash,
                 "avg_block_time": avg_block_time,
                 "average_block_time": avg_block_time,
                 "peers_connected": peer_count,
                 "peer_count": peer_count,
                 "peers": peer_count,
+                "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+                "chain_tip_cached_at": tip.cached_at,
                 "timestamp": current_timestamp()
             })
         }
 
         "synergy_getSyncStatus" => {
-            let current_block = chain.lock().unwrap().last().map_or(0, |b| b.block_index);
-            if let Ok(manager) = SYNC_MANAGER.lock() {
+            let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(chain);
+            if let Ok(manager) = SYNC_MANAGER.try_lock() {
                 let state = manager.get_state();
                 let syncing = !matches!(state, SyncState::Synced | SyncState::Idle);
                 json!({
                     "syncing": syncing,
-                    "current_block": current_block,
+                    "current_block": tip.height,
+                    "current_block_hash": tip.hash,
                     "highest_block": manager.get_network_height(),
                     "starting_block": manager.get_sync_start_height(),
                     "sync_percentage": manager.get_progress_percentage(),
                     "state": format!("{:?}", state),
+                    "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+                    "chain_tip_cached_at": tip.cached_at,
                 })
             } else {
-                json!({"error": "Sync manager unavailable"})
+                json!({
+                    "error": "sync_manager_busy",
+                    "fail_closed": true,
+                    "current_block": tip.height,
+                    "current_block_hash": tip.hash,
+                    "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+                    "chain_tip_cached_at": tip.cached_at,
+                })
             }
         }
 
@@ -3054,9 +3092,13 @@ fn handle_json_rpc(
 
         "synergy_getPeerInfo" => {
             if let Some(p2p) = crate::p2p::get_p2p_network() {
+                let peer_count = p2p.try_get_peer_count();
+                let peers = p2p.try_get_peer_info();
+                let peer_lock_busy = peer_count.is_none() || peers.is_none();
                 json!({
-                    "peer_count": p2p.get_peer_count(),
-                    "peers": p2p.get_peer_info()
+                    "peer_count": peer_count.unwrap_or(0),
+                    "peers": peers.unwrap_or_default(),
+                    "peer_lock_status": if peer_lock_busy { "busy" } else { "ok" }
                 })
             } else {
                 json!({
@@ -4815,28 +4857,67 @@ fn protocol_config_json() -> Value {
     })
 }
 
+fn update_rpc_chain_tip_cache(chain: &BlockChain) -> ChainTipSnapshot {
+    let latest = chain.last();
+    let snapshot = ChainTipSnapshot {
+        height: latest.map(|block| block.block_index).unwrap_or(0),
+        hash: latest.map(|block| block.hash.clone()),
+        timestamp: latest.map(|block| block.timestamp),
+        cached_at: current_timestamp(),
+    };
+    if let Ok(mut cache) = RPC_CHAIN_TIP_CACHE.try_lock() {
+        *cache = snapshot.clone();
+    }
+    snapshot
+}
+
+fn cached_rpc_chain_tip() -> ChainTipSnapshot {
+    RPC_CHAIN_TIP_CACHE
+        .try_lock()
+        .map(|cache| cache.clone())
+        .unwrap_or_default()
+}
+
+fn rpc_chain_tip_snapshot(chain: &Arc<Mutex<BlockChain>>) -> (ChainTipSnapshot, bool) {
+    match chain.try_lock() {
+        Ok(chain) => (update_rpc_chain_tip_cache(&chain), false),
+        Err(_) => (cached_rpc_chain_tip(), true),
+    }
+}
+
 fn sync_status_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
-    let current_block = chain.lock().unwrap().last().map_or(0, |b| b.block_index);
-    if let Ok(manager) = SYNC_MANAGER.lock() {
+    let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(chain);
+    if let Ok(manager) = SYNC_MANAGER.try_lock() {
         let state = manager.get_state();
         let syncing = !matches!(state, SyncState::Synced | SyncState::Idle);
         json!({
             "syncing": syncing,
-            "current_block": current_block,
+            "current_block": tip.height,
+            "current_block_hash": tip.hash,
             "highest_block": manager.get_network_height(),
             "starting_block": manager.get_sync_start_height(),
             "sync_percentage": manager.get_progress_percentage(),
             "state": format!("{:?}", state),
+            "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+            "chain_tip_cached_at": tip.cached_at,
             "chain": chain_identity_json(),
         })
     } else {
-        json!({"error": "Sync manager unavailable", "fail_closed": true})
+        json!({
+            "error": "sync_manager_busy",
+            "fail_closed": true,
+            "current_block": tip.height,
+            "current_block_hash": tip.hash,
+            "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+            "chain_tip_cached_at": tip.cached_at,
+            "chain": chain_identity_json(),
+        })
     }
 }
 
 fn peer_info_json() -> Value {
     let peer_count = crate::p2p::get_p2p_network()
-        .map(|p2p| p2p.get_peer_count() as u64)
+        .and_then(|p2p| p2p.try_get_peer_count().map(|count| count as u64))
         .unwrap_or(0);
     json!({
         "peer_count": peer_count,
@@ -4846,18 +4927,20 @@ fn peer_info_json() -> Value {
 }
 
 fn node_health_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
-    let latest = chain.lock().unwrap().last().cloned();
-    let timestamp_delta_seconds = latest
-        .as_ref()
-        .map(|block| current_timestamp().saturating_sub(block.timestamp));
+    let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(chain);
+    let timestamp_delta_seconds = tip
+        .timestamp
+        .map(|timestamp| current_timestamp().saturating_sub(timestamp));
     let quarantine_files = quarantine_marker_paths();
     json!({
         "status": if quarantine_files.is_empty() { "healthy" } else { "quarantined" },
-        "latest_height": latest.as_ref().map(|block| block.block_index).unwrap_or(0),
-        "latest_hash": latest.as_ref().map(|block| block.hash.clone()),
-        "latest_timestamp": latest.as_ref().map(|block| block.timestamp),
+        "latest_height": tip.height,
+        "latest_hash": tip.hash,
+        "latest_timestamp": tip.timestamp,
         "timestamp_delta_seconds": timestamp_delta_seconds,
         "quarantine_files": quarantine_files,
+        "chain_lock_status": if chain_lock_busy { "busy" } else { "ok" },
+        "chain_tip_cached_at": tip.cached_at,
         "sync": sync_status_json(chain),
         "chain": chain_identity_json(),
     })
@@ -6594,6 +6677,52 @@ mod tests {
             identity["genesis_hash"],
             "f79011f2aaddd40b120d47ba723104fafe3c998d4a17097fae018914b95f1789"
         );
+    }
+
+    #[test]
+    fn public_chain_reads_return_cached_tip_when_chain_mutex_is_busy() {
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+        {
+            let mut chain_guard = chain.lock().unwrap();
+            chain_guard.add_block(Block::new_with_timestamp(
+                42,
+                Vec::new(),
+                "parent".to_string(),
+                "validator".to_string(),
+                42,
+                1_700_000_000,
+            ));
+            let cached = update_rpc_chain_tip_cache(&chain_guard);
+            assert_eq!(cached.height, 42);
+        }
+
+        let _held_chain_lock = chain.lock().unwrap();
+
+        let block_number = handle_json_rpc(
+            "synergy_blockNumber",
+            json!([]),
+            &tx_pool,
+            &chain,
+            &validator_manager,
+        );
+        assert_eq!(block_number, json!(42));
+
+        let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(&chain);
+        assert!(chain_lock_busy);
+        assert_eq!(tip.height, 42);
+
+        let determinism = handle_json_rpc(
+            "synergy_getDeterminismDigest",
+            json!([]),
+            &tx_pool,
+            &chain,
+            &validator_manager,
+        );
+        assert_eq!(determinism["error"], "chain_lock_busy");
+        assert_eq!(determinism["fail_closed"], true);
+        assert_eq!(determinism["block_height"], 42);
     }
 
     #[test]

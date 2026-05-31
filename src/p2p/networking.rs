@@ -750,7 +750,7 @@ fn ensure_peer_status_allows_chain_data(
             "peer" => peer_address.to_string(),
             "message_kind" => message_kind.to_string()
         );
-        request_status_from_connected_peer(&mut peers, peer_address);
+        request_status_from_connected_peer(peer_state_cache, &mut peers, peer_address);
         return false;
     }
 
@@ -1241,7 +1241,7 @@ fn handle_status_message(
             consensus_duties_disabled,
             recovery_state,
         );
-        request_status_from_connected_peer(&mut peers, peer_address);
+        request_status_from_connected_peer(peer_state_cache, &mut peers, peer_address);
         info!(
             "p2p",
             "Validator status pending canonical genesis sync",
@@ -1333,7 +1333,13 @@ fn handle_status_message(
             return;
         };
         let mut peers = connected_peers.lock().unwrap();
-        request_blocks_from_connected_peer(&mut peers, peer_address, request_start, request_count);
+        request_blocks_from_connected_peer(
+            peer_state_cache,
+            &mut peers,
+            peer_address,
+            request_start,
+            request_count,
+        );
     }
 }
 
@@ -2390,15 +2396,20 @@ impl P2PNetwork {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_consensus_message(stream, &message) {
                     warn!("p2p", "Failed to send block", "peer" => address.clone(), "error" => e.to_string());
-                    failed_peers.push(address.clone());
+                    failed_peers.push((address.clone(), e.to_string()));
                 } else {
                     peer.blocks_sent += 1;
                     sent += 1;
                 }
             }
         }
-        for address in &failed_peers {
-            peers.remove(address);
+        for (address, error) in &failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                address,
+                &format!("failed block consensus write: {error}"),
+            );
         }
 
         info!(
@@ -2458,15 +2469,20 @@ impl P2PNetwork {
                         "peer" => address.clone(),
                         "error" => error.to_string()
                     );
-                    failed_peers.push(address.clone());
+                    failed_peers.push((address.clone(), error.to_string()));
                 } else {
                     sent_validator_addresses.insert(validator_address.to_string());
                     recipients += 1;
                 }
             }
         }
-        for address in &failed_peers {
-            peers.remove(address);
+        for (address, error) in &failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                address,
+                &format!("failed vote-request consensus write: {error}"),
+            );
         }
 
         info!(
@@ -2487,17 +2503,35 @@ impl P2PNetwork {
         };
 
         let mut peers = self.connected_peers.lock().unwrap();
+        let mut failed_peers = Vec::new();
+        let mut sent = 0usize;
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to send transaction", "peer" => address.clone(), "error" => e.to_string());
+                    failed_peers.push((address.clone(), e.to_string()));
                 } else {
                     peer.txs_sent += 1;
+                    sent += 1;
                 }
             }
         }
+        for (address, error) in &failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                address,
+                &format!("failed transaction control write: {error}"),
+            );
+        }
 
-        info!("p2p", "Transaction broadcast", "peers" => peers.len() as u64, "tx_hash" => transaction.hash());
+        info!(
+            "p2p",
+            "Transaction broadcast",
+            "peers" => sent as u64,
+            "dropped_peers" => failed_peers.len() as u64,
+            "tx_hash" => transaction.hash()
+        );
     }
 
     pub fn get_peer_count(&self) -> usize {
@@ -2515,6 +2549,20 @@ impl P2PNetwork {
                     .unwrap_or(false)
             })
             .count()
+    }
+
+    pub fn try_get_peer_count(&self) -> Option<usize> {
+        self.connected_peers.try_lock().ok().map(|peers| {
+            peers
+                .values()
+                .filter(|peer| {
+                    peer.validator_address
+                        .as_ref()
+                        .map(|a| !a.trim().is_empty())
+                        .unwrap_or(false)
+                })
+                .count()
+        })
     }
 
     pub fn get_peer_info(&self) -> Vec<serde_json::Value> {
@@ -2540,6 +2588,32 @@ impl P2PNetwork {
                 })
             })
             .collect()
+    }
+
+    pub fn try_get_peer_info(&self) -> Option<Vec<serde_json::Value>> {
+        self.connected_peers.try_lock().ok().map(|peers| {
+            peers
+                .values()
+                .map(|peer| {
+                    serde_json::json!({
+                        "address": peer.address,
+                        "connected_at": peer.connected_at,
+                        "last_seen": peer.last_seen,
+                        "blocks_sent": peer.blocks_sent,
+                        "blocks_received": peer.blocks_received,
+                        "txs_sent": peer.txs_sent,
+                        "txs_received": peer.txs_received,
+                        "node_id": peer.node_id,
+                        "public_address": peer.public_address,
+                        "validator_address": peer.validator_address,
+                        "role": peer.role,
+                        "version": peer.version,
+                        "capabilities": peer.capabilities,
+                        "genesis_hash": peer.genesis_hash
+                    })
+                })
+                .collect()
+        })
     }
 
     pub fn get_connected_validator_addresses(&self) -> Vec<String> {
@@ -2609,6 +2683,7 @@ impl P2PNetwork {
 
         let mut peers = self.connected_peers.lock().unwrap();
         let target_addresses = select_block_sync_targets(&peers, 1);
+        let mut failed_peers = Vec::new();
         for address in target_addresses {
             let Some(peer) = peers.get_mut(&address) else {
                 continue;
@@ -2626,8 +2701,17 @@ impl P2PNetwork {
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     eprintln!("❌ Failed to request blocks from {}: {}", address, e);
+                    failed_peers.push((address.clone(), e.to_string()));
                 }
             }
+        }
+        for (address, error) in failed_peers {
+            disconnect_peer_after_poisoned_write(
+                &self.peer_state_cache,
+                &mut peers,
+                &address,
+                &format!("failed GetBlocks control write: {error}"),
+            );
         }
     }
 
@@ -2650,6 +2734,7 @@ impl P2PNetwork {
                 );
                 return true;
             }
+            let mut failed_error = None;
             if let Some(ref mut stream) = peer.stream {
                 if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!(
@@ -2658,9 +2743,19 @@ impl P2PNetwork {
                         "peer" => peer_address.to_string(),
                         "error" => e.to_string()
                     );
-                    return false;
+                    failed_error = Some(e.to_string());
+                } else {
+                    return true;
                 }
-                return true;
+            }
+            if let Some(error) = failed_error {
+                disconnect_peer_after_poisoned_write(
+                    &self.peer_state_cache,
+                    &mut peers,
+                    peer_address,
+                    &format!("failed GetBlocks control write: {error}"),
+                );
+                return false;
             }
         }
         false
@@ -2941,8 +3036,13 @@ fn start_listener(
     Ok(())
 }
 
-fn request_status_from_connected_peer(peers: &mut PeerMap, peer_address: &str) {
+fn request_status_from_connected_peer(
+    peer_state_cache: &PeerStateCacheArc,
+    peers: &mut PeerMap,
+    peer_address: &str,
+) {
     let message = NetworkMessage::GetStatus;
+    let mut failed_error = None;
     if let Some(peer) = peers.get_mut(peer_address) {
         if let Some(ref mut stream) = peer.stream {
             if let Err(error) = send_peer_control_message(stream, &message) {
@@ -2952,18 +3052,29 @@ fn request_status_from_connected_peer(peers: &mut PeerMap, peer_address: &str) {
                     "peer" => peer_address.to_string(),
                     "error" => error.to_string()
                 );
+                failed_error = Some(error.to_string());
             }
         }
+    }
+    if let Some(error) = failed_error {
+        disconnect_peer_after_poisoned_write(
+            peer_state_cache,
+            peers,
+            peer_address,
+            &format!("failed GetStatus control write: {error}"),
+        );
     }
 }
 
 fn request_blocks_from_connected_peer(
+    peer_state_cache: &PeerStateCacheArc,
     peers: &mut PeerMap,
     peer_address: &str,
     from_height: u64,
     count: u32,
 ) {
     let message = NetworkMessage::GetBlocks { from_height, count };
+    let mut failed_error = None;
     if let Some(peer) = peers.get_mut(peer_address) {
         if !should_send_block_sync_request(peer_address) {
             debug!(
@@ -2983,12 +3094,50 @@ fn request_blocks_from_connected_peer(
                     "peer" => peer_address.to_string(),
                     "error" => error.to_string()
                 );
+                failed_error = Some(error.to_string());
             }
         }
     }
+    if let Some(error) = failed_error {
+        disconnect_peer_after_poisoned_write(
+            peer_state_cache,
+            peers,
+            peer_address,
+            &format!("failed GetBlocks control write: {error}"),
+        );
+    }
+}
+
+fn send_peer_control_message_or_disconnect(
+    peer_state_cache: &PeerStateCacheArc,
+    peers: &mut PeerMap,
+    peer_address: &str,
+    message: &NetworkMessage,
+    reason: &str,
+) -> bool {
+    let mut failed_error = None;
+    if let Some(peer) = peers.get_mut(peer_address) {
+        if let Some(ref mut stream) = peer.stream {
+            if let Err(error) = send_peer_control_message(stream, message) {
+                failed_error = Some(error.to_string());
+            } else {
+                return true;
+            }
+        }
+    }
+    if let Some(error) = failed_error {
+        disconnect_peer_after_poisoned_write(
+            peer_state_cache,
+            peers,
+            peer_address,
+            &format!("{reason}: {error}"),
+        );
+    }
+    false
 }
 
 fn send_vote_to_requester(
+    peer_state_cache: &PeerStateCacheArc,
     peers: &mut PeerMap,
     request_peer_address: &str,
     proposer_validator_address: &str,
@@ -3006,7 +3155,12 @@ fn send_vote_to_requester(
         }
     }
     for (failed_peer, _) in &failed_peers {
-        peers.remove(failed_peer);
+        disconnect_peer_after_poisoned_write(
+            peer_state_cache,
+            peers,
+            failed_peer,
+            "failed vote-response consensus write",
+        );
     }
 
     let fallback_peer_key = peers
@@ -3026,7 +3180,12 @@ fn send_vote_to_requester(
                     Ok(()) => return Ok(fallback_peer_key),
                     Err(error) => {
                         let error = error.to_string();
-                        peers.remove(&fallback_peer_key);
+                        disconnect_peer_after_poisoned_write(
+                            peer_state_cache,
+                            peers,
+                            &fallback_peer_key,
+                            &format!("failed fallback vote-response consensus write: {error}"),
+                        );
                         return Err(error);
                     }
                 }
@@ -3047,6 +3206,7 @@ fn send_vote_to_requester(
 fn handle_vote_request_message(
     blockchain: &BlockchainArc,
     connected_peers: &PeersArc,
+    peer_state_cache: &PeerStateCacheArc,
     config: &NodeConfig,
     peer_address: &str,
     block_data: Block,
@@ -3230,6 +3390,7 @@ fn handle_vote_request_message(
             let response = NetworkMessage::Vote { vote };
             let mut peers = connected_peers.lock().unwrap();
             match send_vote_to_requester(
+                &peer_state_cache,
                 &mut peers,
                 peer_address,
                 block_data.validator_id.as_str(),
@@ -3351,7 +3512,7 @@ fn vote_request_transient_recovery_min_age_secs(config: &NodeConfig) -> u64 {
 
 fn vote_request_local_tip(blockchain: &BlockchainArc) -> Option<(u64, String)> {
     blockchain
-        .lock()
+        .try_lock()
         .ok()
         .and_then(|chain| chain.last().map(|tip| (tip.block_index, tip.hash.clone())))
 }
@@ -3592,11 +3753,13 @@ fn handle_get_blocks_message(
             quorum_certificates: Vec::new(),
         };
         let mut peers = connected_peers.lock().unwrap();
-        if let Some(peer) = peers.get_mut(peer_address) {
-            if let Some(ref mut stream) = peer.stream {
-                let _ = send_peer_control_message(stream, &response);
-            }
-        }
+        send_peer_control_message_or_disconnect(
+            peer_state_cache,
+            &mut peers,
+            peer_address,
+            &response,
+            "failed bootstrap-only block response write",
+        );
         return;
     }
 
@@ -3917,6 +4080,7 @@ fn dispatch_peer_message(
             handle_vote_request_message(
                 blockchain,
                 connected_peers,
+                peer_state_cache,
                 config,
                 peer_address,
                 block_data,
@@ -4115,13 +4279,18 @@ fn handle_incoming_connection(
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
     let status = build_local_status_message(&blockchain, &config);
-    if let Err(error) = send_message(&mut writer, &status) {
+    if let Err(error) = send_message_with_write_timeout(
+        writer.get_mut(),
+        &status,
+        Duration::from_millis(PEER_CONTROL_MESSAGE_WRITE_TIMEOUT_MILLIS),
+    ) {
         warn!(
             "p2p",
             "Failed to proactively send status after handshake",
             "peer" => peer_address.clone(),
             "error" => error.to_string()
         );
+        return Err(error);
     } else {
         writer.flush()?;
     }
@@ -4262,13 +4431,18 @@ fn handle_outgoing_connection(
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
     let status = build_local_status_message(&blockchain, &config);
-    if let Err(error) = send_message(&mut writer, &status) {
+    if let Err(error) = send_message_with_write_timeout(
+        writer.get_mut(),
+        &status,
+        Duration::from_millis(PEER_CONTROL_MESSAGE_WRITE_TIMEOUT_MILLIS),
+    ) {
         warn!(
             "p2p",
             "Failed to proactively send status after handshake",
             "peer" => peer_address.clone(),
             "error" => error.to_string()
         );
+        return Err(error);
     } else {
         writer.flush()?;
     }
@@ -4635,6 +4809,7 @@ fn handle_messages(
                                                     cache_peer_state(&peer_state_cache, peer);
                                                 }
                                                 request_status_from_connected_peer(
+                                                    &peer_state_cache,
                                                     &mut peers,
                                                     &existing_key,
                                                 );
@@ -4754,7 +4929,11 @@ fn handle_messages(
                                 hydrate_peer_from_cache(&peer_state_cache, &peer_identity, peer);
                                 cache_peer_state(&peer_state_cache, peer);
                             }
-                            request_status_from_connected_peer(&mut peers, &peer_address);
+                            request_status_from_connected_peer(
+                                &peer_state_cache,
+                                &mut peers,
+                                &peer_address,
+                            );
                         }
 
                         // Candidate validators are discovered here, but funding and consensus
@@ -4840,6 +5019,7 @@ fn handle_messages(
                     } => handle_vote_request_message(
                         &blockchain,
                         &connected_peers,
+                        &peer_state_cache,
                         &config,
                         &peer_address,
                         block_data,
@@ -4919,6 +5099,7 @@ fn handle_messages(
                             let message = NetworkMessage::Transaction { transaction_data };
                             let mut peers = connected_peers.lock().unwrap();
                             let mut forwarded_peers = 0u64;
+                            let mut failed_peers = Vec::new();
 
                             for (address, peer) in peers.iter_mut() {
                                 if address == &peer_address {
@@ -4935,11 +5116,20 @@ fn handle_messages(
                                             "tx_hash" => tx_hash.clone(),
                                             "error" => error.to_string()
                                         );
+                                        failed_peers.push((address.clone(), error.to_string()));
                                     } else {
                                         peer.txs_sent += 1;
                                         forwarded_peers += 1;
                                     }
                                 }
+                            }
+                            for (address, error) in failed_peers {
+                                disconnect_peer_after_poisoned_write(
+                                    &peer_state_cache,
+                                    &mut peers,
+                                    &address,
+                                    &format!("failed transaction forward write: {error}"),
+                                );
                             }
 
                             info!(
@@ -4966,13 +5156,13 @@ fn handle_messages(
                         let status = build_local_status_message(&blockchain, &config);
 
                         let mut peers = connected_peers.lock().unwrap();
-                        if let Some(peer) = peers.get_mut(&peer_address) {
-                            if let Some(ref mut stream) = peer.stream {
-                                if let Err(e) = send_peer_control_message(stream, &status) {
-                                    warn!("p2p", "Failed to send status", "peer" => peer_address.clone(), "error" => e.to_string());
-                                }
-                            }
-                        }
+                        send_peer_control_message_or_disconnect(
+                            &peer_state_cache,
+                            &mut peers,
+                            &peer_address,
+                            &status,
+                            "failed status response write",
+                        );
                     }
                     NetworkMessage::Status {
                         block_height,
@@ -5005,11 +5195,13 @@ fn handle_messages(
                                 headers: Vec::new(),
                             };
                             let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_peer_control_message(stream, &response);
-                                }
-                            }
+                            send_peer_control_message_or_disconnect(
+                                &peer_state_cache,
+                                &mut peers,
+                                &peer_address,
+                                &response,
+                                "failed bootstrap-only block-headers response write",
+                            );
                             continue;
                         }
 
@@ -5025,11 +5217,13 @@ fn handle_messages(
                         };
                         let response = NetworkMessage::BlockHeaders { headers };
                         let mut peers = connected_peers.lock().unwrap();
-                        if let Some(peer) = peers.get_mut(&peer_address) {
-                            if let Some(ref mut stream) = peer.stream {
-                                let _ = send_peer_control_message(stream, &response);
-                            }
-                        }
+                        send_peer_control_message_or_disconnect(
+                            &peer_state_cache,
+                            &mut peers,
+                            &peer_address,
+                            &response,
+                            "failed block-headers response write",
+                        );
                     }
                     NetworkMessage::BlockHeaders { headers } => {
                         if config.node.bootstrap_only {
@@ -5051,11 +5245,13 @@ fn handle_messages(
                                 quorum_certificates: Vec::new(),
                             };
                             let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_peer_control_message(stream, &response);
-                                }
-                            }
+                            send_peer_control_message_or_disconnect(
+                                &peer_state_cache,
+                                &mut peers,
+                                &peer_address,
+                                &response,
+                                "failed bootstrap-only block-bodies response write",
+                            );
                             continue;
                         }
 
@@ -5084,11 +5280,13 @@ fn handle_messages(
                             quorum_certificates,
                         };
                         let mut peers = connected_peers.lock().unwrap();
-                        if let Some(peer) = peers.get_mut(&peer_address) {
-                            if let Some(ref mut stream) = peer.stream {
-                                let _ = send_peer_control_message(stream, &response);
-                            }
-                        }
+                        send_peer_control_message_or_disconnect(
+                            &peer_state_cache,
+                            &mut peers,
+                            &peer_address,
+                            &response,
+                            "failed block-bodies response write",
+                        );
                     }
                     NetworkMessage::BlockBodies {
                         blocks,
@@ -5139,13 +5337,13 @@ fn handle_messages(
 
                         {
                             let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    if let Err(e) = send_peer_control_message(stream, &response) {
-                                        warn!("p2p", "Failed to send peers list", "peer" => peer_address.clone(), "error" => e.to_string());
-                                    }
-                                }
-                            }
+                            send_peer_control_message_or_disconnect(
+                                &peer_state_cache,
+                                &mut peers,
+                                &peer_address,
+                                &response,
+                                "failed peers-list response write",
+                            );
                         }
                     }
                     NetworkMessage::Peers { peer_addresses } => {
@@ -5214,14 +5412,14 @@ fn handle_messages(
                         // Send pong
                         {
                             let mut peers = connected_peers.lock().unwrap();
-                            if let Some(peer) = peers.get_mut(&peer_address) {
-                                if let Some(ref mut stream) = peer.stream {
-                                    let pong = NetworkMessage::Pong;
-                                    if let Err(e) = send_peer_control_message(stream, &pong) {
-                                        warn!("p2p", "Failed to send pong", "peer" => peer_address.clone(), "error" => e.to_string());
-                                    }
-                                }
-                            }
+                            let pong = NetworkMessage::Pong;
+                            send_peer_control_message_or_disconnect(
+                                &peer_state_cache,
+                                &mut peers,
+                                &peer_address,
+                                &pong,
+                                "failed Pong response write",
+                            );
                         }
                     }
                     NetworkMessage::Pong => {
@@ -5740,6 +5938,21 @@ fn apply_block_if_new(
                 break;
             }
 
+            match chain.block_extends_tip_status(&next_block) {
+                Ok(true) => {}
+                Ok(false) => break,
+                Err(error) => {
+                    warn!(
+                        "p2p",
+                        "Rejecting block because it does not extend the local chain tip",
+                        "height" => next_block.block_index,
+                        "hash" => next_block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
+            }
+
             if next_block.block_index > 0 {
                 if let Err(error) = verify_legacy_canonical_lock(&next_block) {
                     record_canonical_lock_conflict_from_peer(blockchain, &next_block, &error);
@@ -5762,17 +5975,6 @@ fn apply_block_if_new(
                     );
                     break;
                 }
-            }
-
-            confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
-            if chain.add_block_extending_tip(next_block.clone()).is_err() {
-                warn!(
-                    "p2p",
-                    "Rejecting block because it could not be materialized on the local chain tip after durable body write",
-                    "height" => next_block.block_index,
-                    "hash" => next_block.hash.clone()
-                );
-                break;
             }
 
             if next_block.block_index > 0 {
@@ -5800,6 +6002,18 @@ fn apply_block_if_new(
                     break;
                 }
             }
+
+            if let Err(error) = chain.add_block_extending_tip(next_block.clone()) {
+                warn!(
+                    "p2p",
+                    "Rejecting block because it could not be materialized on the local chain tip after durable commit gates",
+                    "height" => next_block.block_index,
+                    "hash" => next_block.hash.clone(),
+                    "error" => error
+                );
+                break;
+            }
+            confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
 
             final_tip_height = next_block.block_index;
             applied_blocks.push(next_block.clone());
@@ -5984,6 +6198,21 @@ fn apply_block_batch(
                 break;
             }
 
+            match chain.block_extends_tip_status(&block) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    warn!(
+                        "p2p",
+                        "Rejecting block batch entry because it does not extend the local chain tip",
+                        "height" => block.block_index,
+                        "hash" => block.hash.clone(),
+                        "error" => error
+                    );
+                    break;
+                }
+            }
+
             if block.block_index > 0 {
                 if qc_by_hash.contains_key(&block.hash) {
                     if let Err(error) = append_committed_block_body(&block) {
@@ -5999,15 +6228,6 @@ fn apply_block_batch(
                 }
             }
 
-            if chain.add_block_extending_tip(block.clone()).is_err() {
-                warn!(
-                    "p2p",
-                    "Rejecting block batch entry because it could not be materialized on the local chain tip after durable body write",
-                    "height" => block.block_index,
-                    "hash" => block.hash.clone()
-                );
-                break;
-            }
             if block.block_index > 0 {
                 if let Some(qc) = qc_by_hash.get(&block.hash) {
                     if let Err(error) = DualQuorumConsensus::record_committed_qc_checked(qc.clone())
@@ -6033,6 +6253,16 @@ fn apply_block_batch(
                         break;
                     }
                 }
+            }
+            if let Err(error) = chain.add_block_extending_tip(block.clone()) {
+                warn!(
+                    "p2p",
+                    "Rejecting block batch entry because it could not be materialized on the local chain tip after durable commit gates",
+                    "height" => block.block_index,
+                    "hash" => block.hash.clone(),
+                    "error" => error
+                );
+                break;
             }
             applied_blocks.push(block.clone());
             applied += 1;
@@ -6285,9 +6515,9 @@ mod tests {
         support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
         validator_status_genesis_grace_remaining_secs,
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
-        vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
-        P2PNetwork, PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
-        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
+        vote_request_local_tip, vote_request_parent_sync_range, ConnectionDirection,
+        DialTargetsArc, DuplicateResolution, P2PNetwork, PeerConnection, PeerEntryGuard,
+        BACKGROUND_SYNC_POLL_MILLIS, DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
         INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS, MAX_P2P_FRAME_BYTES, MAX_STATUS_SYNC_BATCH,
         MAX_TRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG, MAX_UNTRUSTED_SUPPORT_PEER_DEEP_SYNC_LAG,
         MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
@@ -6308,13 +6538,14 @@ mod tests {
     };
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager, PQCSignature};
     use crate::p2p::messages::NetworkMessage;
+    use crate::transaction::Transaction;
     use crate::validator::{Validator, ValidatorRegistration, ValidatorStatus, VALIDATOR_MANAGER};
     use base64::{engine::general_purpose, Engine as _};
     use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::fs;
     use std::io::{self, BufReader, BufWriter, Read, Write};
-    use std::net::{Shutdown, TcpListener};
+    use std::net::{Shutdown, TcpListener, TcpStream};
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
     use std::time::{Duration, Instant};
@@ -6352,6 +6583,27 @@ mod tests {
             consensus_duties_disabled: false,
             recovery_state: None,
         }
+    }
+
+    fn closed_server_stream_for_tests() -> TcpStream {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                panic!("test socket bind permission denied: {error}")
+            }
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _client = match TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+                panic!("test socket connect permission denied: {error}")
+            }
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (server, _) = listener.accept().unwrap();
+        server.shutdown(Shutdown::Both).unwrap();
+        server
     }
 
     #[test]
@@ -8282,6 +8534,102 @@ mod tests {
             .lock()
             .unwrap()
             .contains_key("validator:synv1support"));
+    }
+
+    #[test]
+    fn failed_request_blocks_write_disconnects_peer_to_release_session_capacity() {
+        let network = P2PNetwork::new(
+            Arc::new(Mutex::new(BlockChain::new())),
+            &NodeConfig::default(),
+        );
+        let mut peer = test_peer_with_validator_address(Some("synv1support"));
+        peer.stream = Some(closed_server_stream_for_tests());
+        network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .insert("peer-a".to_string(), peer);
+
+        assert!(!network.request_blocks_from_peer("peer-a", 10, 1));
+        assert!(!network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .contains_key("peer-a"));
+        assert!(network
+            .peer_state_cache
+            .lock()
+            .unwrap()
+            .contains_key("validator:synv1support"));
+    }
+
+    #[test]
+    fn failed_transaction_broadcast_disconnects_peer_to_release_session_capacity() {
+        let network = P2PNetwork::new(
+            Arc::new(Mutex::new(BlockChain::new())),
+            &NodeConfig::default(),
+        );
+        let mut peer = test_peer_with_validator_address(Some("synv1support"));
+        peer.stream = Some(closed_server_stream_for_tests());
+        network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .insert("peer-a".to_string(), peer);
+        let tx = Transaction::new(
+            "syna1sender".to_string(),
+            "syna1receiver".to_string(),
+            1,
+            0,
+            Vec::new(),
+            1,
+            21_000,
+            None,
+            "fndsa".to_string(),
+        );
+
+        network.broadcast_transaction(&tx);
+        assert!(!network
+            .connected_peers
+            .lock()
+            .unwrap()
+            .contains_key("peer-a"));
+        assert!(network
+            .peer_state_cache
+            .lock()
+            .unwrap()
+            .contains_key("validator:synv1support"));
+    }
+
+    #[test]
+    fn qrpc_peer_reads_do_not_block_when_peer_table_is_busy() {
+        let network = P2PNetwork::new(
+            Arc::new(Mutex::new(BlockChain::new())),
+            &NodeConfig::default(),
+        );
+        let _held_peer_lock = network.connected_peers.lock().unwrap();
+
+        assert_eq!(network.try_get_peer_count(), None);
+        assert_eq!(network.try_get_peer_info(), None);
+    }
+
+    #[test]
+    fn vote_request_local_tip_does_not_block_when_chain_mutex_is_busy() {
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+        {
+            let mut chain = blockchain.lock().unwrap();
+            chain.add_block(Block::new_with_timestamp(
+                1,
+                Vec::new(),
+                "parent".to_string(),
+                "validator".to_string(),
+                1,
+                1,
+            ));
+        }
+        let _held_chain_lock = blockchain.lock().unwrap();
+
+        assert_eq!(vote_request_local_tip(&blockchain), None);
     }
 
     #[test]

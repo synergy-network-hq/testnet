@@ -1262,7 +1262,7 @@ impl ProofOfSynergy {
                                 );
                                 let persist_snapshot = {
                                     let mut chain_guard = chain.lock().unwrap();
-                                    match chain_guard.add_block_extending_tip(new_block.clone()) {
+                                    match chain_guard.block_extends_tip_status(&new_block) {
                                         Ok(true) => {
                                             if let Err(error) =
                                                 append_committed_block_body(&new_block)
@@ -1296,6 +1296,18 @@ impl ProofOfSynergy {
                                                 warn!(
                                                     "consensus",
                                                     "Canonical lock write failed after local commit",
+                                                    "height" => new_block.block_index,
+                                                    "hash" => new_block.hash.clone(),
+                                                    "error" => error
+                                                );
+                                                process::exit(1);
+                                            }
+                                            if let Err(error) = chain_guard
+                                                .add_block_extending_tip(new_block.clone())
+                                            {
+                                                warn!(
+                                                    "consensus",
+                                                    "Committed block failed local materialization after durable commit gates",
                                                     "height" => new_block.block_index,
                                                     "hash" => new_block.hash.clone(),
                                                     "error" => error

@@ -239,7 +239,7 @@ impl BlockChain {
         self.chain.push(block);
     }
 
-    pub fn add_block_extending_tip(&mut self, block: Block) -> Result<bool, String> {
+    pub fn block_extends_tip_status(&self, block: &Block) -> Result<bool, String> {
         if let Some(tip) = self.chain.last() {
             if tip.block_index == block.block_index && tip.hash == block.hash {
                 return Ok(false);
@@ -261,6 +261,13 @@ impl BlockChain {
             }
         }
 
+        Ok(true)
+    }
+
+    pub fn add_block_extending_tip(&mut self, block: Block) -> Result<bool, String> {
+        if !self.block_extends_tip_status(&block)? {
+            return Ok(false);
+        }
         self.chain.push(block);
         Ok(true)
     }
@@ -429,6 +436,18 @@ mod tests {
             chain.last().map(|block| block.hash.as_str()),
             Some(child.hash.as_str())
         );
+    }
+
+    #[test]
+    fn block_extends_tip_status_is_read_only_until_commit_gates_pass() {
+        let genesis = block(0, "genesis".to_string(), "validator-1");
+        let child = block(1, genesis.hash.clone(), "validator-2");
+        let chain = BlockChain {
+            chain: vec![genesis],
+        };
+
+        assert_eq!(chain.block_extends_tip_status(&child), Ok(true));
+        assert_eq!(chain.last().map(|block| block.block_index), Some(0));
     }
 
     #[test]
