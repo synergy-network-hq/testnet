@@ -54,6 +54,7 @@ const DEFAULT_BOOTSTRAP_REFRESH_SECS: u64 = 10;
 const NORMAL_BOOTSTRAP_REFRESH_SECS: u64 = 120;
 const TCP_KEEPALIVE_IDLE_SECS: u64 = 300;
 const TCP_KEEPALIVE_INTERVAL_SECS: u64 = 60;
+const INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS: u64 = 10;
 const IMMEDIATE_STATUS_SYNC_BATCH: u32 = 8;
 const MAX_STATUS_SYNC_BATCH: u32 = 16;
 const MAX_BLOCK_SYNC_RESPONSE_BLOCKS: u32 = 16;
@@ -2108,6 +2109,33 @@ fn configure_peer_stream(stream: &TcpStream) {
     let _ = stream.set_write_timeout(None);
 }
 
+fn receive_initial_peer_handshake_with_timeout(
+    reader: &mut BufReader<TcpStream>,
+    timeout: Duration,
+) -> io::Result<NetworkMessage> {
+    let previous_timeout = reader.get_ref().read_timeout()?;
+    reader.get_mut().set_read_timeout(Some(timeout))?;
+    let message = receive_message(reader);
+    let _ = reader.get_mut().set_read_timeout(previous_timeout);
+    let message = message?;
+
+    if matches!(message, NetworkMessage::Handshake { .. }) {
+        Ok(message)
+    } else {
+        Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "peer must send handshake as its first message",
+        ))
+    }
+}
+
+fn receive_initial_peer_handshake(reader: &mut BufReader<TcpStream>) -> io::Result<NetworkMessage> {
+    receive_initial_peer_handshake_with_timeout(
+        reader,
+        Duration::from_secs(INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS),
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct PeerSnapshot {
     pub address: String,
@@ -3689,6 +3717,7 @@ fn bypasses_shared_message_queue(message: &NetworkMessage) -> bool {
         NetworkMessage::VoteRequest { .. }
             | NetworkMessage::Vote { .. }
             | NetworkMessage::Block { .. }
+            | NetworkMessage::GetBlocks { .. }
     )
 }
 
@@ -3913,6 +3942,18 @@ fn handle_incoming_connection(
         writer.flush()?;
     }
 
+    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
+    dispatch_peer_message(
+        &blockchain,
+        &connected_peers,
+        &peer_state_cache,
+        &message_sender,
+        &config,
+        &peer_address,
+        initial_handshake,
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "P2P message handler stopped"))?;
+
     // Listen for messages
     loop {
         match receive_message(&mut reader) {
@@ -4015,6 +4056,18 @@ fn handle_outgoing_connection(
     } else {
         writer.flush()?;
     }
+
+    let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
+    dispatch_peer_message(
+        &blockchain,
+        &connected_peers,
+        &peer_state_cache,
+        &message_sender,
+        &config,
+        &peer_address,
+        initial_handshake,
+    )
+    .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "P2P message handler stopped"))?;
 
     // Listen for messages
     loop {
@@ -5956,8 +6009,9 @@ mod tests {
         ensure_peer_status_allows_chain_data, handle_status_message, hydrate_peer_from_cache,
         local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
-        pending_incoming_connections_from_host, preferred_connection_direction, receive_message,
-        resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        pending_incoming_connections_from_host, preferred_connection_direction,
+        receive_initial_peer_handshake_with_timeout, receive_message,
+        resolve_bootstrap_dial_targets, resolve_duplicate_connection, send_message,
         should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
         should_request_missing_blocks, should_request_status_sync,
         should_send_block_sync_request_at, status_ready_validator_addresses_with_local_duty_gate,
@@ -5992,7 +6046,7 @@ mod tests {
     use lazy_static::lazy_static;
     use std::collections::HashMap;
     use std::fs;
-    use std::io;
+    use std::io::{self, BufReader, BufWriter, Write};
     use std::net::TcpListener;
     use std::sync::{mpsc, Arc, Mutex};
     use std::thread;
@@ -6241,6 +6295,60 @@ mod tests {
         assert_eq!(stream.write_timeout().unwrap(), None);
 
         accept_handle.join().unwrap();
+    }
+
+    #[test]
+    fn initial_peer_handshake_times_out_silent_socket() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (server, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(server);
+
+        let error =
+            receive_initial_peer_handshake_with_timeout(&mut reader, Duration::from_millis(25))
+                .expect_err("silent peer must not hold a pending slot indefinitely");
+
+        assert!(matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+        ));
+        assert_eq!(reader.get_ref().read_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn initial_peer_message_rejects_non_handshake_and_restores_blocking_read() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (server, _) = listener.accept().unwrap();
+        let mut writer = BufWriter::new(client);
+        send_message(&mut writer, &NetworkMessage::GetStatus).unwrap();
+        writer.flush().unwrap();
+        let mut reader = BufReader::new(server);
+
+        let error =
+            receive_initial_peer_handshake_with_timeout(&mut reader, Duration::from_secs(1))
+                .expect_err("first peer message must be handshake");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(reader.get_ref().read_timeout().unwrap(), None);
     }
 
     #[test]
@@ -7140,7 +7248,7 @@ mod tests {
                 round_number: 1,
             }
         ));
-        assert!(!bypasses_shared_message_queue(&NetworkMessage::GetBlocks {
+        assert!(bypasses_shared_message_queue(&NetworkMessage::GetBlocks {
             from_height: 10,
             count: 25,
         }));
