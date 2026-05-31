@@ -60,7 +60,7 @@ rpc_call synergy_getNodeStatus > "$evidence_dir/rpc/node_status.json"
 rpc_call synergy_getPeerInfo > "$evidence_dir/rpc/peer_info.json"
 rpc_call synergy_getBlockByNumber "[${conflict_height}]" > "$evidence_dir/rpc/block_${conflict_height}.json"
 
-for file in canonical_locks.json consensus_vote_locks.json validator_quarantine.json validator_quarantine_peer_evidence.json; do
+for file in canonical_locks.json canonical_locks.jsonl consensus_vote_locks.json validator_quarantine.json validator_quarantine_peer_evidence.json; do
   [[ -f "$data_dir/$file" ]] && cp -p "$data_dir/$file" "$evidence_dir/data/$file"
 done
 if [[ -f "$data_dir/committed_qcs.jsonl" ]]; then
@@ -169,9 +169,24 @@ def qc_summary(value):
     }
 
 def file_lock_at_height(height):
-    path = data_dir / "canonical_locks.json"
+    compact_path = data_dir / "canonical_locks.json"
+    journal_path = data_dir / "canonical_locks.jsonl"
     try:
-        locks = json.loads(path.read_text())
+        locks = json.loads(compact_path.read_text()) if compact_path.exists() else {}
+        if journal_path.exists():
+            for line in journal_path.read_text().splitlines():
+                if not line.strip():
+                    continue
+                lock = json.loads(line)
+                key = str(lock["height"])
+                existing = locks.get(key)
+                if existing and (
+                    existing.get("block_hash") or existing.get("hash")
+                ) != (
+                    lock.get("block_hash") or lock.get("hash")
+                ):
+                    return {"error": f"conflicting canonical lock journal entry at height {key}"}
+                locks[key] = lock
     except Exception as exc:
         return {"error": str(exc)}
     if not isinstance(locks, dict):

@@ -50,7 +50,7 @@ rpc_call synergy_getLatestBlock > "$backup/latest_block_before.json"
 rpc_call synergy_getCanonicalLock > "$backup/canonical_lock_before.json"
 rpc_call synergy_getCommittedQC > "$backup/committed_qc_before.json"
 
-for file in canonical_locks.json committed_qcs.jsonl consensus_vote_locks.json; do
+for file in canonical_locks.json canonical_locks.jsonl committed_qcs.jsonl consensus_vote_locks.json; do
   [[ -f "$data_dir/$file" ]] && cp -p "$data_dir/$file" "$backup/data/$file"
 done
 if [[ -d "$proposals_dir" ]]; then

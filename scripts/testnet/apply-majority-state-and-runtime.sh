@@ -76,6 +76,7 @@ mkdir -p "$data_dir"
 for file in \
   chain.json \
   canonical_locks.json \
+  canonical_locks.jsonl \
   committed_qcs.jsonl \
   dag_state.json \
   validator_registry.json \
@@ -101,6 +102,7 @@ tar -C "$tmp" -xf "$snapshot"
 for file in \
   chain.json \
   canonical_locks.json \
+  canonical_locks.jsonl \
   committed_qcs.jsonl \
   dag_state.json \
   validator_registry.json \

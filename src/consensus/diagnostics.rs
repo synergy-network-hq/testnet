@@ -2,6 +2,9 @@ use crate::block::BlockChain;
 use crate::consensus::chain_durability::validate_chain_body_covers_canonical_lock;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::DualQuorumConsensus;
+use crate::consensus::legacy_canonical_lock::{
+    latest_legacy_canonical_commit_record, legacy_canonical_commit_record,
+};
 use crate::consensus::self_realign::{
     apply_chain_state_wipe_plan, build_chain_state_wipe_plan, build_snapshot_restore_plan,
     fail_closed_mutation_response, launch_snapshot_allowed_files, sign_snapshot_manifest,
@@ -371,13 +374,6 @@ fn require_local_testnet_v2() -> Result<(), String> {
     Ok(())
 }
 
-fn read_json_file(path: &str) -> Option<Value> {
-    let path = crate::utils::resolve_data_path(path);
-    fs::read_to_string(path)
-        .ok()
-        .and_then(|content| serde_json::from_str::<Value>(&content).ok())
-}
-
 fn read_json_file_raw(path: &Path) -> Option<Value> {
     fs::read_to_string(path)
         .ok()
@@ -424,29 +420,24 @@ fn marker_recovery_state(marker_paths: &[String]) -> RealignmentState {
 }
 
 fn latest_canonical_lock_height() -> Option<u64> {
-    let map = read_json_file("data/canonical_locks.json")?;
-    map.as_object()?
-        .keys()
-        .filter_map(|key| key.parse::<u64>().ok())
-        .max()
+    latest_legacy_canonical_commit_record()
+        .ok()
+        .flatten()
+        .map(|lock| lock.height)
 }
 
 fn latest_canonical_lock() -> Option<(u64, String)> {
-    let map = read_json_file("data/canonical_locks.json")?;
-    let object = map.as_object()?;
-    let height = object
-        .keys()
-        .filter_map(|key| key.parse::<u64>().ok())
-        .max()?;
-    let entry = object.get(&height.to_string())?;
-    let hash = string_field(entry, &["hash", "block_hash"])?;
-    Some((height, hash))
+    latest_legacy_canonical_commit_record()
+        .ok()
+        .flatten()
+        .map(|lock| (lock.height, lock.block_hash))
 }
 
 fn canonical_lock_at_height(height: u64) -> Option<String> {
-    let map = read_json_file("data/canonical_locks.json")?;
-    let entry = map.as_object()?.get(&height.to_string())?;
-    string_field(entry, &["hash", "block_hash"])
+    legacy_canonical_commit_record(height)
+        .ok()
+        .flatten()
+        .map(|lock| lock.block_hash)
 }
 
 fn latest_committed_qc() -> Option<Value> {
@@ -815,7 +806,16 @@ fn copy_snapshot_state_files(
     })?;
     let mut copied = 0usize;
     for file_name in launch_snapshot_allowed_files() {
+        if *file_name == "canonical_locks.jsonl" {
+            continue;
+        }
         let source = data_dir.join(file_name);
+        if *file_name == "canonical_locks.json" {
+            let target = snapshot_dir.join(file_name);
+            materialize_snapshot_canonical_locks(&source, &target)?;
+            copied += 1;
+            continue;
+        }
         if !source.is_file() {
             continue;
         }
@@ -829,11 +829,85 @@ fn copy_snapshot_state_files(
         })?;
         copied += 1;
     }
+    if snapshot_dir.join("canonical_locks.json").is_file() {
+        fs::write(snapshot_dir.join("canonical_locks.jsonl"), b"")
+            .map_err(|error| format!("create empty snapshot canonical lock journal: {error}"))?;
+        copied += 1;
+    }
     if copied == 0 {
         return Err("snapshot source contains no launch-approved chain/state files".to_string());
     }
     constrain_snapshot_metadata_to_height(snapshot_dir, snapshot_height)?;
     Ok(copied)
+}
+
+fn materialize_snapshot_canonical_locks(
+    source_compact_path: &Path,
+    target_compact_path: &Path,
+) -> Result<(), String> {
+    let mut locks = if source_compact_path.is_file() {
+        let value: Value =
+            serde_json::from_slice(&fs::read(source_compact_path).map_err(|error| {
+                format!(
+                    "read {} for snapshot copy: {error}",
+                    source_compact_path.display()
+                )
+            })?)
+            .map_err(|error| format!("parse {}: {error}", source_compact_path.display()))?;
+        value
+            .as_object()
+            .cloned()
+            .ok_or_else(|| format!("{} must be a JSON object", source_compact_path.display()))?
+    } else {
+        serde_json::Map::new()
+    };
+    let journal_path = source_compact_path.with_extension("jsonl");
+    if journal_path.is_file() {
+        for line in BufReader::new(
+            fs::File::open(&journal_path)
+                .map_err(|error| format!("open {}: {error}", journal_path.display()))?,
+        )
+        .lines()
+        {
+            let line = line.map_err(|error| format!("read {}: {error}", journal_path.display()))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record = serde_json::from_str::<Value>(&line)
+                .map_err(|error| format!("parse {} entry: {error}", journal_path.display()))?;
+            let height = u64_field(&record, &["height"])
+                .ok_or_else(|| format!("{} entry has no height", journal_path.display()))?;
+            let record_hash = string_field(&record, &["hash", "block_hash"])
+                .ok_or_else(|| format!("{} entry has no block hash", journal_path.display()))?;
+            let key = height.to_string();
+            if let Some(existing) = locks.get(&key) {
+                let existing_hash =
+                    string_field(existing, &["hash", "block_hash"]).ok_or_else(|| {
+                        format!(
+                            "{} compact entry at height {height} has no block hash",
+                            source_compact_path.display()
+                        )
+                    })?;
+                if existing_hash != record_hash {
+                    return Err(format!(
+                        "{} conflicts with compact canonical lock at height {height}",
+                        journal_path.display()
+                    ));
+                }
+                continue;
+            }
+            locks.insert(key, record);
+        }
+    }
+    if locks.is_empty() {
+        return Err("snapshot source contains no canonical locks".to_string());
+    }
+    fs::write(
+        target_compact_path,
+        serde_json::to_vec_pretty(&Value::Object(locks))
+            .map_err(|error| format!("serialize {}: {error}", target_compact_path.display()))?,
+    )
+    .map_err(|error| format!("write {}: {error}", target_compact_path.display()))
 }
 
 fn qc_height_from_json(value: &Value) -> Option<u64> {
@@ -1191,6 +1265,7 @@ fn preserve_operator_quarantine_evidence(evidence_path: &Path) -> Result<Value, 
     let files = [
         "chain.json",
         "canonical_locks.json",
+        "canonical_locks.jsonl",
         "committed_qcs.jsonl",
         "consensus_vote_locks.json",
         "validator_quarantine.json",
@@ -3250,14 +3325,24 @@ mod tests {
         fs::write(
             root.join("data/canonical_locks.json"),
             json!({
-                "100": {
-                    "block_hash": "finalized-hash",
-                    "qc_hash": "qc-hash"
-                }
+                "100": canonical_lock_record(100, "finalized-hash")
             })
             .to_string(),
         )
         .expect("test canonical lock should be written");
+    }
+
+    fn canonical_lock_record(height: u64, block_hash: &str) -> Value {
+        json!({
+            "height": height,
+            "block_hash": block_hash,
+            "parent_hash": format!("parent-{height}"),
+            "validator_id": "synv1leader",
+            "transactions_root": format!("transactions-{height}"),
+            "qc_block_hash": block_hash,
+            "qc_hash": format!("qc-{height}"),
+            "written_at_unix_secs": now_secs_for_test(),
+        })
     }
 
     fn test_hash(height: u64) -> String {
@@ -3285,10 +3370,7 @@ mod tests {
         let mut locks = serde_json::Map::new();
         locks.insert(
             height.to_string(),
-            json!({
-                "block_hash": test_hash(height),
-                "qc_hash": format!("qc-{height}")
-            }),
+            canonical_lock_record(height, &test_hash(height)),
         );
         fs::write(
             root.join("data/canonical_locks.json"),
@@ -3455,9 +3537,10 @@ mod tests {
 
         let copied = copy_snapshot_state_files(&data_dir, &snapshot_dir, 10).unwrap();
 
-        assert_eq!(copied, 2);
+        assert_eq!(copied, 3);
         assert!(snapshot_dir.join("chain.json").exists());
         assert!(snapshot_dir.join("canonical_locks.json").exists());
+        assert!(snapshot_dir.join("canonical_locks.jsonl").exists());
         assert!(!snapshot_dir.join("validator.key").exists());
         assert!(!snapshot_dir.join("node.env").exists());
         assert!(!snapshot_dir.join("runtime.bin").exists());
@@ -4584,14 +4667,16 @@ mod tests {
 
     fn advancing_chain() -> Arc<Mutex<BlockChain>> {
         let mut chain = BlockChain::new();
-        chain.add_block(Block::new_with_timestamp(
+        let mut block = Block::new_with_timestamp(
             100,
             Vec::new(),
             "parent".to_string(),
             "synv1leader".to_string(),
             1,
             now_secs_for_test(),
-        ));
+        );
+        block.hash = "finalized-hash".to_string();
+        chain.add_block(block);
         Arc::new(Mutex::new(chain))
     }
 

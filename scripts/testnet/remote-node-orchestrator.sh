@@ -341,11 +341,11 @@ cd '$REMOTE_NODE_DIR'
 rm -rf data/chain data/testnet15/'$MACHINE_ID'/chain
 rm -f data/chain.json data/token_state.json data/validator_registry.json
 rm -f data/committed_qcs.json data/committed_qcs.json.tmp data/committed_qcs.jsonl
-rm -f data/canonical_locks.json data/canonical_locks.json.tmp
+rm -f data/canonical_locks.json data/canonical_locks.json.tmp data/canonical_locks.jsonl
 rm -f data/consensus_vote_locks.json data/consensus_vote_locks.json.tmp
 rm -f data/dag_state.json
 rm -f data/testnet15/'$MACHINE_ID'/committed_qcs.json data/testnet15/'$MACHINE_ID'/committed_qcs.json.tmp data/testnet15/'$MACHINE_ID'/committed_qcs.jsonl
-rm -f data/testnet15/'$MACHINE_ID'/canonical_locks.json data/testnet15/'$MACHINE_ID'/canonical_locks.json.tmp
+rm -f data/testnet15/'$MACHINE_ID'/canonical_locks.json data/testnet15/'$MACHINE_ID'/canonical_locks.json.tmp data/testnet15/'$MACHINE_ID'/canonical_locks.jsonl
 rm -f data/testnet15/'$MACHINE_ID'/consensus_vote_locks.json data/testnet15/'$MACHINE_ID'/consensus_vote_locks.json.tmp
 rm -f data/testnet15/'$MACHINE_ID'/dag_state.json
 mkdir -p data/chain data/testnet15/'$MACHINE_ID'/chain data/logs

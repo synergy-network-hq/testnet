@@ -29,6 +29,7 @@ const SNAPSHOT_STATE_ROOT_DOMAIN: &[u8] = b"SYNERGY_SNAPSHOT_STATE_ROOT_V1";
 const SNAPSHOT_ALLOWED_FILES: &[&str] = &[
     "chain.json",
     "canonical_locks.json",
+    "canonical_locks.jsonl",
     "committed_qcs.json",
     "committed_qcs.jsonl",
     "dag_state.json",
@@ -1048,7 +1049,7 @@ pub fn build_chain_state_wipe_plan(
         evidence_path: evidence_path.to_string_lossy().to_string(),
         canonical_locks_mutated: files_to_wipe
             .iter()
-            .any(|path| path.ends_with("canonical_locks.json")),
+            .any(|path| path.contains("canonical_locks")),
         committed_qcs_mutated: files_to_wipe.iter().any(|path| {
             path.ends_with("committed_qcs.json") || path.ends_with("committed_qcs.jsonl")
         }),

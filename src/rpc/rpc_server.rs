@@ -4841,45 +4841,21 @@ fn quarantine_marker_paths() -> Vec<String> {
 
 fn latest_canonical_lock_json() -> Value {
     let path = crate::utils::resolve_data_path("data/canonical_locks.json");
-    let Ok(content) = fs::read_to_string(&path) else {
+    let Ok(Some(lock)) =
+        crate::consensus::legacy_canonical_lock::latest_legacy_canonical_commit_record()
+    else {
         return json!({
             "found": false,
             "path": path.to_string_lossy(),
             "chain": chain_identity_json(),
         });
     };
-    let Ok(value) = serde_json::from_str::<Value>(&content) else {
-        return json!({
-            "found": false,
-            "error": "canonical lock file is not valid JSON",
-            "path": path.to_string_lossy(),
-            "chain": chain_identity_json(),
-        });
-    };
-    let Some(map) = value.as_object() else {
-        return json!({
-            "found": false,
-            "error": "canonical lock file is not a height map",
-            "path": path.to_string_lossy(),
-            "chain": chain_identity_json(),
-        });
-    };
-    let Some(height) = map.keys().filter_map(|key| key.parse::<u64>().ok()).max() else {
-        return json!({
-            "found": false,
-            "path": path.to_string_lossy(),
-            "chain": chain_identity_json(),
-        });
-    };
-    let mut lock = map
-        .get(&height.to_string())
-        .cloned()
-        .unwrap_or_else(|| json!({}));
-    if let Value::Object(ref mut obj) = lock {
+    let mut value = serde_json::to_value(lock).unwrap_or_else(|_| json!({}));
+    if let Value::Object(ref mut obj) = value {
         obj.insert("found".to_string(), json!(true));
         obj.insert("chain".to_string(), chain_identity_json());
     }
-    lock
+    value
 }
 
 fn latest_finalized_head_json(chain: &Arc<Mutex<BlockChain>>) -> Value {

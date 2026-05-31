@@ -29,6 +29,7 @@ pub const REQUIRED_QUORUM: usize = 4;
 const ALLOWED_STATE_FILES: &[&str] = &[
     "chain.json",
     "canonical_locks.json",
+    "canonical_locks.jsonl",
     "committed_qcs.json",
     "committed_qcs.jsonl",
     "dag_state.json",
@@ -849,8 +850,7 @@ fn read_rpc_block(path: PathBuf) -> Option<BlockSummary> {
 }
 
 fn read_canonical_lock(data_dir: &Path) -> Option<LockSummary> {
-    let value = read_json(&data_dir.join("canonical_locks.json")).ok()?;
-    let object = value.as_object()?;
+    let object = read_canonical_lock_map(data_dir)?;
     let height = object
         .keys()
         .filter_map(|key| key.parse::<u64>().ok())
@@ -861,9 +861,41 @@ fn read_canonical_lock(data_dir: &Path) -> Option<LockSummary> {
 }
 
 fn read_canonical_lock_hash_at(data_dir: &Path, height: u64) -> Option<String> {
-    let value = read_json(&data_dir.join("canonical_locks.json")).ok()?;
-    let entry = value.as_object()?.get(&height.to_string())?;
+    let object = read_canonical_lock_map(data_dir)?;
+    let entry = object.get(&height.to_string())?;
     get_string(entry, &["hash", "block_hash"])
+}
+
+fn read_canonical_lock_map(data_dir: &Path) -> Option<serde_json::Map<String, Value>> {
+    let compact_path = data_dir.join("canonical_locks.json");
+    let mut object = if compact_path.is_file() {
+        read_json(&compact_path).ok()?.as_object()?.clone()
+    } else {
+        serde_json::Map::new()
+    };
+    let journal_path = data_dir.join("canonical_locks.jsonl");
+    if journal_path.is_file() {
+        let file = fs::File::open(journal_path).ok()?;
+        for line in BufReader::new(file).lines() {
+            let line = line.ok()?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let record = serde_json::from_str::<Value>(&line).ok()?;
+            let height = get_u64(&record, &["height"])?;
+            let key = height.to_string();
+            if let Some(existing) = object.get(&key) {
+                if get_string(existing, &["hash", "block_hash"])
+                    != get_string(&record, &["hash", "block_hash"])
+                {
+                    return None;
+                }
+                continue;
+            }
+            object.insert(key, record);
+        }
+    }
+    (!object.is_empty()).then_some(object)
 }
 
 fn load_recovery_proof(source_dir: &Path) -> Result<RecoveryProof, String> {
@@ -1711,7 +1743,7 @@ fn mutation_flags(files_to_mutate: &[String]) -> MutationFlags {
         keys_or_configs_copied: has_forbidden_mutation_path(files_to_mutate),
         canonical_locks_mutated: files_to_mutate
             .iter()
-            .any(|path| path.ends_with("canonical_locks.json")),
+            .any(|path| path.contains("canonical_locks")),
         committed_qcs_mutated: files_to_mutate
             .iter()
             .any(|path| path.contains("committed_qcs")),
@@ -1914,7 +1946,12 @@ mod tests {
         for file in ALLOWED_STATE_FILES {
             let path = root.join("data").join(file);
             if !path.exists() {
-                fs::write(path, format!("{file}\n")).unwrap();
+                let contents = if *file == "canonical_locks.jsonl" {
+                    String::new()
+                } else {
+                    format!("{file}\n")
+                };
+                fs::write(path, contents).unwrap();
             }
         }
     }

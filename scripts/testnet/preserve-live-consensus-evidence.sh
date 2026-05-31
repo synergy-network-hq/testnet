@@ -89,6 +89,7 @@ fi
 data_dir="$workspace/data"
 for file in \
   canonical_locks.json \
+  canonical_locks.jsonl \
   consensus_vote_locks.json \
   dag_state.json \
   validator_registry.json \

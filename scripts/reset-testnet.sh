@@ -108,6 +108,7 @@ rm -f "$DATA_DIR/committed_qcs.json.tmp"
 rm -f "$DATA_DIR/committed_qcs.jsonl"
 rm -f "$DATA_DIR/canonical_locks.json"
 rm -f "$DATA_DIR/canonical_locks.json.tmp"
+rm -f "$DATA_DIR/canonical_locks.jsonl"
 rm -f "$DATA_DIR/consensus_vote_locks.json"
 rm -f "$DATA_DIR/consensus_vote_locks.json.tmp"
 rm -f "$DATA_DIR/dag_state.json"
@@ -133,7 +134,7 @@ for pid in $PGREP_OUTPUT; do
                 echo "    ✓ Deleted chain.json from $wd/data/"
             fi
             rm -f "$wd/data/committed_qcs.json" "$wd/data/committed_qcs.json.tmp" "$wd/data/committed_qcs.jsonl"
-            rm -f "$wd/data/canonical_locks.json" "$wd/data/canonical_locks.json.tmp"
+            rm -f "$wd/data/canonical_locks.json" "$wd/data/canonical_locks.json.tmp" "$wd/data/canonical_locks.jsonl"
             rm -f "$wd/data/consensus_vote_locks.json" "$wd/data/consensus_vote_locks.json.tmp"
             rm -f "$wd/data/dag_state.json"
             # Also check for environment variable override
@@ -145,7 +146,7 @@ for pid in $PGREP_OUTPUT; do
                 fi
                 if [ -n "$data_path" ]; then
                     rm -f "$data_path/committed_qcs.json" "$data_path/committed_qcs.json.tmp" "$data_path/committed_qcs.jsonl"
-                    rm -f "$data_path/canonical_locks.json" "$data_path/canonical_locks.json.tmp"
+                    rm -f "$data_path/canonical_locks.json" "$data_path/canonical_locks.json.tmp" "$data_path/canonical_locks.jsonl"
                     rm -f "$data_path/consensus_vote_locks.json" "$data_path/consensus_vote_locks.json.tmp"
                     rm -f "$data_path/dag_state.json"
                 fi
@@ -167,7 +168,7 @@ if [ -f "$DATA_DIR/bootnode1.pid" ]; then
                 echo "    ✓ Deleted chain.json from $wd/data/"
             fi
             rm -f "$wd/data/committed_qcs.json" "$wd/data/committed_qcs.json.tmp" "$wd/data/committed_qcs.jsonl"
-            rm -f "$wd/data/canonical_locks.json" "$wd/data/canonical_locks.json.tmp"
+            rm -f "$wd/data/canonical_locks.json" "$wd/data/canonical_locks.json.tmp" "$wd/data/canonical_locks.jsonl"
             rm -f "$wd/data/consensus_vote_locks.json" "$wd/data/consensus_vote_locks.json.tmp"
             rm -f "$wd/data/dag_state.json"
         fi
