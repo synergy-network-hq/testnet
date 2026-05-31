@@ -68,6 +68,7 @@ const VALIDATOR_SUPPORT_SYNC_RESPONSE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const BLOCK_SYNC_MIN_SERVE_INTERVAL_SECS: u64 = 5;
 const BLOCK_SYNC_MIN_REQUEST_INTERVAL_MILLIS: u64 = 250;
 const CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
+const PEER_CONTROL_MESSAGE_WRITE_TIMEOUT_MILLIS: u64 = 500;
 const VOTE_REQUEST_PARENT_SYNC_WAIT_MILLIS: u64 = 900;
 const VOTE_REQUEST_PARENT_SYNC_POLL_MILLIS: u64 = 25;
 const MAX_PENDING_BLOCK_HEIGHTS: usize = 256;
@@ -2109,6 +2110,14 @@ fn configure_peer_stream(stream: &TcpStream) {
     let _ = stream.set_write_timeout(None);
 }
 
+fn enable_initial_peer_handshake_write_timeout(stream: &TcpStream) -> io::Result<Option<Duration>> {
+    let previous_timeout = stream.write_timeout()?;
+    stream.set_write_timeout(Some(Duration::from_secs(
+        INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS,
+    )))?;
+    Ok(previous_timeout)
+}
+
 fn receive_initial_peer_handshake_with_timeout(
     reader: &mut BufReader<TcpStream>,
     timeout: Duration,
@@ -2404,7 +2413,7 @@ impl P2PNetwork {
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to send transaction", "peer" => address.clone(), "error" => e.to_string());
                 } else {
                     peer.txs_sent += 1;
@@ -2537,7 +2546,7 @@ impl P2PNetwork {
                 continue;
             }
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     eprintln!("❌ Failed to request blocks from {}: {}", address, e);
                 }
             }
@@ -2564,7 +2573,7 @@ impl P2PNetwork {
                 return true;
             }
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!(
                         "p2p",
                         "Failed to request blocks from peer",
@@ -2584,7 +2593,7 @@ impl P2PNetwork {
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to request peers", "peer" => address.clone(), "error" => e.to_string());
                 }
             }
@@ -2597,7 +2606,7 @@ impl P2PNetwork {
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     eprintln!("❌ Failed to ping {}: {}", address, e);
                 }
             }
@@ -2609,7 +2618,7 @@ impl P2PNetwork {
         let mut peers = self.connected_peers.lock().unwrap();
         for (address, peer) in peers.iter_mut() {
             if let Some(ref mut stream) = peer.stream {
-                if let Err(e) = send_message(stream, &message) {
+                if let Err(e) = send_peer_control_message(stream, &message) {
                     warn!("p2p", "Failed to request status", "peer" => address.clone(), "error" => e.to_string());
                 }
             }
@@ -2828,7 +2837,7 @@ fn request_status_from_connected_peer(peers: &mut PeerMap, peer_address: &str) {
     let message = NetworkMessage::GetStatus;
     if let Some(peer) = peers.get_mut(peer_address) {
         if let Some(ref mut stream) = peer.stream {
-            if let Err(error) = send_message(stream, &message) {
+            if let Err(error) = send_peer_control_message(stream, &message) {
                 warn!(
                     "p2p",
                     "Failed to request status from peer",
@@ -2859,7 +2868,7 @@ fn request_blocks_from_connected_peer(
             return;
         }
         if let Some(ref mut stream) = peer.stream {
-            if let Err(error) = send_message(stream, &message) {
+            if let Err(error) = send_peer_control_message(stream, &message) {
                 warn!(
                     "p2p",
                     "Failed to request blocks from peer",
@@ -3477,7 +3486,7 @@ fn handle_get_blocks_message(
         let mut peers = connected_peers.lock().unwrap();
         if let Some(peer) = peers.get_mut(peer_address) {
             if let Some(ref mut stream) = peer.stream {
-                let _ = send_message(stream, &response);
+                let _ = send_peer_control_message(stream, &response);
             }
         }
         return;
@@ -3886,6 +3895,7 @@ fn handle_incoming_connection(
     configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
+    let previous_write_timeout = enable_initial_peer_handshake_write_timeout(writer.get_ref())?;
 
     // Add peer to connected peers
     {
@@ -3943,6 +3953,7 @@ fn handle_incoming_connection(
     }
 
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
+    writer.get_mut().set_write_timeout(previous_write_timeout)?;
     dispatch_peer_message(
         &blockchain,
         &connected_peers,
@@ -4001,6 +4012,7 @@ fn handle_outgoing_connection(
     configure_peer_stream(&stream);
     let mut reader = BufReader::new(stream.try_clone()?);
     let mut writer = BufWriter::new(stream);
+    let previous_write_timeout = enable_initial_peer_handshake_write_timeout(writer.get_ref())?;
 
     // Add peer to connected peers
     {
@@ -4058,6 +4070,7 @@ fn handle_outgoing_connection(
     }
 
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
+    writer.get_mut().set_write_timeout(previous_write_timeout)?;
     dispatch_peer_message(
         &blockchain,
         &connected_peers,
@@ -4674,7 +4687,8 @@ fn handle_messages(
                                 }
 
                                 if let Some(ref mut stream) = peer.stream {
-                                    if let Err(error) = send_message(stream, &message) {
+                                    if let Err(error) = send_peer_control_message(stream, &message)
+                                    {
                                         warn!(
                                             "p2p",
                                             "Failed to forward transaction",
@@ -4715,7 +4729,7 @@ fn handle_messages(
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             if let Some(ref mut stream) = peer.stream {
-                                if let Err(e) = send_message(stream, &status) {
+                                if let Err(e) = send_peer_control_message(stream, &status) {
                                     warn!("p2p", "Failed to send status", "peer" => peer_address.clone(), "error" => e.to_string());
                                 }
                             }
@@ -4754,7 +4768,7 @@ fn handle_messages(
                             let mut peers = connected_peers.lock().unwrap();
                             if let Some(peer) = peers.get_mut(&peer_address) {
                                 if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_message(stream, &response);
+                                    let _ = send_peer_control_message(stream, &response);
                                 }
                             }
                             continue;
@@ -4774,7 +4788,7 @@ fn handle_messages(
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             if let Some(ref mut stream) = peer.stream {
-                                let _ = send_message(stream, &response);
+                                let _ = send_peer_control_message(stream, &response);
                             }
                         }
                     }
@@ -4800,7 +4814,7 @@ fn handle_messages(
                             let mut peers = connected_peers.lock().unwrap();
                             if let Some(peer) = peers.get_mut(&peer_address) {
                                 if let Some(ref mut stream) = peer.stream {
-                                    let _ = send_message(stream, &response);
+                                    let _ = send_peer_control_message(stream, &response);
                                 }
                             }
                             continue;
@@ -4833,7 +4847,7 @@ fn handle_messages(
                         let mut peers = connected_peers.lock().unwrap();
                         if let Some(peer) = peers.get_mut(&peer_address) {
                             if let Some(ref mut stream) = peer.stream {
-                                let _ = send_message(stream, &response);
+                                let _ = send_peer_control_message(stream, &response);
                             }
                         }
                     }
@@ -4888,7 +4902,7 @@ fn handle_messages(
                             let mut peers = connected_peers.lock().unwrap();
                             if let Some(peer) = peers.get_mut(&peer_address) {
                                 if let Some(ref mut stream) = peer.stream {
-                                    if let Err(e) = send_message(stream, &response) {
+                                    if let Err(e) = send_peer_control_message(stream, &response) {
                                         warn!("p2p", "Failed to send peers list", "peer" => peer_address.clone(), "error" => e.to_string());
                                     }
                                 }
@@ -4964,7 +4978,7 @@ fn handle_messages(
                             if let Some(peer) = peers.get_mut(&peer_address) {
                                 if let Some(ref mut stream) = peer.stream {
                                     let pong = NetworkMessage::Pong;
-                                    if let Err(e) = send_message(stream, &pong) {
+                                    if let Err(e) = send_peer_control_message(stream, &pong) {
                                         warn!("p2p", "Failed to send pong", "peer" => peer_address.clone(), "error" => e.to_string());
                                     }
                                 }
@@ -5011,6 +5025,17 @@ fn send_consensus_message(
         stream,
         message,
         Duration::from_millis(CONSENSUS_MESSAGE_WRITE_TIMEOUT_MILLIS),
+    )
+}
+
+fn send_peer_control_message(
+    stream: &mut TcpStream,
+    message: &NetworkMessage,
+) -> Result<(), Box<dyn std::error::Error>> {
+    send_message_with_write_timeout(
+        stream,
+        message,
+        Duration::from_millis(PEER_CONTROL_MESSAGE_WRITE_TIMEOUT_MILLIS),
     )
 }
 
@@ -6006,14 +6031,14 @@ mod tests {
         collect_known_peer_addresses, connected_validator_participants,
         current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
         disconnect_peer_after_poisoned_write, dispatch_peer_message,
-        ensure_peer_status_allows_chain_data, handle_status_message, hydrate_peer_from_cache,
-        local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
-        parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
-        pending_incoming_connections_from_host, preferred_connection_direction,
-        receive_initial_peer_handshake_with_timeout, receive_message,
-        resolve_bootstrap_dial_targets, resolve_duplicate_connection, send_message,
-        should_disconnect_for_status_genesis_mismatch, should_prune_stale_peer,
-        should_request_missing_blocks, should_request_status_sync,
+        enable_initial_peer_handshake_write_timeout, ensure_peer_status_allows_chain_data,
+        handle_status_message, hydrate_peer_from_cache, local_node_runs_validator_consensus,
+        local_peer_identity, merge_peer_state_from_existing, parse_bootnode_dial_address,
+        peer_has_identifying_metadata, peer_identity_key, pending_incoming_connections_from_host,
+        preferred_connection_direction, receive_initial_peer_handshake_with_timeout,
+        receive_message, resolve_bootstrap_dial_targets, resolve_duplicate_connection,
+        send_message, send_peer_control_message, should_disconnect_for_status_genesis_mismatch,
+        should_prune_stale_peer, should_request_missing_blocks, should_request_status_sync,
         should_send_block_sync_request_at, status_ready_validator_addresses_with_local_duty_gate,
         status_ready_validator_participants, status_sync_batch,
         support_peer_sync_request_is_too_deep, validate_vote_request_extends_local_tip,
@@ -6021,10 +6046,10 @@ mod tests {
         validator_status_genesis_within_grace_window, verify_handshake_pq_signature,
         vote_request_parent_sync_range, ConnectionDirection, DialTargetsArc, DuplicateResolution,
         PeerConnection, PeerEntryGuard, BACKGROUND_SYNC_POLL_MILLIS,
-        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH, MAX_P2P_FRAME_BYTES,
-        MAX_STATUS_SYNC_BATCH, MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS,
-        NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS, STALE_UNIDENTIFIED_PEER_SECS,
-        STALE_VALIDATOR_STATUS_SECS,
+        DEFAULT_BOOTSTRAP_REFRESH_SECS, IMMEDIATE_STATUS_SYNC_BATCH,
+        INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS, MAX_P2P_FRAME_BYTES, MAX_STATUS_SYNC_BATCH,
+        MAX_VALIDATOR_SUPPORT_SYNC_RESPONSE_BLOCKS, NORMAL_BOOTSTRAP_REFRESH_SECS, PENDING_BLOCKS,
+        STALE_UNIDENTIFIED_PEER_SECS, STALE_VALIDATOR_STATUS_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
@@ -6349,6 +6374,51 @@ mod tests {
 
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert_eq!(reader.get_ref().read_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn initial_peer_handshake_write_timeout_is_bounded_and_restorable() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (server, _) = listener.accept().unwrap();
+
+        let previous_timeout = enable_initial_peer_handshake_write_timeout(&server).unwrap();
+        assert_eq!(previous_timeout, None);
+        assert_eq!(
+            server.write_timeout().unwrap(),
+            Some(Duration::from_secs(INITIAL_PEER_HANDSHAKE_TIMEOUT_SECS))
+        );
+
+        server.set_write_timeout(previous_timeout).unwrap();
+        assert_eq!(server.write_timeout().unwrap(), None);
+    }
+
+    #[test]
+    fn peer_control_message_write_timeout_restores_blocking_mode() {
+        let listener = match TcpListener::bind("127.0.0.1:0") {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to bind test listener: {error}"),
+        };
+        let addr = listener.local_addr().unwrap();
+        let _client = match std::net::TcpStream::connect(addr) {
+            Ok(stream) => stream,
+            Err(error) if error.kind() == io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("failed to connect test stream: {error}"),
+        };
+        let (mut server, _) = listener.accept().unwrap();
+
+        send_peer_control_message(&mut server, &NetworkMessage::Ping).unwrap();
+        assert_eq!(server.write_timeout().unwrap(), None);
     }
 
     #[test]
