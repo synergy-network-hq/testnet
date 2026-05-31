@@ -6631,10 +6631,10 @@ mod tests {
             transaction.validate_for_admission().is_valid,
             "transaction must pass ingress admission first"
         );
-        assert_eq!(
+        assert!(matches!(
             ProofOfSynergy::validate_transaction_for_mempool(&transaction),
-            Err("sender public key is unavailable".to_string())
-        );
+            Err(reason) if reason.starts_with("insufficient SNRG balance for transaction; required ")
+        ));
 
         {
             let mut pool = TX_POOL.lock().unwrap();

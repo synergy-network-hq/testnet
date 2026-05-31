@@ -64,9 +64,14 @@ if [[ ! -x "$WALLET_CLI" ]]; then
 fi
 
 FAUCET_ADDRESS="$(jq -r '.address // empty' "$KEYFILE")"
+FAUCET_PUBLIC_KEY_B64="$(jq -r '.public_key // empty' "$KEYFILE")"
 FAUCET_PK_B64="$(jq -r '.private_key // empty' "$KEYFILE")"
 if [[ -z "$FAUCET_ADDRESS" ]]; then
   echo "Could not read .address from $KEYFILE" >&2
+  exit 1
+fi
+if [[ -z "$FAUCET_PUBLIC_KEY_B64" ]]; then
+  echo "Could not read .public_key from $KEYFILE" >&2
   exit 1
 fi
 if [[ -z "$FAUCET_PK_B64" ]]; then
@@ -75,11 +80,11 @@ if [[ -z "$FAUCET_PK_B64" ]]; then
 fi
 
 # wallet-pqc-cli sign-tx expects --private-key as hex; the keyfile stores it as base64.
-FAUCET_PK_HEX="$(python3 - "$FAUCET_PK_B64" <<'PY'
+read -r FAUCET_PUBLIC_KEY_HEX FAUCET_PK_HEX < <(python3 - "$FAUCET_PUBLIC_KEY_B64" "$FAUCET_PK_B64" <<'PY'
 import base64, sys
-sys.stdout.write(base64.b64decode(sys.argv[1]).hex())
+print(base64.b64decode(sys.argv[1]).hex(), base64.b64decode(sys.argv[2]).hex())
 PY
-)"
+)
 
 rpc() {
   local method="$1" params_json="${2:-[]}" payload response
@@ -208,6 +213,8 @@ fi
 DATA_FIELD=""
 
 UNSIGNED_TX="$(jq -cn \
+  --argjson chain_id 1264 \
+  --arg network_id "synergy-testnet-v2" \
   --arg sender "$FAUCET_ADDRESS" \
   --arg receiver "$RECIPIENT" \
   --argjson amount "$REQUESTED_NWEI" \
@@ -218,6 +225,8 @@ UNSIGNED_TX="$(jq -cn \
   --arg data "$DATA_FIELD" \
   --arg algo "$SIGN_ALGO" \
   '{
+    chain_id:$chain_id,
+    network_id:$network_id,
     sender:$sender,
     receiver:$receiver,
     amount:$amount,
@@ -240,7 +249,18 @@ SIGNED_OUT="$("$WALLET_CLI" sign-tx \
 # Drop the in-memory copy of the key as soon as signing is done.
 unset FAUCET_PK_HEX FAUCET_PK_B64
 
-SIGNED_TX="$(jq -c '.transaction // empty' <<<"$SIGNED_OUT")"
+SIGNED_TX="$(jq -c \
+  --argjson chain_id 1264 \
+  --arg network_id "synergy-testnet-v2" \
+  --arg signer_public_key "$FAUCET_PUBLIC_KEY_HEX" \
+  '(.transaction // empty) + {
+    chain_id:$chain_id,
+    network_id:$network_id,
+    chainId:$chain_id,
+    networkId:$network_id,
+    signer_public_key:$signer_public_key,
+    signerPublicKey:$signer_public_key
+  }' <<<"$SIGNED_OUT")"
 if [[ -z "$SIGNED_TX" ]]; then
   echo "Signing failed. CLI output:" >&2
   echo "$SIGNED_OUT" >&2

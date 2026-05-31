@@ -172,6 +172,11 @@ impl Transaction {
         if self.signature.is_empty() {
             return Err("Transaction signature is missing".to_string());
         }
+        let derived_sender =
+            crate::address::generate_wallet_address(&hex::encode(&self.signer_public_key));
+        if derived_sender != self.sender {
+            return Err("Transaction signer public key does not derive sender address".to_string());
+        }
         let algorithm = parse_algorithm_name(&self.signature_algorithm)?;
         let public_key = PQCPublicKey {
             algorithm,
@@ -654,8 +659,9 @@ mod tests {
         let (public_key, private_key) = manager
             .generate_keypair(PQCAlgorithm::FNDSA)
             .expect("test keypair should generate");
+        let sender = crate::address::generate_wallet_address(&hex::encode(&public_key.key_data));
         let mut tx = Transaction::new(
-            "sender123".to_string(),
+            sender,
             "receiver456".to_string(),
             1000,
             1,
@@ -685,6 +691,34 @@ mod tests {
         let mut missing_key = tx;
         missing_key.signer_public_key.clear();
         assert!(!missing_key.validate_for_admission().is_valid);
+    }
+
+    #[test]
+    fn admission_rejects_signer_public_key_that_does_not_derive_sender_address() {
+        let mut manager = PQCManager::new();
+        let (public_key, private_key) = manager
+            .generate_keypair(PQCAlgorithm::FNDSA)
+            .expect("test keypair should generate");
+        let mut tx = Transaction::new(
+            "sender123".to_string(),
+            "receiver456".to_string(),
+            1000,
+            1,
+            Vec::new(),
+            100,
+            21000,
+            None,
+            "fndsa".to_string(),
+        );
+        tx.sign_with_public_key(&public_key, &private_key, &mut manager)
+            .expect("test transaction should sign");
+
+        let validation = tx.validate_for_admission();
+        assert!(!validation.is_valid);
+        assert_eq!(
+            validation.error_message.as_deref(),
+            Some("Transaction signer public key does not derive sender address")
+        );
     }
 
     #[test]

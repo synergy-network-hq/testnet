@@ -2896,6 +2896,10 @@ impl ProofOfSynergy {
                     "Aegis PQVM transaction carrier validation failed: {error}"
                 ));
             }
+        } else if !tx.signer_public_key.is_empty() {
+            tx.verify_embedded_signature().map_err(|error| {
+                format!("embedded transaction signature validation failed: {error}")
+            })?;
         } else if let Some(public_key) = Self::get_transaction_public_key(&tx.sender) {
             let pqc = pqc_manager.lock().unwrap();
             // Use raw_hash() for signature verification (without prefix)
