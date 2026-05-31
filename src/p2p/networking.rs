@@ -760,6 +760,11 @@ fn peer_identity_from_connection(peer: &PeerConnection) -> Option<String> {
         .map(|node_id| peer_identity_key(node_id, peer.validator_address.as_deref()))
 }
 
+fn block_sync_rate_limit_key(peer_address: &str, peer: Option<&PeerConnection>) -> String {
+    peer.and_then(peer_identity_from_connection)
+        .unwrap_or_else(|| format!("host:{}", peer_socket_host(peer_address)))
+}
+
 fn peer_has_remote_status(peer: &PeerConnection) -> bool {
     peer.status_received_at.is_some() && !peer.genesis_hash.trim().is_empty()
 }
@@ -3393,7 +3398,10 @@ fn handle_get_blocks_message(
     );
 
     let now = current_timestamp();
-    let rate_limit_key = peer_socket_host(peer_address);
+    let rate_limit_key = {
+        let peers = connected_peers.lock().unwrap();
+        block_sync_rate_limit_key(peer_address, peers.get(peer_address))
+    };
     let should_serve = BLOCK_SYNC_LAST_SERVED
         .lock()
         .map(|mut served| {
@@ -3410,7 +3418,7 @@ fn handle_get_blocks_message(
             "p2p",
             "Throttling block sync response",
             "peer" => peer_address.to_string(),
-            "host" => rate_limit_key,
+            "rate_limit_key" => rate_limit_key,
             "from_height" => from_height,
             "count" => count as u64
         );
@@ -5881,11 +5889,12 @@ fn dial_peer_async(
 mod tests {
     use super::{
         apply_block_batch, apply_block_if_new, background_poll_interval,
-        best_connected_validator_height, block_sync_request_range, block_sync_response_policy,
-        build_local_handshake, bypasses_shared_message_queue, cache_peer_state,
-        cache_pending_block, canonical_genesis_hash, collect_known_peer_addresses,
-        connected_validator_participants, current_bootstrap_refresh_interval, current_timestamp,
-        dial_with_timeout, disconnect_peer_after_poisoned_write, dispatch_peer_message,
+        best_connected_validator_height, block_sync_rate_limit_key, block_sync_request_range,
+        block_sync_response_policy, build_local_handshake, bypasses_shared_message_queue,
+        cache_peer_state, cache_pending_block, canonical_genesis_hash,
+        collect_known_peer_addresses, connected_validator_participants,
+        current_bootstrap_refresh_interval, current_timestamp, dial_with_timeout,
+        disconnect_peer_after_poisoned_write, dispatch_peer_message,
         ensure_peer_status_allows_chain_data, handle_status_message, hydrate_peer_from_cache,
         local_node_runs_validator_consensus, local_peer_identity, merge_peer_state_from_existing,
         parse_bootnode_dial_address, peer_has_identifying_metadata, peer_identity_key,
@@ -6200,6 +6209,31 @@ mod tests {
         assert_eq!(
             peer_identity_key("testnet-random-node-id", None),
             "node:testnet-random-node-id".to_string()
+        );
+    }
+
+    #[test]
+    fn block_sync_rate_limit_key_separates_authenticated_peers_on_shared_host() {
+        let mut rpc_gateway = test_peer_with_validator_address(Some("synv1rpc"));
+        rpc_gateway.node_id = Some("rpc-gateway".to_string());
+        let mut explorer = test_peer_with_validator_address(Some("synv1explorer"));
+        explorer.node_id = Some("explorer-indexer".to_string());
+
+        assert_eq!(
+            block_sync_rate_limit_key("74.208.227.23:41000", Some(&rpc_gateway)),
+            "validator:synv1rpc".to_string()
+        );
+        assert_eq!(
+            block_sync_rate_limit_key("74.208.227.23:42000", Some(&explorer)),
+            "validator:synv1explorer".to_string()
+        );
+    }
+
+    #[test]
+    fn block_sync_rate_limit_key_falls_back_to_host_before_handshake() {
+        assert_eq!(
+            block_sync_rate_limit_key("74.208.227.23:41000", None),
+            "host:74.208.227.23".to_string()
         );
     }
 

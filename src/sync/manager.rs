@@ -12,6 +12,10 @@ use crate::sync::validation;
 const SYNC_RECONCILIATION_LOOKBACK: u64 = 8;
 const SYNC_PROGRESS_OVERLAP: u64 = 2;
 const MAX_SYNC_BATCH_BLOCKS: u64 = 128;
+const MAX_SUPPORT_SYNC_RESPONSE_BLOCKS: u64 = 8;
+const MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST: u64 =
+    MAX_SUPPORT_SYNC_RESPONSE_BLOCKS - SYNC_PROGRESS_OVERLAP - 1;
+const SYNC_BATCH_RETRY_TIMEOUT_SECS: u64 = 6;
 
 /// Represents where the sync engine currently is in the lifecycle.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,20 +287,8 @@ impl SyncManager {
                 }
             }
             let sync_tip = self.local_height;
-            let remaining = self.network_height - self.local_height;
-            let batch_size = if remaining > 5000 {
-                MAX_SYNC_BATCH_BLOCKS
-            } else if remaining > 1000 {
-                96
-            } else {
-                std::cmp::min(remaining, 64)
-            };
-            let target_height = std::cmp::min(self.network_height, sync_tip + batch_size);
-            let request_start = sync_tip.saturating_sub(sync_progress_overlap(batch_size));
-            let request_count = target_height
-                .saturating_sub(request_start)
-                .saturating_add(1)
-                .min(u32::MAX as u64) as u32;
+            let (request_start, request_count, target_height) =
+                sync_request_plan(sync_tip, self.network_height);
 
             if let Some(network) = &self.p2p_network {
                 let preferred_peer = self.select_sync_peer();
@@ -315,8 +307,10 @@ impl SyncManager {
 
             // Scale timeout with request size because overlap/reconciliation can request
             // a wider range than the net-new block count.
-            let batch_timeout_secs =
-                std::cmp::max(15, std::cmp::min(180, request_count as u64 / 50 + 10));
+            let batch_timeout_secs = std::cmp::max(
+                SYNC_BATCH_RETRY_TIMEOUT_SECS,
+                std::cmp::min(30, request_count as u64 / 50 + 5),
+            );
             let batch_timeout = Duration::from_secs(batch_timeout_secs);
             let mut satisfied = self.wait_for_height(target_height, batch_timeout);
             self.refresh_local_height();
@@ -435,6 +429,26 @@ fn sync_progress_overlap(batch_size: u64) -> u64 {
         .min(batch_size - 1)
 }
 
+fn sync_request_plan(sync_tip: u64, network_height: u64) -> (u64, u32, u64) {
+    let remaining = network_height.saturating_sub(sync_tip);
+    let batch_size = (if remaining > 5000 {
+        MAX_SYNC_BATCH_BLOCKS
+    } else if remaining > 1000 {
+        96
+    } else {
+        std::cmp::min(remaining, 64)
+    })
+    .min(MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST);
+    let target_height = std::cmp::min(network_height, sync_tip.saturating_add(batch_size));
+    let request_start = sync_tip.saturating_sub(sync_progress_overlap(batch_size));
+    let request_count = target_height
+        .saturating_sub(request_start)
+        .saturating_add(1)
+        .min(u32::MAX as u64) as u32;
+
+    (request_start, request_count, target_height)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,6 +470,14 @@ mod tests {
         assert_eq!(sync_progress_overlap(1), 0);
         assert_eq!(sync_progress_overlap(2), 1);
         assert_eq!(sync_progress_overlap(64), SYNC_PROGRESS_OVERLAP);
+        assert_eq!(MAX_SYNC_PROGRESS_BLOCKS_PER_REQUEST, 5);
+    }
+
+    #[test]
+    fn sync_request_plan_fits_one_support_response_budget() {
+        assert_eq!(sync_request_plan(10_000, 20_000), (9_998, 8, 10_005));
+        assert_eq!(sync_request_plan(10_000, 10_004), (9_998, 7, 10_004));
+        assert_eq!(sync_request_plan(0, 20_000), (0, 6, 5));
     }
 
     #[test]
