@@ -841,6 +841,9 @@ impl DualQuorumConsensus {
     fn load_committed_qc_store_from_disk() -> Result<HashMap<String, QuorumCertificate>, String> {
         let path = Self::committed_qc_store_path();
         let log_path = Self::committed_qc_log_path();
+        if Self::archive_oversized_committed_qc_log_for_canonical_head(&path, &log_path)? {
+            return Ok(HashMap::new());
+        }
         let mut loaded = Self::read_persisted_committed_qcs(&path, &log_path)?;
 
         match Self::validate_committed_qc_store(&loaded) {
@@ -861,6 +864,97 @@ impl DualQuorumConsensus {
                 Ok(loaded)
             }
         }
+    }
+
+    fn committed_qc_log_archive_threshold_bytes() -> u64 {
+        std::env::var("SYNERGY_COMMITTED_QC_LOG_ARCHIVE_THRESHOLD_BYTES")
+            .ok()
+            .and_then(|value| value.trim().parse::<u64>().ok())
+            .unwrap_or(64 * 1024 * 1024)
+    }
+
+    fn archive_oversized_committed_qc_log_for_canonical_head(
+        path: &Path,
+        log_path: &Path,
+    ) -> Result<bool, String> {
+        if !log_path.exists() {
+            return Ok(false);
+        }
+        let log_size = fs::metadata(log_path)
+            .map_err(|err| format!("failed to stat committed QC log {:?}: {err}", log_path))?
+            .len();
+        if log_size <= Self::committed_qc_log_archive_threshold_bytes() {
+            return Ok(false);
+        }
+        let latest_canonical = latest_legacy_canonical_commit_record()?.ok_or_else(|| {
+            format!(
+                "committed QC log {:?} is oversized at {log_size} bytes but no canonical head is available for bounded startup repair",
+                log_path
+            )
+        })?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("committed QC store path {:?} has no parent", path))?;
+        let evidence_dir = parent.join("consensus_recovery_evidence").join(format!(
+            "{}-oversized-committed-qc-log-archived",
+            Self::current_timestamp()
+        ));
+        fs::create_dir_all(&evidence_dir).map_err(|err| {
+            format!(
+                "failed to create committed QC oversized-log evidence directory {:?}: {err}",
+                evidence_dir
+            )
+        })?;
+        let compact_size = if path.exists() {
+            let size = fs::metadata(path)
+                .map_err(|err| format!("failed to stat committed QC store {:?}: {err}", path))?
+                .len();
+            fs::rename(path, evidence_dir.join("committed_qcs.json.before")).map_err(|err| {
+                format!(
+                    "failed to archive committed QC compact store {:?}: {err}",
+                    path
+                )
+            })?;
+            Some(size)
+        } else {
+            None
+        };
+        fs::rename(log_path, evidence_dir.join("committed_qcs.jsonl.before")).map_err(|err| {
+            format!(
+                "failed to archive oversized committed QC log {:?}: {err}",
+                log_path
+            )
+        })?;
+        let latest_canonical_height = latest_canonical.height;
+        let latest_canonical_block_hash = latest_canonical.block_hash.clone();
+        let latest_canonical_qc_hash = latest_canonical.qc_hash.clone();
+        let report = serde_json::json!({
+            "action": "archive_oversized_committed_qc_log_for_canonical_head",
+            "reason": "bounded startup repair",
+            "latest_canonical_height": latest_canonical_height,
+            "latest_canonical_block_hash": latest_canonical_block_hash,
+            "latest_canonical_qc_hash": latest_canonical_qc_hash,
+            "archived_log_bytes": log_size,
+            "archived_compact_bytes": compact_size,
+            "mutated": true,
+            "timestamp": Self::current_timestamp(),
+        });
+        Self::write_bytes_atomically(
+            &evidence_dir.join("report.json"),
+            &serde_json::to_vec_pretty(&report)
+                .map_err(|err| format!("encode oversized committed QC archive report: {err}"))?,
+        )?;
+        Self::write_bytes_atomically(path, b"{}")?;
+        Self::write_bytes_atomically(log_path, b"")?;
+        warn!(
+            "consensus",
+            "Archived oversized committed QC log for bounded canonical startup repair",
+            "bytes" => log_size,
+            "latest_canonical_height" => latest_canonical_height,
+            "latest_canonical_block_hash" => latest_canonical_block_hash,
+            "evidence_dir" => evidence_dir.display().to_string()
+        );
+        Ok(true)
     }
 
     fn read_persisted_committed_qcs(
@@ -3130,6 +3224,82 @@ mod tests {
         assert!(raw.contains("block-head"));
         assert!(!raw.contains("block-a"));
         assert!(!raw.contains("block-b"));
+    }
+
+    #[test]
+    fn committed_qc_disk_load_archives_oversized_log_when_canonical_head_exists() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+        let previous_threshold =
+            std::env::var("SYNERGY_COMMITTED_QC_LOG_ARCHIVE_THRESHOLD_BYTES").ok();
+        std::env::set_var("SYNERGY_COMMITTED_QC_LOG_ARCHIVE_THRESHOLD_BYTES", "1");
+
+        let head_height = 88_910;
+        let head_qc = test_qc_at_height("block-head", head_height);
+        let mut head_block = Block::new(
+            head_height,
+            vec![],
+            "parent".to_string(),
+            "validator1".to_string(),
+            0,
+        );
+        head_block.hash = "block-head".to_string();
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(&head_block, &head_qc)
+            .expect("canonical head should be written");
+
+        let log_path = DualQuorumConsensus::committed_qc_log_path();
+        let compact_path = DualQuorumConsensus::committed_qc_store_path();
+        let entries = [
+            CommittedQcLogEntry {
+                block_hash: "block-a".to_string(),
+                qc: test_qc_at_height("block-a", 88_800),
+            },
+            CommittedQcLogEntry {
+                block_hash: "block-b".to_string(),
+                qc: test_qc_at_height("block-b", 88_800),
+            },
+        ];
+        let payload = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).expect("QC log entry should encode"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&log_path, format!("{payload}\n"))
+            .expect("oversized QC journal should be written");
+
+        let loaded = DualQuorumConsensus::load_committed_qc_store_from_disk()
+            .expect("oversized QC log should be archived behind canonical head");
+
+        assert!(loaded.is_empty());
+        assert_eq!(fs::read_to_string(&compact_path).unwrap(), "{}");
+        assert_eq!(fs::read_to_string(&log_path).unwrap(), "");
+        let evidence_root = compact_path
+            .parent()
+            .unwrap()
+            .join("consensus_recovery_evidence");
+        let evidence_dirs = fs::read_dir(evidence_root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("oversized-committed-qc-log-archived")
+            })
+            .collect::<Vec<_>>();
+        assert!(!evidence_dirs.is_empty());
+        assert!(evidence_dirs[0]
+            .path()
+            .join("committed_qcs.jsonl.before")
+            .exists());
+
+        match previous_threshold {
+            Some(value) => {
+                std::env::set_var("SYNERGY_COMMITTED_QC_LOG_ARCHIVE_THRESHOLD_BYTES", value)
+            }
+            None => std::env::remove_var("SYNERGY_COMMITTED_QC_LOG_ARCHIVE_THRESHOLD_BYTES"),
+        }
     }
 
     fn signed_block(block_index: u64, nonce: u64, validator_id: &str) -> Block {
