@@ -152,6 +152,35 @@ fn run() -> Result<(), String> {
             )?;
             print_json(report)?;
         }
+        "activate-recovered-cohort-member" => {
+            require_testnet_args(&args)?;
+            let options =
+                synergy_testnet::consensus::diagnostics::RecoveredCohortActivationOptions {
+                    target_stopped: arg_flag(&args, "--target-stopped"),
+                    common_height: optional_u64_arg(&args, "--common-height")?,
+                    common_hash: arg_value(&args, "--common-hash"),
+                    snapshot_manifest_hash: arg_value(&args, "--snapshot-manifest-hash"),
+                    cohort_exact_common_height_match: arg_flag(
+                        &args,
+                        "--cohort-exact-common-height-match",
+                    ),
+                    latest_finalized_qc_aegis_pqc_verified: arg_flag(
+                        &args,
+                        "--latest-finalized-qc-aegis-pqc-verified",
+                    ),
+                    state_root_matches: arg_flag(&args, "--state-root-matches"),
+                    cohort_quorum_size: optional_u64_arg(&args, "--cohort-quorum-size")?,
+                    operator_approved_disaster_recovery: arg_flag(
+                        &args,
+                        "--operator-approved-disaster-recovery",
+                    ),
+                };
+            let report =
+                synergy_testnet::consensus::diagnostics::activate_recovered_cohort_member_with_options(
+                    options,
+                )?;
+            print_json(report)?;
+        }
         "quarantine-stopped-validator" => {
             require_testnet_args(&args)?;
             let options = synergy_testnet::consensus::diagnostics::OperatorQuarantineOptions {
@@ -265,6 +294,7 @@ fn run() -> Result<(), String> {
             );
             println!("  synergy-node verify-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
             println!("  synergy-node self-heal-from-snapshot --manifest <path> --chain-id 1264 --network-id synergy-testnet-v2 [--snapshot-root <dir>]");
+            println!("  synergy-node activate-recovered-cohort-member --chain-id 1264 --network-id synergy-testnet-v2 --target-stopped --common-height <height> --common-hash <hash> --snapshot-manifest-hash <hash> --cohort-exact-common-height-match --latest-finalized-qc-aegis-pqc-verified --state-root-matches --cohort-quorum-size <4|5> --operator-approved-disaster-recovery");
             println!("  synergy-node quarantine-stopped-validator --chain-id 1264 --network-id synergy-testnet-v2 --target-stopped --operator-approved-containment --quorum-majority-height <height> --quorum-majority-hash <hash> [--local-conflicting-height <height>] [--local-conflicting-hash <hash>]");
             println!("  synergy-node start-shadow-observe --chain-id 1264 --network-id synergy-testnet-v2 [--required-blocks <blocks>]");
             println!(

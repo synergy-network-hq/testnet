@@ -100,6 +100,19 @@ pub struct RejoinRequestOptions {
     pub operator_approved_reactivation: bool,
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct RecoveredCohortActivationOptions {
+    pub target_stopped: bool,
+    pub common_height: Option<u64>,
+    pub common_hash: Option<String>,
+    pub snapshot_manifest_hash: Option<String>,
+    pub cohort_exact_common_height_match: bool,
+    pub latest_finalized_qc_aegis_pqc_verified: bool,
+    pub state_root_matches: bool,
+    pub cohort_quorum_size: Option<u64>,
+    pub operator_approved_disaster_recovery: bool,
+}
+
 #[derive(Debug, Clone)]
 struct BlockSummary {
     height: u64,
@@ -2503,6 +2516,215 @@ pub fn self_heal_from_snapshot(
     }))
 }
 
+pub fn activate_recovered_cohort_member_with_options(
+    options: RecoveredCohortActivationOptions,
+) -> Result<Value, String> {
+    require_local_testnet_v2()?;
+    let validator_id = current_validator_id();
+    let mut blocked = Vec::new();
+    if !options.target_stopped {
+        blocked.push("activate-recovered-cohort-member requires --target-stopped".to_string());
+    }
+    if !options.operator_approved_disaster_recovery {
+        blocked.push(
+            "activate-recovered-cohort-member requires --operator-approved-disaster-recovery"
+                .to_string(),
+        );
+    }
+    if !options.cohort_exact_common_height_match {
+        blocked.push(
+            "activate-recovered-cohort-member requires --cohort-exact-common-height-match"
+                .to_string(),
+        );
+    }
+    if !options.latest_finalized_qc_aegis_pqc_verified {
+        blocked.push(
+            "activate-recovered-cohort-member requires --latest-finalized-qc-aegis-pqc-verified"
+                .to_string(),
+        );
+    }
+    if !options.state_root_matches {
+        blocked.push("activate-recovered-cohort-member requires --state-root-matches".to_string());
+    }
+    match options.cohort_quorum_size {
+        Some(4..=5) => {}
+        Some(size) => blocked.push(format!(
+            "activate-recovered-cohort-member requires cohort quorum size 4 or 5, received {size}"
+        )),
+        None => blocked.push(
+            "activate-recovered-cohort-member requires --cohort-quorum-size <4|5>".to_string(),
+        ),
+    }
+    let common_height = match options.common_height {
+        Some(height) => height,
+        None => {
+            blocked.push(
+                "activate-recovered-cohort-member requires --common-height <height>".to_string(),
+            );
+            0
+        }
+    };
+    let common_hash = match options
+        .common_hash
+        .as_deref()
+        .filter(|hash| !hash.trim().is_empty())
+    {
+        Some(hash) => hash,
+        None => {
+            blocked
+                .push("activate-recovered-cohort-member requires --common-hash <hash>".to_string());
+            ""
+        }
+    };
+    let snapshot_manifest_hash = match options
+        .snapshot_manifest_hash
+        .as_deref()
+        .filter(|hash| !hash.trim().is_empty())
+    {
+        Some(hash) => hash,
+        None => {
+            blocked.push(
+                "activate-recovered-cohort-member requires --snapshot-manifest-hash <hash>"
+                    .to_string(),
+            );
+            ""
+        }
+    };
+
+    let quarantine = quarantine_status();
+    if !quarantine
+        .get("quarantined")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
+    {
+        blocked
+            .push("activate-recovered-cohort-member requires local quarantine marker".to_string());
+    } else if let Err(reason) = read_standard_quarantine_marker() {
+        blocked.push(format!(
+            "activate-recovered-cohort-member requires standard local quarantine marker: {reason}"
+        ));
+    }
+    let status = read_self_heal_status_file();
+    if status_state(status.as_ref()).as_deref() != Some("SNAPSHOT_RESTORED") {
+        blocked.push(
+            "activate-recovered-cohort-member requires successful SNAPSHOT_RESTORED status"
+                .to_string(),
+        );
+    }
+    if let Some(status) = status.as_ref() {
+        if status.get("snapshot_height").and_then(Value::as_u64) != Some(common_height) {
+            blocked.push(format!(
+                "activate-recovered-cohort-member common height {common_height} does not match restored snapshot height"
+            ));
+        }
+        if status.get("snapshot_manifest_hash").and_then(Value::as_str)
+            != Some(snapshot_manifest_hash)
+        {
+            blocked.push(
+                "activate-recovered-cohort-member snapshot manifest hash does not match restored snapshot"
+                    .to_string(),
+            );
+        }
+    }
+
+    if blocked.is_empty() {
+        match read_latest_block_summary() {
+            Ok(block) if block.height == common_height && block.hash == common_hash => {}
+            Ok(block) => blocked.push(format!(
+                "activate-recovered-cohort-member local materialized head {} {} does not match common snapshot {} {}",
+                block.height, block.hash, common_height, common_hash
+            )),
+            Err(error) => blocked.push(format!(
+                "activate-recovered-cohort-member cannot read local materialized head: {error}"
+            )),
+        }
+        match latest_canonical_lock() {
+            Some((height, hash)) if height == common_height && hash == common_hash => {}
+            Some((height, hash)) => blocked.push(format!(
+                "activate-recovered-cohort-member canonical lock {height} {hash} does not match common snapshot {common_height} {common_hash}"
+            )),
+            None => blocked.push(
+                "activate-recovered-cohort-member requires restored canonical lock".to_string(),
+            ),
+        }
+        match latest_verified_qc_summary() {
+            Ok(qc) if qc.height == common_height && qc.hash == common_hash => {}
+            Ok(qc) => blocked.push(format!(
+                "activate-recovered-cohort-member latest verified QC {} {} does not match common snapshot {} {}",
+                qc.height, qc.hash, common_height, common_hash
+            )),
+            Err(error) => blocked.push(format!(
+                "activate-recovered-cohort-member requires verified restored QC: {error}"
+            )),
+        }
+    }
+    if !blocked.is_empty() {
+        return Ok(json!({
+            "success": false,
+            "typed_status": "FAILED_CLOSED",
+            "chain": chain_identity(),
+            "validator_id": validator_id,
+            "previous_state": status_state(status.as_ref()),
+            "new_state": "QUARANTINED",
+            "blocked_reasons": blocked,
+            "canonical_locks_mutated": false,
+            "committed_qcs_mutated": false,
+            "chain_state_mutated": false,
+            "keys_or_configs_copied": false,
+            "genesis_mutated": false,
+            "quorum_mutated": false,
+        }));
+    }
+
+    let vote_lock_recovery =
+        DualQuorumConsensus::recover_vote_locks_above_finalized_height_with_cohort_snapshot_certificate(
+            common_height,
+            common_hash,
+            snapshot_manifest_hash,
+            "operator-approved full-cohort signed-snapshot disaster recovery",
+        )?;
+    let proposal_cache_recovery =
+        ProofOfSynergy::recover_cached_block_proposals_above_finalized_height(
+            common_height,
+            "operator-approved full-cohort signed-snapshot disaster recovery",
+        )?;
+    vote_locks_clean(common_height)?;
+    let evidence_path = crate::utils::resolve_data_path(&format!(
+        "data/self-heal-evidence/{}-cohort-snapshot-reactivation",
+        now_secs()
+    ));
+    let preserved_quarantine_markers = preserve_and_remove_quarantine_markers(&evidence_path)?;
+    let status = json!({
+        "success": true,
+        "typed_status": "ACTIVE",
+        "chain": chain_identity(),
+        "validator_id": validator_id,
+        "previous_state": "SNAPSHOT_RESTORED",
+        "new_state": "ACTIVE",
+        "activation_mode": "OPERATOR_APPROVED_FULL_COHORT_SIGNED_SNAPSHOT_DISASTER_RECOVERY",
+        "common_height": common_height,
+        "common_hash": common_hash,
+        "snapshot_manifest_hash": snapshot_manifest_hash,
+        "cohort_quorum_size": options.cohort_quorum_size,
+        "cohort_exact_common_height_match": true,
+        "latest_finalized_qc_aegis_pqc_verified": true,
+        "state_root_matches": true,
+        "vote_lock_recovery": vote_lock_recovery,
+        "proposal_cache_recovery": proposal_cache_recovery,
+        "evidence_path": evidence_path,
+        "preserved_quarantine_markers": preserved_quarantine_markers,
+        "canonical_locks_mutated": false,
+        "committed_qcs_mutated": false,
+        "chain_state_mutated": false,
+        "keys_or_configs_copied": false,
+        "genesis_mutated": false,
+        "quorum_mutated": false,
+        "next_required_action": "start recovered cohort together and prove exact common-height advancement",
+    });
+    write_json_pretty(&self_heal_status_path(), &status)?;
+    Ok(status)
+}
+
 pub fn shadow_status() -> Value {
     let path = shadow_observation_path();
     let Some(observation) = read_json_file_raw(&path) else {
@@ -3098,17 +3320,19 @@ pub fn request_rejoin_with_options(options: RejoinRequestOptions) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_snapshot_state_files, create_snapshot_with_options, diagnose_consensus_stall,
-        enforce_snapshot_retention, quarantine_status, quarantine_stopped_validator_with_options,
-        read_block_at_height, read_latest_block_summary, rejoin_eligibility,
-        request_rejoin_with_options, self_heal_from_snapshot, shadow_status,
-        snapshot_metadata_consistency_report, start_shadow_observe_with_options,
-        sync_from_canonical_peer_with_options, CreateSnapshotOptions, OperatorQuarantineOptions,
+        activate_recovered_cohort_member_with_options, copy_snapshot_state_files,
+        create_snapshot_with_options, diagnose_consensus_stall, enforce_snapshot_retention,
+        quarantine_status, quarantine_stopped_validator_with_options, read_block_at_height,
+        read_latest_block_summary, rejoin_eligibility, request_rejoin_with_options,
+        self_heal_from_snapshot, shadow_status, snapshot_metadata_consistency_report,
+        start_shadow_observe_with_options, sync_from_canonical_peer_with_options,
+        CreateSnapshotOptions, OperatorQuarantineOptions, RecoveredCohortActivationOptions,
         RejoinRequestOptions, StartShadowObserveOptions, SyncFromCanonicalPeerOptions,
         DIAGNOSTIC_STALE_TRANSIENT_VOTE_LOCK_SECS,
     };
     use crate::block::{Block, BlockChain};
     use crate::config::NodeConfig;
+    use crate::consensus::dual_quorum::DualQuorumConsensus;
     use crate::consensus::self_realign::{
         create_snapshot_manifest, sign_snapshot_manifest, QuarantineMarker, SnapshotBuildInput,
         SnapshotQcEvidence,
@@ -4246,6 +4470,122 @@ mod tests {
         );
         let rejoin = with_runtime_root(&root, rejoin_eligibility);
         assert_eq!(rejoin.get("eligible").and_then(Value::as_bool), Some(false));
+    }
+
+    #[test]
+    fn recovered_cohort_activation_requires_operator_approval_and_shared_snapshot_proof() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("cohort-activation-requires-proof");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        write_self_heal_status_state(&root, "SNAPSHOT_RESTORED");
+
+        let report = with_runtime_root(&root, || {
+            activate_recovered_cohort_member_with_options(
+                RecoveredCohortActivationOptions::default(),
+            )
+            .expect("cohort activation should return typed failure")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(false));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("FAILED_CLOSED")
+        );
+        let blockers = report
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .expect("blocked reasons should be reported");
+        assert!(blockers.iter().any(|reason| {
+            reason
+                .as_str()
+                .unwrap_or_default()
+                .contains("operator-approved-disaster-recovery")
+        }));
+        assert!(root.join("data/validator_quarantine.json").exists());
+    }
+
+    #[test]
+    fn recovered_cohort_activation_archives_future_vote_lock_and_removes_quarantine() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("cohort-activation-success");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        write_chain_range(&root, 99, 100);
+        write_canonical_lock_at_height(&root, 100);
+        write_legacy_qc_fixture_at_height(&root, 100);
+        fs::write(
+            root.join("data/self_heal_status.json"),
+            json!({
+                "success": true,
+                "typed_status": "SNAPSHOT_RESTORED",
+                "new_state": "SNAPSHOT_RESTORED",
+                "snapshot_height": 100,
+                "snapshot_manifest_hash": "manifest-hash",
+            })
+            .to_string(),
+        )
+        .expect("self-heal status should be written");
+        let vote_lock_path = root.join("data/consensus_vote_locks.json");
+        fs::write(
+            &vote_lock_path,
+            json!({
+                "future-lock": {
+                    "validator_address": "synv11testvalidator0",
+                    "block_hash": "future-hash",
+                    "block_index": 101,
+                    "epoch_number": 0,
+                    "first_round_number": 1,
+                    "latest_round_number": 1,
+                    "proposer": "synv11testvalidator1",
+                    "created_at": 1,
+                    "updated_at": 1,
+                }
+            })
+            .to_string(),
+        )
+        .expect("future vote lock should be written");
+        DualQuorumConsensus::set_test_local_vote_lock_path(Some(vote_lock_path.clone()));
+
+        let report = with_runtime_root(&root, || {
+            activate_recovered_cohort_member_with_options(RecoveredCohortActivationOptions {
+                target_stopped: true,
+                common_height: Some(100),
+                common_hash: Some("hash-100".to_string()),
+                snapshot_manifest_hash: Some("manifest-hash".to_string()),
+                cohort_exact_common_height_match: true,
+                latest_finalized_qc_aegis_pqc_verified: true,
+                state_root_matches: true,
+                cohort_quorum_size: Some(4),
+                operator_approved_disaster_recovery: true,
+            })
+            .expect("cohort activation should succeed")
+        });
+        DualQuorumConsensus::set_test_local_vote_lock_path(None);
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(true));
+        assert_eq!(
+            report.get("typed_status").and_then(Value::as_str),
+            Some("ACTIVE")
+        );
+        assert_eq!(
+            report
+                .get("vote_lock_recovery")
+                .and_then(|recovery| recovery.get("removed_count"))
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert!(!root.join("data/validator_quarantine.json").exists());
+        let locks: Value =
+            serde_json::from_slice(&fs::read(vote_lock_path).expect("vote lock file should exist"))
+                .expect("vote lock file should parse");
+        assert_eq!(locks.as_object().map(|items| items.len()), Some(0));
     }
 
     #[test]

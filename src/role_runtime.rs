@@ -304,6 +304,36 @@ fn run_offline_snapshot_command(args: &[String], command: &str) -> Result<bool, 
             print_json_value(report);
             Ok(true)
         }
+        "activate-recovered-cohort-member" => {
+            require_testnet_v2_operator_args(args)?;
+            configure_offline_source_workspace(args)?;
+            let options = crate::consensus::diagnostics::RecoveredCohortActivationOptions {
+                target_stopped: arg_flag(args, "--target-stopped"),
+                common_height: optional_u64_arg(args, "--common-height")?,
+                common_hash: arg_value(args, "--common-hash"),
+                snapshot_manifest_hash: arg_value(args, "--snapshot-manifest-hash"),
+                cohort_exact_common_height_match: arg_flag(
+                    args,
+                    "--cohort-exact-common-height-match",
+                ),
+                latest_finalized_qc_aegis_pqc_verified: arg_flag(
+                    args,
+                    "--latest-finalized-qc-aegis-pqc-verified",
+                ),
+                state_root_matches: arg_flag(args, "--state-root-matches"),
+                cohort_quorum_size: optional_u64_arg(args, "--cohort-quorum-size")?,
+                operator_approved_disaster_recovery: arg_flag(
+                    args,
+                    "--operator-approved-disaster-recovery",
+                ),
+            };
+            let report =
+                crate::consensus::diagnostics::activate_recovered_cohort_member_with_options(
+                    options,
+                )?;
+            print_json_value(report);
+            Ok(true)
+        }
         "quarantine-stopped-validator" => {
             require_testnet_v2_operator_args(args)?;
             configure_offline_source_workspace(args)?;
@@ -843,6 +873,10 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!(
         "                          Restore a quarantined node from a verified signed snapshot"
     );
+    eprintln!("    activate-recovered-cohort-member");
+    eprintln!(
+        "                          Reactivate one stopped full-cohort disaster-recovery member after shared snapshot proof"
+    );
     eprintln!("    quarantine-stopped-validator");
     eprintln!(
         "                          Operator-approved quarantine marker for an already stopped stale validator"
@@ -867,6 +901,7 @@ fn print_usage(binary_name: &str, expected_profile: Option<&RoleProfile>) {
     eprintln!("    --source-node-majority-branch-proven");
     eprintln!("    --source-role GENESIS_VALIDATOR");
     eprintln!("    --manifest <PATH> [--snapshot-root <DIR>]");
+    eprintln!("    --target-stopped --common-height <H> --common-hash <HASH> --snapshot-manifest-hash <HASH> --cohort-exact-common-height-match --latest-finalized-qc-aegis-pqc-verified --state-root-matches --cohort-quorum-size <4|5> --operator-approved-disaster-recovery");
     eprintln!("    --target-stopped --operator-approved-containment --quorum-majority-height <H> --quorum-majority-hash <HASH>");
     eprintln!("    --canonical-height <H> --canonical-hash <HASH> --source-qc-aegis-pqc-verified --parent-continuity-verified --state-root-matches --source-peer-not-quarantined");
     eprintln!("    --required-blocks <N>");

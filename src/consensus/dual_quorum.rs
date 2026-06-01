@@ -1957,6 +1957,134 @@ impl DualQuorumConsensus {
         ))
     }
 
+    pub fn recover_vote_locks_above_finalized_height_with_cohort_snapshot_certificate(
+        finalized_height: u64,
+        finalized_hash: &str,
+        snapshot_manifest_hash: &str,
+        reason: &str,
+    ) -> Result<TransientVoteLockRecoveryReport, String> {
+        if finalized_hash.trim().is_empty() || snapshot_manifest_hash.trim().is_empty() {
+            return Err(
+                "cohort snapshot vote-lock recovery requires finalized hash and snapshot manifest hash"
+                    .to_string(),
+            );
+        }
+
+        let _guard = LOCAL_VOTE_LOCK_FILE_MUTEX
+            .lock()
+            .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
+        let path = Self::local_vote_lock_path();
+        let mut locks = Self::load_local_vote_locks_unlocked()?;
+        let now = Self::current_timestamp();
+        let before_count = locks.len();
+        let mut removed = locks
+            .iter()
+            .filter_map(|(key, lock)| {
+                (lock.block_index > finalized_height)
+                    .then(|| (key.clone(), Self::local_vote_lock_to_recovered(lock)))
+            })
+            .collect::<Vec<_>>();
+        removed.sort_by(|(_, left), (_, right)| {
+            (
+                left.block_index,
+                left.epoch_number,
+                left.latest_round_number,
+                left.block_hash.as_str(),
+            )
+                .cmp(&(
+                    right.block_index,
+                    right.epoch_number,
+                    right.latest_round_number,
+                    right.block_hash.as_str(),
+                ))
+        });
+
+        if removed.is_empty() {
+            return Ok(TransientVoteLockRecoveryReport {
+                action:
+                    "recover_vote_locks_above_finalized_height_with_cohort_snapshot_certificate"
+                        .to_string(),
+                reason: reason.to_string(),
+                finalized_height,
+                min_age_secs: 0,
+                vote_lock_path: path.to_string_lossy().to_string(),
+                evidence_path: String::new(),
+                before_count,
+                kept_count: locks.len(),
+                removed_count: 0,
+                removed: Vec::new(),
+                mutated: false,
+                timestamp: now,
+            });
+        }
+
+        let evidence_root = crate::utils::resolve_data_path("data/consensus_recovery_evidence");
+        fs::create_dir_all(&evidence_root)
+            .map_err(|err| format!("failed to create vote-lock evidence directory: {err}"))?;
+        let evidence_nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let evidence_path = evidence_root.join(format!(
+            "{}-{}-cohort-snapshot-unlock-through-{}.json",
+            now, evidence_nonce, finalized_height
+        ));
+        let recovered = removed
+            .iter()
+            .map(|(_, lock)| lock.clone())
+            .collect::<Vec<_>>();
+        let evidence = serde_json::json!({
+            "action": "recover_vote_locks_above_finalized_height_with_cohort_snapshot_certificate",
+            "reason": reason,
+            "vote_lock_path": path.to_string_lossy(),
+            "finalized_height": finalized_height,
+            "finalized_hash": finalized_hash,
+            "snapshot_manifest_hash": snapshot_manifest_hash,
+            "before_count": locks.len(),
+            "removed_count": recovered.len(),
+            "kept_count": locks.len().saturating_sub(recovered.len()),
+            "removed": recovered,
+            "timestamp": now,
+        });
+        let serialized = serde_json::to_vec_pretty(&evidence)
+            .map_err(|err| format!("failed to encode cohort snapshot unlock evidence: {err}"))?;
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options.open(&evidence_path).map_err(|err| {
+            format!(
+                "failed to create cohort snapshot unlock evidence file {:?}: {err}",
+                evidence_path
+            )
+        })?;
+        file.write_all(&serialized)
+            .map_err(|err| format!("failed to write cohort snapshot unlock evidence: {err}"))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync cohort snapshot unlock evidence: {err}"))?;
+
+        for (key, _) in &removed {
+            locks.remove(key);
+        }
+        Self::persist_local_vote_locks_unlocked(&locks)?;
+
+        Ok(TransientVoteLockRecoveryReport {
+            action: "recover_vote_locks_above_finalized_height_with_cohort_snapshot_certificate"
+                .to_string(),
+            reason: reason.to_string(),
+            finalized_height,
+            min_age_secs: 0,
+            vote_lock_path: path.to_string_lossy().to_string(),
+            evidence_path: evidence_path.to_string_lossy().to_string(),
+            before_count,
+            kept_count: locks.len(),
+            removed_count: removed.len(),
+            removed: removed.into_iter().map(|(_, lock)| lock).collect(),
+            mutated: true,
+            timestamp: now,
+        })
+    }
+
     fn validate_same_height_vote_supersede(
         proposed_block: &Block,
         round_number: u64,
