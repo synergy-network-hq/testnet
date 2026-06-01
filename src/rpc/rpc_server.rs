@@ -632,7 +632,7 @@ fn process_http_json_rpc_payload_with_deadline(
     validator_manager: Arc<ValidatorManager>,
     request_context: RpcRequestContext,
 ) -> Result<Option<Value>, RpcError> {
-    let Some(request_guard) = RpcHttpRequestGuard::try_new() else {
+    let Some(_request_guard) = RpcHttpRequestGuard::try_new() else {
         return Err(RpcError::with_data(
             -32005,
             "rpc_request_capacity_exhausted",
@@ -644,7 +644,6 @@ fn process_http_json_rpc_payload_with_deadline(
     };
     let (sender, receiver) = mpsc::sync_channel(1);
     thread::spawn(move || {
-        let _request_guard = request_guard;
         let result = process_json_rpc_payload(
             &parsed,
             &tx_pool,
@@ -7013,6 +7012,38 @@ mod tests {
         let response = block_to_explorer_json(&snapshot);
         assert_eq!(response["block_index"], 42);
         assert_eq!(response["hash"], block.hash);
+    }
+
+    #[test]
+    fn timed_out_http_rpc_releases_active_request_capacity() {
+        RPC_HTTP_ACTIVE_REQUESTS.store(0, Ordering::SeqCst);
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+        let context = RpcRequestContext {
+            transport: RpcTransport::Http,
+            peer_addr: Some("127.0.0.1:5646".parse().unwrap()),
+            headers: HashMap::new(),
+            role_profile: None,
+        };
+        let held_chain_lock = chain.lock().unwrap();
+
+        let response = process_http_json_rpc_payload_with_deadline(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "synergy_getTransactionReceipt",
+                "params": ["syntxn-deadbeef"]
+            }),
+            Arc::clone(&tx_pool),
+            Arc::clone(&chain),
+            validator_manager,
+            context,
+        );
+
+        assert!(response.is_err());
+        assert_eq!(RPC_HTTP_ACTIVE_REQUESTS.load(Ordering::SeqCst), 0);
+        drop(held_chain_lock);
     }
 
     #[test]

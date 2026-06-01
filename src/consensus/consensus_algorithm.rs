@@ -593,7 +593,6 @@ impl ProofOfSynergy {
                     .unwrap_or_default();
 
                 if elapsed >= Duration::from_secs(block_time_secs) {
-                    let pool = TX_POOL.lock().unwrap();
                     let chain_guard = chain.lock().unwrap();
 
                     if let Some(latest_block) = chain_guard.last() {
@@ -607,7 +606,6 @@ impl ProofOfSynergy {
                                 last_tip_observed_at,
                             );
                             drop(chain_guard);
-                            drop(pool);
                             thread::sleep(Duration::from_millis(100));
                             continue;
                         }
@@ -668,7 +666,6 @@ impl ProofOfSynergy {
                                 min_validators
                             );
                             drop(chain_guard);
-                            drop(pool);
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -713,7 +710,6 @@ impl ProofOfSynergy {
                                                 "grace_secs" => status_ready_genesis_grace_secs
                                             );
                                             drop(chain_guard);
-                                            drop(pool);
                                             thread::sleep(Duration::from_secs(1));
                                             continue;
                                         }
@@ -728,7 +724,6 @@ impl ProofOfSynergy {
                                                 "grace_secs" => status_ready_genesis_grace_secs
                                             );
                                             drop(chain_guard);
-                                            drop(pool);
                                             thread::sleep(Duration::from_secs(1));
                                             continue;
                                         }
@@ -750,7 +745,6 @@ impl ProofOfSynergy {
                                 let mesh_was_ready = mesh_ready_since.is_some();
                                 let live_active_validator_count = live_active_validators.len();
                                 drop(chain_guard);
-                                drop(pool);
                                 let final_height = Self::sync_validator_to_network_tip(
                                     &network,
                                     local_height,
@@ -824,7 +818,6 @@ impl ProofOfSynergy {
                                         "settle_secs" => mesh_settle_secs
                                     );
                                     drop(chain_guard);
-                                    drop(pool);
                                     thread::sleep(Duration::from_millis(500));
                                     continue;
                                 }
@@ -836,7 +829,6 @@ impl ProofOfSynergy {
                                         "settle_secs" => mesh_settle_secs
                                     );
                                     drop(chain_guard);
-                                    drop(pool);
                                     thread::sleep(Duration::from_millis(500));
                                     continue;
                                 }
@@ -845,7 +837,6 @@ impl ProofOfSynergy {
                             mesh_ready_since = None;
                             status_sync_grace_since = None;
                             drop(chain_guard);
-                            drop(pool);
                             thread::sleep(Duration::from_secs(1));
                             continue;
                         }
@@ -937,7 +928,6 @@ impl ProofOfSynergy {
                                 );
                             }
                             drop(chain_guard);
-                            drop(pool);
                             thread::sleep(Duration::from_millis(250));
                             continue;
                         }
@@ -984,7 +974,6 @@ impl ProofOfSynergy {
                                 }),
                             );
                             drop(chain_guard);
-                            drop(pool);
                             thread::sleep(Duration::from_millis(250));
                             continue;
                         }
@@ -1020,23 +1009,27 @@ impl ProofOfSynergy {
                                     .map(|transaction| transaction.hash())
                             })
                             .collect::<HashSet<_>>();
-                        let transactions = if pool.is_empty() {
-                            consensus_log!("Pool is empty");
-                            vec![]
-                        } else {
-                            let pending = pool
-                                .iter()
-                                .filter(|transaction| {
-                                    !confirmed_hashes.contains(&transaction.hash())
-                                })
-                                .cloned()
-                                .collect::<Vec<_>>();
-                            consensus_log!(
-                                "Pool has {} transactions ({} eligible after confirmed-tx pruning)",
-                                pool.len(),
-                                pending.len()
-                            );
-                            pending
+                        drop(chain_guard);
+                        let transactions = {
+                            let pool = TX_POOL.lock().unwrap();
+                            if pool.is_empty() {
+                                consensus_log!("Pool is empty");
+                                vec![]
+                            } else {
+                                let pending = pool
+                                    .iter()
+                                    .filter(|transaction| {
+                                        !confirmed_hashes.contains(&transaction.hash())
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                consensus_log!(
+                                    "Pool has {} transactions ({} eligible after confirmed-tx pruning)",
+                                    pool.len(),
+                                    pending.len()
+                                );
+                                pending
+                            }
                         };
 
                         consensus_log!("Creating processed transactions vec...");
@@ -1122,11 +1115,9 @@ impl ProofOfSynergy {
                         consensus_log!("Block proposal created!");
                         io::stdout().flush().unwrap();
 
-                        // The vote wait can run for multiple seconds on a public mesh.
-                        // Release local chain and pool locks before that wait so the P2P
-                        // path can apply parent blocks and answer vote requests in time.
-                        drop(chain_guard);
-                        drop(pool);
+                        // The vote wait can run for multiple seconds on a public mesh. Chain
+                        // and pool locks were released before proposal construction so P2P and
+                        // qRPC paths can keep serving while consensus waits for votes.
 
                         // Phase 3: Dual-quorum consensus
                         consensus_log!("Starting dual-quorum consensus...");
