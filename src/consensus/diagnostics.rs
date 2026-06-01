@@ -947,6 +947,14 @@ fn qc_height_from_json(value: &Value) -> Option<u64> {
     })
 }
 
+fn qc_block_hash_from_json(value: &Value) -> Option<String> {
+    string_field(value, &["block_hash"]).or_else(|| {
+        value
+            .get("qc")
+            .and_then(|qc| string_field(qc, &["block_hash"]))
+    })
+}
+
 fn committed_block_log_height_from_json(value: &Value) -> Option<u64> {
     value
         .get("height")
@@ -1037,6 +1045,7 @@ fn constrain_snapshot_metadata_to_height(
     snapshot_height: u64,
 ) -> Result<(), String> {
     let canonical_path = snapshot_dir.join("canonical_locks.json");
+    let mut canonical_hashes = BTreeMap::new();
     if canonical_path.is_file() {
         let canonical_value: Value =
             serde_json::from_slice(&fs::read(&canonical_path).map_err(|error| {
@@ -1061,6 +1070,13 @@ fn constrain_snapshot_metadata_to_height(
                 "snapshot canonical_locks.json has no canonical lock at snapshot height {snapshot_height}"
             ));
         }
+        for (height, record) in &canonical_map {
+            if let Ok(height) = height.parse::<u64>() {
+                if let Some(hash) = string_field(record, &["hash", "block_hash"]) {
+                    canonical_hashes.insert(height, hash);
+                }
+            }
+        }
         fs::write(
             &canonical_path,
             serde_json::to_vec_pretty(&Value::Object(canonical_map))
@@ -1073,11 +1089,8 @@ fn constrain_snapshot_metadata_to_height(
     if committed_qcs_path.is_file() {
         let source = fs::File::open(&committed_qcs_path)
             .map_err(|error| format!("open {}: {error}", committed_qcs_path.display()))?;
-        let tmp_path = committed_qcs_path.with_extension("jsonl.tmp");
-        let mut tmp = fs::File::create(&tmp_path)
-            .map_err(|error| format!("create {}: {error}", tmp_path.display()))?;
-        let mut found_snapshot_qc = false;
-        let mut kept = 0usize;
+        let mut entries = Vec::new();
+        let mut hashes_by_height: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
         for line in BufReader::new(source).lines() {
             let line =
                 line.map_err(|error| format!("read {}: {error}", committed_qcs_path.display()))?;
@@ -1096,7 +1109,40 @@ fn constrain_snapshot_metadata_to_height(
                     committed_qcs_path.display()
                 ));
             };
+            let Some(block_hash) = qc_block_hash_from_json(&value) else {
+                return Err(format!(
+                    "committed QC entry in {} has no block hash",
+                    committed_qcs_path.display()
+                ));
+            };
+            entries.push((height, block_hash.clone(), line));
+            hashes_by_height
+                .entry(height)
+                .or_default()
+                .insert(block_hash);
+        }
+        let tmp_path = committed_qcs_path.with_extension("jsonl.tmp");
+        let mut tmp = fs::File::create(&tmp_path)
+            .map_err(|error| format!("create {}: {error}", tmp_path.display()))?;
+        let mut found_snapshot_qc = false;
+        let mut kept = 0usize;
+        let mut seen_hashes = BTreeSet::new();
+        for (height, block_hash, line) in entries {
             if height > snapshot_height {
+                continue;
+            }
+            let height_has_conflict = hashes_by_height
+                .get(&height)
+                .map(|hashes| hashes.len() > 1)
+                .unwrap_or(false);
+            if let Some(canonical_hash) = canonical_hashes.get(&height) {
+                if &block_hash != canonical_hash {
+                    continue;
+                }
+            } else if height_has_conflict {
+                continue;
+            }
+            if !seen_hashes.insert(block_hash) {
                 continue;
             }
             if height == snapshot_height {
@@ -1168,6 +1214,7 @@ fn snapshot_metadata_consistency_report(
     let committed_qcs_path = snapshot_root.join("committed_qcs.jsonl");
     let mut committed_qc_max_height: Option<u64> = None;
     let mut committed_qc_has_snapshot_height = false;
+    let mut committed_qc_hashes_by_height: BTreeMap<u64, BTreeSet<String>> = BTreeMap::new();
     if committed_qcs_path.is_file() {
         let file = fs::File::open(&committed_qcs_path)
             .map_err(|error| format!("open {}: {error}", committed_qcs_path.display()))?;
@@ -1197,12 +1244,32 @@ fn snapshot_metadata_consistency_report(
             if height == snapshot_height {
                 committed_qc_has_snapshot_height = true;
             }
+            if let Some(block_hash) = qc_block_hash_from_json(&value) {
+                committed_qc_hashes_by_height
+                    .entry(height)
+                    .or_default()
+                    .insert(block_hash);
+            } else {
+                return Err(format!(
+                    "committed QC entry in {} has no block hash",
+                    committed_qcs_path.display()
+                ));
+            }
             committed_qc_max_height =
                 Some(committed_qc_max_height.map_or(height, |max| max.max(height)));
         }
         if !committed_qc_has_snapshot_height {
             return Err(format!(
                 "snapshot committed_qcs.jsonl has no committed QC at manifest height {snapshot_height}"
+            ));
+        }
+        if let Some((height, hashes)) = committed_qc_hashes_by_height
+            .iter()
+            .find(|(_, hashes)| hashes.len() > 1)
+        {
+            return Err(format!(
+                "snapshot committed_qcs.jsonl contains conflicting committed QCs at height {height}: {:?}",
+                hashes
             ));
         }
     }
@@ -3973,6 +4040,43 @@ mod tests {
             fs::read_to_string(snapshot_dir.join("committed_blocks.jsonl")).unwrap();
         assert!(committed_blocks.contains("h10"));
         assert!(!committed_blocks.contains("h11"));
+    }
+
+    #[test]
+    fn snapshot_copy_canonicalizes_conflicting_committed_qcs_before_publish() {
+        let root = test_runtime_root("snapshot-copy-canonicalizes-qcs");
+        let data_dir = root.join("data");
+        fs::write(data_dir.join("chain.json"), b"chain").unwrap();
+        fs::write(
+            data_dir.join("canonical_locks.json"),
+            json!({
+                "10": {"height": 10, "hash": "h10-canonical"},
+                "11": {"height": 11, "hash": "h11"}
+            })
+            .to_string(),
+        )
+        .unwrap();
+        fs::write(
+            data_dir.join("committed_qcs.jsonl"),
+            [
+                json!({"qc": {"votes": [{"block_index": 10}], "block_hash": "h10-stale"}})
+                    .to_string(),
+                json!({"qc": {"votes": [{"block_index": 10}], "block_hash": "h10-canonical"}})
+                    .to_string(),
+                json!({"qc": {"votes": [{"block_index": 11}], "block_hash": "h11"}}).to_string(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
+        let snapshot_dir = root.join("snapshot");
+
+        copy_snapshot_state_files(&data_dir, &snapshot_dir, 10).unwrap();
+
+        let qcs = fs::read_to_string(snapshot_dir.join("committed_qcs.jsonl")).unwrap();
+        assert!(qcs.contains("h10-canonical"));
+        assert!(!qcs.contains("h10-stale"));
+        assert!(!qcs.contains("h11"));
     }
 
     #[test]

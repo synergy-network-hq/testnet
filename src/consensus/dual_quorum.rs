@@ -23,7 +23,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 #[cfg(unix)]
 use std::os::unix::fs::OpenOptionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -840,10 +840,37 @@ impl DualQuorumConsensus {
 
     fn load_committed_qc_store_from_disk() -> Result<HashMap<String, QuorumCertificate>, String> {
         let path = Self::committed_qc_store_path();
+        let log_path = Self::committed_qc_log_path();
+        let mut loaded = Self::read_persisted_committed_qcs(&path, &log_path)?;
+
+        match Self::validate_committed_qc_store(&loaded) {
+            Ok(()) => Ok(loaded),
+            Err(error) => {
+                Self::canonicalize_persisted_committed_qcs_after_conflict(
+                    &path, &log_path, &error,
+                )
+                .map_err(|repair_error| {
+                    format!("{error}; supported committed-QC canonical repair refused: {repair_error}")
+                })?;
+                loaded = Self::read_persisted_committed_qcs(&path, &log_path)?;
+                Self::validate_committed_qc_store(&loaded).map_err(|post_error| {
+                    format!(
+                        "{error}; supported committed-QC canonical repair did not restore a healthy store: {post_error}"
+                    )
+                })?;
+                Ok(loaded)
+            }
+        }
+    }
+
+    fn read_persisted_committed_qcs(
+        path: &Path,
+        log_path: &Path,
+    ) -> Result<HashMap<String, QuorumCertificate>, String> {
         let mut loaded = HashMap::new();
 
         if path.exists() {
-            let data = fs::read(&path)
+            let data = fs::read(path)
                 .map_err(|err| format!("failed to read committed QC store {:?}: {err}", path))?;
             if !data.is_empty() {
                 let legacy = serde_json::from_slice::<BTreeMap<String, QuorumCertificate>>(&data)
@@ -854,9 +881,8 @@ impl DualQuorumConsensus {
             }
         }
 
-        let log_path = Self::committed_qc_log_path();
         if log_path.exists() {
-            let file = fs::File::open(&log_path)
+            let file = fs::File::open(log_path)
                 .map_err(|err| format!("failed to open committed QC log {:?}: {err}", log_path))?;
             for (line_number, line) in BufReader::new(file).lines().enumerate() {
                 let line = line.map_err(|err| {
@@ -882,8 +908,225 @@ impl DualQuorumConsensus {
             }
         }
 
-        Self::validate_committed_qc_store(&loaded)?;
         Ok(loaded)
+    }
+
+    fn persisted_committed_qc_entries(
+        path: &Path,
+        log_path: &Path,
+    ) -> Result<Vec<CommittedQcLogEntry>, String> {
+        let mut entries = Vec::new();
+        if path.exists() {
+            let data = fs::read(path)
+                .map_err(|err| format!("failed to read committed QC store {:?}: {err}", path))?;
+            if !data.is_empty() {
+                let legacy = serde_json::from_slice::<BTreeMap<String, QuorumCertificate>>(&data)
+                    .map_err(|err| {
+                    format!("failed to parse committed QC store {:?}: {err}", path)
+                })?;
+                entries.extend(
+                    legacy
+                        .into_iter()
+                        .map(|(block_hash, qc)| CommittedQcLogEntry { block_hash, qc }),
+                );
+            }
+        }
+        if log_path.exists() {
+            let file = fs::File::open(log_path)
+                .map_err(|err| format!("failed to open committed QC log {:?}: {err}", log_path))?;
+            for (line_number, line) in BufReader::new(file).lines().enumerate() {
+                let line = line.map_err(|err| {
+                    format!(
+                        "failed to read committed QC log {:?} line {}: {err}",
+                        log_path,
+                        line_number + 1
+                    )
+                })?;
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                let entry =
+                    serde_json::from_str::<CommittedQcLogEntry>(trimmed).map_err(|err| {
+                        format!(
+                            "failed to parse committed QC log {:?} line {}: {err}",
+                            log_path,
+                            line_number + 1
+                        )
+                    })?;
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+
+    fn canonicalize_persisted_committed_qcs_after_conflict(
+        path: &Path,
+        log_path: &Path,
+        original_error: &str,
+    ) -> Result<(), String> {
+        if !original_error.contains("conflicting height") {
+            return Err("load error is not a same-height committed-QC conflict".to_string());
+        }
+        let entries = Self::persisted_committed_qc_entries(path, log_path)?;
+        let latest_canonical = latest_legacy_canonical_commit_record()?;
+        let mut hashes_by_height: HashMap<u64, BTreeSet<String>> = HashMap::new();
+        for entry in &entries {
+            if let Some(height) = Self::committed_qc_height(&entry.qc)? {
+                hashes_by_height
+                    .entry(height)
+                    .or_default()
+                    .insert(entry.qc.block_hash.clone());
+            }
+        }
+        let conflict_heights = hashes_by_height
+            .iter()
+            .filter_map(|(height, hashes)| (hashes.len() > 1).then_some(*height))
+            .collect::<BTreeSet<_>>();
+        if conflict_heights.is_empty() {
+            return Err("no same-height committed-QC conflict found to repair".to_string());
+        }
+        for height in &conflict_heights {
+            if legacy_canonical_commit_record(*height)?.is_none()
+                && latest_canonical
+                    .as_ref()
+                    .map(|latest| latest.height <= *height)
+                    .unwrap_or(true)
+            {
+                return Err(format!(
+                    "conflicting committed QCs at height {height} are not covered by a canonical lock or a later canonical head"
+                ));
+            }
+        }
+        let mut kept = Vec::new();
+        let mut removed = Vec::new();
+        let mut seen_hashes = BTreeSet::new();
+        for entry in entries {
+            let Some(height) = Self::committed_qc_height(&entry.qc)? else {
+                kept.push(entry);
+                continue;
+            };
+            let canonical_at_height = legacy_canonical_commit_record(height)?;
+            let keep = if let Some(canonical) = canonical_at_height.as_ref() {
+                entry.qc.block_hash == canonical.block_hash
+            } else if conflict_heights.contains(&height) {
+                false
+            } else {
+                true
+            };
+            if keep {
+                if seen_hashes.insert(entry.block_hash.clone()) {
+                    kept.push(entry);
+                }
+            } else {
+                removed.push(serde_json::json!({
+                    "height": height,
+                    "block_hash": entry.qc.block_hash,
+                    "reason": if canonical_at_height.is_some() {
+                        "does_not_match_canonical_lock"
+                    } else {
+                        "historical_conflict_below_latest_canonical_lock"
+                    }
+                }));
+            }
+        }
+        if removed.is_empty() {
+            return Err(
+                "same-height committed-QC conflict is not resolved by canonical locks".to_string(),
+            );
+        }
+        let repaired_store = kept
+            .iter()
+            .map(|entry| (entry.block_hash.clone(), entry.qc.clone()))
+            .collect::<HashMap<_, _>>();
+        Self::validate_committed_qc_store(&repaired_store)?;
+        Self::preserve_committed_qc_conflict_evidence(path, log_path, original_error, &removed)?;
+        if path.exists() {
+            let compact = kept
+                .iter()
+                .map(|entry| (entry.block_hash.clone(), entry.qc.clone()))
+                .collect::<BTreeMap<_, _>>();
+            Self::write_bytes_atomically(
+                path,
+                &serde_json::to_vec_pretty(&compact)
+                    .map_err(|err| format!("encode repaired committed QC store: {err}"))?,
+            )?;
+        }
+        if log_path.exists() {
+            let mut encoded = Vec::new();
+            for entry in kept {
+                serde_json::to_writer(&mut encoded, &entry)
+                    .map_err(|err| format!("encode repaired committed QC log entry: {err}"))?;
+                encoded.push(b'\n');
+            }
+            Self::write_bytes_atomically(log_path, &encoded)?;
+        }
+        Ok(())
+    }
+
+    fn preserve_committed_qc_conflict_evidence(
+        path: &Path,
+        log_path: &Path,
+        original_error: &str,
+        removed: &[serde_json::Value],
+    ) -> Result<(), String> {
+        let parent = path
+            .parent()
+            .ok_or_else(|| format!("committed QC store path {:?} has no parent", path))?;
+        let evidence_dir = parent.join("consensus_recovery_evidence").join(format!(
+            "{}-committed-qc-log-canonicalized",
+            Self::current_timestamp()
+        ));
+        fs::create_dir_all(&evidence_dir).map_err(|err| {
+            format!(
+                "failed to create committed QC repair evidence directory {:?}: {err}",
+                evidence_dir
+            )
+        })?;
+        if path.exists() {
+            fs::copy(path, evidence_dir.join("committed_qcs.json.before")).map_err(|err| {
+                format!("failed to preserve committed QC compact store evidence: {err}")
+            })?;
+        }
+        if log_path.exists() {
+            fs::copy(log_path, evidence_dir.join("committed_qcs.jsonl.before"))
+                .map_err(|err| format!("failed to preserve committed QC log evidence: {err}"))?;
+        }
+        let report = serde_json::json!({
+            "action": "canonicalize_persisted_committed_qcs_after_conflict",
+            "original_error": original_error,
+            "removed_count": removed.len(),
+            "removed": removed,
+            "mutated": true,
+            "timestamp": Self::current_timestamp(),
+        });
+        Self::write_bytes_atomically(
+            &evidence_dir.join("report.json"),
+            &serde_json::to_vec_pretty(&report)
+                .map_err(|err| format!("encode committed QC repair report: {err}"))?,
+        )
+    }
+
+    fn write_bytes_atomically(path: &Path, bytes: &[u8]) -> Result<(), String> {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create parent directory {:?}: {err}", parent))?;
+        }
+        let tmp_path = path.with_extension("tmp");
+        let mut options = OpenOptions::new();
+        options.create(true).truncate(true).write(true);
+        #[cfg(unix)]
+        options.mode(0o600);
+        let mut file = options
+            .open(&tmp_path)
+            .map_err(|err| format!("failed to open temp file {:?}: {err}", tmp_path))?;
+        file.write_all(bytes)
+            .map_err(|err| format!("failed to write temp file {:?}: {err}", tmp_path))?;
+        file.sync_all()
+            .map_err(|err| format!("failed to sync temp file {:?}: {err}", tmp_path))?;
+        drop(file);
+        fs::rename(&tmp_path, path)
+            .map_err(|err| format!("failed to replace {:?} with {:?}: {err}", path, tmp_path))
     }
 
     fn append_committed_qc_to_log(qc: &QuorumCertificate) -> Result<(), String> {
@@ -2761,6 +3004,7 @@ mod tests {
     fn committed_qc_disk_load_rejects_conflicting_same_height_qcs() {
         let _guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
 
         let path = DualQuorumConsensus::committed_qc_log_path();
         let entries = [
@@ -2783,6 +3027,109 @@ mod tests {
         let error = DualQuorumConsensus::load_committed_qc_store_from_disk()
             .expect_err("conflicting persisted QCs at one height must fail closed");
         assert!(error.contains("persisted committed QC store contains conflicting height"));
+    }
+
+    #[test]
+    fn committed_qc_disk_load_repairs_conflict_when_canonical_lock_resolves_height() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let height = 88_889;
+        let canonical_qc = test_qc_at_height("block-a", height);
+        let mut canonical_block = Block::new(
+            height,
+            vec![],
+            "parent".to_string(),
+            "validator1".to_string(),
+            0,
+        );
+        canonical_block.hash = "block-a".to_string();
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(
+            &canonical_block,
+            &canonical_qc,
+        )
+        .expect("canonical lock should bind repaired committed QC height");
+
+        let path = DualQuorumConsensus::committed_qc_log_path();
+        let entries = [
+            CommittedQcLogEntry {
+                block_hash: "block-b".to_string(),
+                qc: test_qc_at_height("block-b", height),
+            },
+            CommittedQcLogEntry {
+                block_hash: "block-a".to_string(),
+                qc: canonical_qc,
+            },
+        ];
+        let payload = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).expect("QC log entry should encode"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("conflicting QC journal should be written");
+
+        let loaded = DualQuorumConsensus::load_committed_qc_store_from_disk()
+            .expect("canonical lock should repair committed QC conflict");
+
+        assert!(loaded.contains_key("block-a"));
+        assert!(!loaded.contains_key("block-b"));
+        let raw = fs::read_to_string(&path).expect("repaired QC log should be readable");
+        assert!(raw.contains("block-a"));
+        assert!(!raw.contains("block-b"));
+    }
+
+    #[test]
+    fn committed_qc_disk_load_prunes_historical_conflict_below_later_canonical_head() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        let head_height = 88_900;
+        let head_qc = test_qc_at_height("block-head", head_height);
+        let mut head_block = Block::new(
+            head_height,
+            vec![],
+            "parent".to_string(),
+            "validator1".to_string(),
+            0,
+        );
+        head_block.hash = "block-head".to_string();
+        crate::consensus::legacy_canonical_lock::write_legacy_canonical_lock(&head_block, &head_qc)
+            .expect("later canonical head should be written");
+
+        let conflict_height = 88_800;
+        let path = DualQuorumConsensus::committed_qc_log_path();
+        let entries = [
+            CommittedQcLogEntry {
+                block_hash: "block-a".to_string(),
+                qc: test_qc_at_height("block-a", conflict_height),
+            },
+            CommittedQcLogEntry {
+                block_hash: "block-b".to_string(),
+                qc: test_qc_at_height("block-b", conflict_height),
+            },
+            CommittedQcLogEntry {
+                block_hash: "block-head".to_string(),
+                qc: head_qc,
+            },
+        ];
+        let payload = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).expect("QC log entry should encode"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, format!("{payload}\n")).expect("conflicting QC journal should be written");
+
+        let loaded = DualQuorumConsensus::load_committed_qc_store_from_disk()
+            .expect("later canonical head should permit pruning historical QC conflict");
+
+        assert_eq!(loaded.len(), 1);
+        assert!(loaded.contains_key("block-head"));
+        let raw = fs::read_to_string(&path).expect("repaired QC log should be readable");
+        assert!(raw.contains("block-head"));
+        assert!(!raw.contains("block-a"));
+        assert!(!raw.contains("block-b"));
     }
 
     fn signed_block(block_index: u64, nonce: u64, validator_id: &str) -> Block {
