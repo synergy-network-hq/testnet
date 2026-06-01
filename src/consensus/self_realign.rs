@@ -30,6 +30,7 @@ const SNAPSHOT_ALLOWED_FILES: &[&str] = &[
     "chain.json",
     "canonical_locks.json",
     "canonical_locks.jsonl",
+    "committed_blocks.jsonl",
     "committed_qcs.json",
     "committed_qcs.jsonl",
     "dag_state.json",
@@ -1990,6 +1991,7 @@ mod tests {
     fn divergent_validator_wipes_only_chain_data() {
         let root = temp_root("wipe-only");
         fs::write(root.join("chain.json"), b"chain").unwrap();
+        fs::write(root.join("committed_blocks.jsonl"), b"{\"height\":1}\n").unwrap();
         fs::write(root.join("validator.key"), b"secret").unwrap();
         let plan =
             build_chain_state_wipe_plan("validator-1", &root, &root.join("evidence")).unwrap();
@@ -1997,6 +1999,10 @@ mod tests {
             .files_to_wipe
             .iter()
             .any(|path| path.ends_with("chain.json")));
+        assert!(plan
+            .files_to_wipe
+            .iter()
+            .any(|path| path.ends_with("committed_blocks.jsonl")));
         assert!(!plan
             .files_to_wipe
             .iter()

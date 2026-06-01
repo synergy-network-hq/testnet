@@ -30,6 +30,7 @@ const ALLOWED_STATE_FILES: &[&str] = &[
     "chain.json",
     "canonical_locks.json",
     "canonical_locks.jsonl",
+    "committed_blocks.jsonl",
     "committed_qcs.json",
     "committed_qcs.jsonl",
     "dag_state.json",

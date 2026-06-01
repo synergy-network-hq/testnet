@@ -947,6 +947,91 @@ fn qc_height_from_json(value: &Value) -> Option<u64> {
     })
 }
 
+fn committed_block_log_height_from_json(value: &Value) -> Option<u64> {
+    value
+        .get("height")
+        .or_else(|| value.get("block_height"))
+        .or_else(|| value.get("block_index"))
+        .and_then(Value::as_u64)
+        .or_else(|| {
+            value
+                .get("block")
+                .and_then(|block| block.get("block_index"))
+                .and_then(Value::as_u64)
+        })
+}
+
+fn constrain_committed_block_log_to_height(
+    path: &Path,
+    snapshot_height: u64,
+) -> Result<(), String> {
+    let source =
+        fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let tmp_path = path.with_extension("jsonl.tmp");
+    let mut tmp = fs::File::create(&tmp_path)
+        .map_err(|error| format!("create {}: {error}", tmp_path.display()))?;
+    let mut kept = 0usize;
+    for line in BufReader::new(source).lines() {
+        let line = line.map_err(|error| format!("read {}: {error}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value = serde_json::from_str::<Value>(&line)
+            .map_err(|error| format!("parse committed block in {}: {error}", path.display()))?;
+        let Some(height) = committed_block_log_height_from_json(&value) else {
+            return Err(format!(
+                "committed block entry in {} has no height",
+                path.display()
+            ));
+        };
+        if height > snapshot_height {
+            continue;
+        }
+        writeln!(tmp, "{line}")
+            .map_err(|error| format!("write {}: {error}", tmp_path.display()))?;
+        kept += 1;
+    }
+    tmp.flush()
+        .map_err(|error| format!("flush {}: {error}", tmp_path.display()))?;
+    if kept == 0 {
+        return Err(format!(
+            "committed_blocks.jsonl has no committed block entries at or below snapshot height {snapshot_height}"
+        ));
+    }
+    fs::rename(&tmp_path, path).map_err(|error| {
+        format!(
+            "replace constrained {} with {}: {error}",
+            path.display(),
+            tmp_path.display()
+        )
+    })
+}
+
+fn committed_block_log_max_height(path: &Path) -> Result<Option<u64>, String> {
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let source =
+        fs::File::open(path).map_err(|error| format!("open {}: {error}", path.display()))?;
+    let mut max_height: Option<u64> = None;
+    for line in BufReader::new(source).lines() {
+        let line = line.map_err(|error| format!("read {}: {error}", path.display()))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value = serde_json::from_str::<Value>(&line)
+            .map_err(|error| format!("parse committed block in {}: {error}", path.display()))?;
+        let Some(height) = committed_block_log_height_from_json(&value) else {
+            return Err(format!(
+                "committed block entry in {} has no height",
+                path.display()
+            ));
+        };
+        max_height = Some(max_height.map_or(height, |current| current.max(height)));
+    }
+    Ok(max_height)
+}
+
 fn constrain_snapshot_metadata_to_height(
     snapshot_dir: &Path,
     snapshot_height: u64,
@@ -1036,6 +1121,10 @@ fn constrain_snapshot_metadata_to_height(
             )
         })?;
     }
+    let committed_blocks_path = snapshot_dir.join("committed_blocks.jsonl");
+    if committed_blocks_path.is_file() {
+        constrain_committed_block_log_to_height(&committed_blocks_path, snapshot_height)?;
+    }
     Ok(())
 }
 
@@ -1117,12 +1206,23 @@ fn snapshot_metadata_consistency_report(
             ));
         }
     }
+    let committed_blocks_path = snapshot_root.join("committed_blocks.jsonl");
+    let committed_block_max_height = committed_block_log_max_height(&committed_blocks_path)
+        .map_err(|error| format!("snapshot committed block log consistency failed: {error}"))?;
+    if let Some(height) = committed_block_max_height {
+        if height > snapshot_height {
+            return Err(format!(
+                "snapshot committed block height {height} is above manifest snapshot height {snapshot_height}"
+            ));
+        }
+    }
 
     Ok(json!({
         "snapshot_metadata_consistent": true,
         "snapshot_height": snapshot_height,
         "canonical_lock_max_height": canonical_max_height,
         "committed_qc_max_height": committed_qc_max_height,
+        "committed_block_max_height": committed_block_max_height,
     }))
 }
 
@@ -2657,6 +2757,16 @@ pub fn activate_recovered_cohort_member_with_options(
                 "activate-recovered-cohort-member requires verified restored QC: {error}"
             )),
         }
+        let committed_block_log = crate::utils::resolve_data_path("data/committed_blocks.jsonl");
+        match committed_block_log_max_height(&committed_block_log) {
+            Ok(Some(height)) if height > common_height => blocked.push(format!(
+                "activate-recovered-cohort-member committed block log height {height} is above common snapshot height {common_height}"
+            )),
+            Ok(_) => {}
+            Err(error) => blocked.push(format!(
+                "activate-recovered-cohort-member cannot verify committed block log: {error}"
+            )),
+        }
     }
     if !blocked.is_empty() {
         return Ok(json!({
@@ -3835,6 +3945,18 @@ mod tests {
                 + "\n",
         )
         .unwrap();
+        fs::write(
+            data_dir.join("committed_blocks.jsonl"),
+            [
+                json!({"height": 10, "hash": "h10", "block": {"block_index": 10, "hash": "h10"}})
+                    .to_string(),
+                json!({"height": 11, "hash": "h11", "block": {"block_index": 11, "hash": "h11"}})
+                    .to_string(),
+            ]
+            .join("\n")
+                + "\n",
+        )
+        .unwrap();
         let snapshot_dir = root.join("snapshot");
 
         copy_snapshot_state_files(&data_dir, &snapshot_dir, 10).unwrap();
@@ -3847,6 +3969,10 @@ mod tests {
         let qcs = fs::read_to_string(snapshot_dir.join("committed_qcs.jsonl")).unwrap();
         assert!(qcs.contains("h10"));
         assert!(!qcs.contains("h11"));
+        let committed_blocks =
+            fs::read_to_string(snapshot_dir.join("committed_blocks.jsonl")).unwrap();
+        assert!(committed_blocks.contains("h10"));
+        assert!(!committed_blocks.contains("h11"));
     }
 
     #[test]
@@ -4586,6 +4712,76 @@ mod tests {
             serde_json::from_slice(&fs::read(vote_lock_path).expect("vote lock file should exist"))
                 .expect("vote lock file should parse");
         assert_eq!(locks.as_object().map(|items| items.len()), Some(0));
+    }
+
+    #[test]
+    fn recovered_cohort_activation_rejects_future_committed_block_log() {
+        let _guard = DIAGNOSTICS_TEST_ENV_LOCK
+            .lock()
+            .expect("diagnostics env lock should succeed");
+        let root = test_runtime_root("cohort-activation-rejects-future-committed-log");
+        install_test_genesis(&root);
+        write_minimal_chain_state(&root);
+        operator_quarantine(&root);
+        write_chain_range(&root, 99, 100);
+        write_canonical_lock_at_height(&root, 100);
+        write_legacy_qc_fixture_at_height(&root, 100);
+        fs::write(
+            root.join("data/self_heal_status.json"),
+            json!({
+                "success": true,
+                "typed_status": "SNAPSHOT_RESTORED",
+                "new_state": "SNAPSHOT_RESTORED",
+                "snapshot_height": 100,
+                "snapshot_manifest_hash": "manifest-hash",
+            })
+            .to_string(),
+        )
+        .expect("self-heal status should be written");
+        fs::write(
+            root.join("data/committed_blocks.jsonl"),
+            json!({
+                "height": 101,
+                "hash": "future-hash",
+                "previous_hash": "hash-100",
+                "block": {
+                    "block_index": 101,
+                    "hash": "future-hash",
+                    "previous_hash": "hash-100"
+                }
+            })
+            .to_string()
+                + "\n",
+        )
+        .expect("future committed block log should be written");
+
+        let report = with_runtime_root(&root, || {
+            activate_recovered_cohort_member_with_options(RecoveredCohortActivationOptions {
+                target_stopped: true,
+                common_height: Some(100),
+                common_hash: Some("hash-100".to_string()),
+                snapshot_manifest_hash: Some("manifest-hash".to_string()),
+                cohort_exact_common_height_match: true,
+                latest_finalized_qc_aegis_pqc_verified: true,
+                state_root_matches: true,
+                cohort_quorum_size: Some(4),
+                operator_approved_disaster_recovery: true,
+            })
+            .expect("cohort activation should fail closed")
+        });
+
+        assert_eq!(report.get("success").and_then(Value::as_bool), Some(false));
+        let blocked = report
+            .get("blocked_reasons")
+            .and_then(Value::as_array)
+            .expect("blocked reasons should be returned");
+        assert!(blocked.iter().any(|reason| {
+            reason
+                .as_str()
+                .unwrap_or_default()
+                .contains("committed block log height 101 is above common snapshot height 100")
+        }));
+        assert!(root.join("data/validator_quarantine.json").exists());
     }
 
     #[test]
