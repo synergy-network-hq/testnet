@@ -1107,19 +1107,32 @@ pub fn replay_validator_activation_transactions(
     token_manager: &TokenManager,
     validator_manager: &Arc<ValidatorManager>,
 ) -> (u64, u64) {
+    let activation_transactions = chain
+        .chain
+        .iter()
+        .flat_map(|block| block.transactions.iter())
+        .filter(|tx| is_validator_activation_transaction(tx))
+        .cloned()
+        .collect::<Vec<_>>();
+    replay_validator_activation_transaction_list(
+        &activation_transactions,
+        token_manager,
+        validator_manager,
+    )
+}
+
+pub fn replay_validator_activation_transaction_list(
+    activation_transactions: &[Transaction],
+    token_manager: &TokenManager,
+    validator_manager: &Arc<ValidatorManager>,
+) -> (u64, u64) {
     let mut applied = 0u64;
     let mut failed = 0u64;
 
-    for block in &chain.chain {
-        for tx in &block.transactions {
-            if !is_validator_activation_transaction(tx) {
-                continue;
-            }
-
-            match apply_validator_activation_transaction(tx, token_manager, validator_manager) {
-                Ok(_) => applied += 1,
-                Err(_) => failed += 1,
-            }
+    for tx in activation_transactions {
+        match apply_validator_activation_transaction(tx, token_manager, validator_manager) {
+            Ok(_) => applied += 1,
+            Err(_) => failed += 1,
         }
     }
 

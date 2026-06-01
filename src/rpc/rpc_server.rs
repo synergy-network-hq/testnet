@@ -1,7 +1,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
+use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex, Once};
 use std::thread;
@@ -63,6 +64,7 @@ const MAX_RPC_HTTP_ACTIVE_WORKERS: u64 = 128;
 const MAX_RPC_HTTP_ACTIVE_REQUESTS: u64 = 128;
 const RPC_HTTP_READ_TIMEOUT_SECS: u64 = 10;
 const RPC_HTTP_WRITE_TIMEOUT_SECS: u64 = 2;
+const MAX_JSONL_TAIL_READ_BYTES: u64 = 4 * 1024 * 1024;
 #[cfg(not(test))]
 const RPC_HTTP_REQUEST_TIMEOUT_MILLIS: u64 = 2_000;
 #[cfg(test)]
@@ -5186,21 +5188,25 @@ fn latest_finalized_head_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
 
 fn latest_committed_qc_json() -> Value {
     let path = crate::utils::resolve_data_path("data/committed_qcs.jsonl");
-    let Ok(content) = fs::read_to_string(&path) else {
-        return json!({
-            "found": false,
-            "path": path.to_string_lossy(),
-            "chain": chain_identity_json(),
-        });
+    let line = match read_last_nonempty_jsonl_line(&path) {
+        Ok(Some(line)) => line,
+        Ok(None) => {
+            return json!({
+                "found": false,
+                "path": path.to_string_lossy(),
+                "chain": chain_identity_json(),
+            });
+        }
+        Err(error) => {
+            return json!({
+                "found": false,
+                "error": error,
+                "path": path.to_string_lossy(),
+                "chain": chain_identity_json(),
+            });
+        }
     };
-    let Some(line) = content.lines().rev().find(|line| !line.trim().is_empty()) else {
-        return json!({
-            "found": false,
-            "path": path.to_string_lossy(),
-            "chain": chain_identity_json(),
-        });
-    };
-    match serde_json::from_str::<Value>(line) {
+    match serde_json::from_str::<Value>(&line) {
         Ok(mut value) => {
             if let Value::Object(ref mut obj) = value {
                 obj.insert("found".to_string(), json!(true));
@@ -5215,6 +5221,40 @@ fn latest_committed_qc_json() -> Value {
             "chain": chain_identity_json(),
         }),
     }
+}
+
+fn read_last_nonempty_jsonl_line(path: &Path) -> Result<Option<String>, String> {
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("failed to open {}: {error}", path.display()))?;
+    let file_len = file
+        .metadata()
+        .map_err(|error| format!("failed to stat {}: {error}", path.display()))?
+        .len();
+    if file_len == 0 {
+        return Ok(None);
+    }
+
+    let read_len = file_len.min(MAX_JSONL_TAIL_READ_BYTES);
+    file.seek(SeekFrom::End(-(read_len as i64)))
+        .map_err(|error| format!("failed to seek {}: {error}", path.display()))?;
+    let mut bytes = vec![0; read_len as usize];
+    file.read_exact(&mut bytes)
+        .map_err(|error| format!("failed to read {} tail: {error}", path.display()))?;
+
+    let text = String::from_utf8_lossy(&bytes);
+    let mut lines = text.lines();
+    if read_len < file_len {
+        lines.next();
+    }
+    if let Some(line) = lines.rev().find(|line| !line.trim().is_empty()) {
+        return Ok(Some(line.to_string()));
+    }
+
+    Err(format!(
+        "{} has no complete non-empty JSONL line within its final {} bytes",
+        path.display(),
+        read_len
+    ))
 }
 
 fn aegis_status_json() -> Value {
@@ -6578,6 +6618,7 @@ mod tests {
     use crate::block::{Block, BlockChain};
     use crate::consensus::consensus_algorithm::ProofOfSynergy;
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
+    use std::fs;
     use std::time::Instant;
 
     fn admission_valid_but_runtime_invalid_transaction() -> Transaction {
@@ -6602,6 +6643,25 @@ mod tests {
             .sign_with_public_key(&public_key, &private_key, &mut manager)
             .expect("test transaction should sign");
         transaction
+    }
+
+    #[test]
+    fn latest_jsonl_line_reader_reads_bounded_tail() {
+        let path = std::env::temp_dir().join(format!(
+            "synergy-rpc-jsonl-tail-{}-{}.jsonl",
+            std::process::id(),
+            current_timestamp()
+        ));
+        let mut bytes = vec![b'x'; MAX_JSONL_TAIL_READ_BYTES as usize + 128];
+        bytes.extend_from_slice(b"\n{\"height\":42}\n\n");
+        fs::write(&path, bytes).unwrap();
+
+        assert_eq!(
+            read_last_nonempty_jsonl_line(&path).unwrap(),
+            Some("{\"height\":42}".to_string())
+        );
+
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

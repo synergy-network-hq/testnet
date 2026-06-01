@@ -3866,6 +3866,7 @@ fn handle_get_blocks_message(
         return;
     }
     let response_count = count.min(policy.max_blocks);
+    DualQuorumConsensus::preload_committed_qc_store();
     let (blocks, quorum_certificates) = {
         let chain = blockchain.lock().unwrap();
         let blocks = chain
@@ -4216,18 +4217,9 @@ fn resolve_announced_validator_for_vote(
     }
 }
 
-fn build_local_status_message(
-    blockchain: &BlockchainArc,
-    config: &NodeConfig,
-) -> io::Result<NetworkMessage> {
-    let (block_height, best_block_hash, genesis_hash) = {
-        let chain = blockchain.try_lock().map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::WouldBlock,
-                "chain lock busy while building peer status",
-            )
-        })?;
-        (
+fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -> NetworkMessage {
+    let (block_height, best_block_hash, genesis_hash) = match blockchain.try_lock() {
+        Ok(chain) => (
             if config.node.bootstrap_only {
                 0
             } else {
@@ -4242,20 +4234,42 @@ fn build_local_status_message(
                 .get_genesis_hash()
                 .filter(|hash| !hash.trim().is_empty())
                 .unwrap_or_else(canonical_genesis_hash),
-        )
+        ),
+        Err(_) => {
+            let canonical = latest_legacy_canonical_commit_record().ok().flatten();
+            let block_height = if config.node.bootstrap_only {
+                0
+            } else {
+                canonical.as_ref().map(|record| record.height).unwrap_or(0)
+            };
+            let best_block_hash = if config.node.bootstrap_only {
+                String::new()
+            } else {
+                canonical
+                    .map(|record| record.block_hash)
+                    .unwrap_or_default()
+            };
+            debug!(
+                "p2p",
+                "Serving canonical-lock-backed peer status because chain lock is busy",
+                "height" => block_height,
+                "hash" => best_block_hash.clone()
+            );
+            (block_height, best_block_hash, canonical_genesis_hash())
+        }
     };
     let quarantine_block = current_validator_quarantine_duty_block();
     let quarantined = quarantine_block.is_some();
     let recovery_state = quarantine_block.map(|block| block.source);
 
-    Ok(NetworkMessage::Status {
+    NetworkMessage::Status {
         block_height,
         best_block_hash,
         genesis_hash,
         quarantined,
         consensus_duties_disabled: quarantined,
         recovery_state,
-    })
+    }
 }
 
 fn handle_incoming_connection(
@@ -4327,7 +4341,7 @@ fn handle_incoming_connection(
     writer.flush()?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
-    let status = build_local_status_message(&blockchain, &config)?;
+    let status = build_local_status_message(&blockchain, &config);
     if let Err(error) = send_message_with_write_timeout(
         writer.get_mut(),
         &status,
@@ -4479,7 +4493,7 @@ fn handle_outgoing_connection(
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
-    let status = build_local_status_message(&blockchain, &config)?;
+    let status = build_local_status_message(&blockchain, &config);
     if let Err(error) = send_message_with_write_timeout(
         writer.get_mut(),
         &status,
@@ -5202,20 +5216,7 @@ fn handle_messages(
                         );
                     }
                     NetworkMessage::GetStatus => {
-                        let status = match build_local_status_message(&blockchain, &config) {
-                            Ok(status) => status,
-                            Err(error) => {
-                                warn!(
-                                    "p2p",
-                                    "Closing peer because bounded status response could not acquire chain lock",
-                                    "peer" => peer_address.clone(),
-                                    "error" => error.to_string()
-                                );
-                                let mut peers = connected_peers.lock().unwrap();
-                                disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
-                                continue;
-                            }
-                        };
+                        let status = build_local_status_message(&blockchain, &config);
 
                         let mut peers = connected_peers.lock().unwrap();
                         send_peer_control_message_or_disconnect(
@@ -5317,6 +5318,7 @@ fn handle_messages(
                             continue;
                         }
 
+                        DualQuorumConsensus::preload_committed_qc_store();
                         let (blocks, quorum_certificates) = {
                             let chain = blockchain.lock().unwrap();
                             let blocks = hashes
@@ -5965,6 +5967,7 @@ fn apply_block_if_new(
 
     let mut applied_blocks = Vec::new();
     let mut confirmed_hashes = HashSet::new();
+    DualQuorumConsensus::preload_committed_qc_store();
     let (tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
         let mut candidate = Some(PendingCommittedBlock {
@@ -6217,6 +6220,7 @@ fn apply_block_batch(
     blocks.sort_by_key(|block| block.block_index);
     blocks.dedup_by(|left, right| left.block_index == right.block_index && left.hash == right.hash);
 
+    DualQuorumConsensus::preload_committed_qc_store();
     let (applied, applied_blocks, rollback_height, tip_height, snapshot) = {
         let mut chain = blockchain.lock().unwrap();
         let local_tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
@@ -9448,15 +9452,22 @@ mod tests {
     }
 
     #[test]
-    fn local_status_generation_fails_closed_while_chain_lock_is_busy() {
+    fn local_status_generation_uses_safe_fallback_while_chain_lock_is_busy() {
         let blockchain = Arc::new(Mutex::new(BlockChain::new()));
         let _chain_guard = blockchain.lock().unwrap();
+        let mut config = NodeConfig::default();
+        config.node.bootstrap_only = true;
 
-        let error = super::build_local_status_message(&blockchain, &NodeConfig::default())
-            .expect_err("status generation must not block behind consensus materialization");
-
-        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
-        assert!(error.to_string().contains("chain lock busy"));
+        let status = super::build_local_status_message(&blockchain, &config);
+        assert!(matches!(
+            status,
+            NetworkMessage::Status {
+                block_height: 0,
+                best_block_hash,
+                genesis_hash,
+                ..
+            } if best_block_hash.is_empty() && genesis_hash == canonical_genesis_hash()
+        ));
     }
 
     #[test]

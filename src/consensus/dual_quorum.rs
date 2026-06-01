@@ -700,6 +700,10 @@ impl DualQuorumConsensus {
             .and_then(|store| store.get(block_hash).cloned())
     }
 
+    pub(crate) fn preload_committed_qc_store() {
+        Self::ensure_committed_qc_store_loaded();
+    }
+
     fn ensure_committed_qc_store_loaded() {
         COMMITTED_QC_STORE_INIT.call_once(|| match Self::load_committed_qc_store_from_disk() {
             Ok(loaded) => {

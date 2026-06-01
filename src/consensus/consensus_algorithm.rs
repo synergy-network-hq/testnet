@@ -20,7 +20,7 @@ use crate::rpc::rpc_server::{
 use crate::token::TOKEN_MANAGER;
 use crate::validator::{
     apply_validator_activation_transaction, consensus_membership_validators,
-    is_validator_activation_transaction, replay_validator_activation_transactions, Validator,
+    is_validator_activation_transaction, replay_validator_activation_transaction_list, Validator,
     ValidatorManager, TESTNET_VALIDATOR_CLUSTER_SIZE, VALIDATOR_MANAGER,
 };
 use crate::wallet::WALLET_MANAGER;
@@ -283,13 +283,19 @@ impl ProofOfSynergy {
             }
         }
 
-        let chain_snapshot = {
+        let activation_transactions = {
             let chain_guard = chain.lock().unwrap();
-            chain_guard.clone()
+            chain_guard
+                .chain
+                .iter()
+                .flat_map(|block| block.transactions.iter())
+                .filter(|tx| is_validator_activation_transaction(tx))
+                .cloned()
+                .collect::<Vec<_>>()
         };
         let token_manager = TOKEN_MANAGER.clone();
-        let (activation_replayed, activation_failed) = replay_validator_activation_transactions(
-            &chain_snapshot,
+        let (activation_replayed, activation_failed) = replay_validator_activation_transaction_list(
+            &activation_transactions,
             &token_manager,
             &validator_manager,
         );
@@ -1260,6 +1266,7 @@ impl ProofOfSynergy {
                                         "qc_timestamp": qc.timestamp
                                     }),
                                 );
+                                DualQuorumConsensus::preload_committed_qc_store();
                                 let persist_snapshot = {
                                     let mut chain_guard = chain.lock().unwrap();
                                     match chain_guard.block_extends_tip_status(&new_block) {
