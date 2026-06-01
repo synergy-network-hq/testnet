@@ -1618,63 +1618,16 @@ impl ProofOfSynergy {
                                     && consecutive_failures >= 3
                                 {
                                     let finalized_height = new_block.block_index.saturating_sub(1);
-                                    let min_age_secs = Self::transient_vote_recovery_min_age_secs(
-                                        leader_timeout_secs,
-                                        block_time_secs,
+                                    warn!(
+                                        "consensus",
+                                        "Automatic transient consensus recovery is disabled for signed vote locks",
+                                        "finalized_height" => finalized_height,
+                                        "proposed_height" => new_block.block_index,
+                                        "proposed_hash" => new_block.hash.clone(),
+                                        "consecutive_failures" => consecutive_failures as u64,
+                                        "error" => e.clone(),
+                                        "required_action" => "preserve locks and retry the locked proposal or require an explicit proven-safe unlock certificate"
                                     );
-                                    let reason = format!(
-                                        "automatic consensus liveness recovery after {consecutive_failures} consecutive failures at proposed_height={} proposed_hash={}: {e}",
-                                        new_block.block_index, new_block.hash
-                                    );
-                                    match (
-                                        DualQuorumConsensus::recover_transient_vote_locks_above_finalized_height(
-                                            finalized_height,
-                                            min_age_secs,
-                                            &reason,
-                                        ),
-                                        Self::recover_cached_block_proposals_above_finalized_height(
-                                            finalized_height,
-                                            &reason,
-                                        ),
-                                    ) {
-                                        (Ok(vote_report), Ok(proposal_report))
-                                            if vote_report.mutated || proposal_report.mutated =>
-                                        {
-                                            warn!(
-                                                "consensus",
-                                                "Recovered stale transient consensus state above finalized head",
-                                                "finalized_height" => finalized_height,
-                                                "vote_locks_removed" => vote_report.removed_count as u64,
-                                                "proposal_cache_archived" => proposal_report.archived_count as u64,
-                                                "vote_lock_evidence" => vote_report.evidence_path.clone(),
-                                                "proposal_evidence" => proposal_report.evidence_dir.clone()
-                                            );
-                                            last_logged_view_timeout = None;
-                                            last_tip_observed_at = SystemTime::now();
-                                            last_block_time = SystemTime::now();
-                                            consecutive_failures = 0;
-                                            thread::sleep(Duration::from_millis(500));
-                                            continue;
-                                        }
-                                        (Ok(vote_report), Ok(proposal_report)) => {
-                                            info!(
-                                                "consensus",
-                                                "Transient consensus recovery checked but no stale mutable state was eligible",
-                                                "finalized_height" => finalized_height,
-                                                "min_age_secs" => min_age_secs,
-                                                "vote_locks_removed" => vote_report.removed_count as u64,
-                                                "proposal_cache_archived" => proposal_report.archived_count as u64
-                                            );
-                                        }
-                                        (Err(error), _) | (_, Err(error)) => {
-                                            warn!(
-                                                "consensus",
-                                                "Automatic transient consensus recovery failed closed",
-                                                "finalized_height" => finalized_height,
-                                                "error" => error
-                                            );
-                                        }
-                                    }
                                 }
 
                                 // Apply penalty to proposer for failed block
@@ -2471,7 +2424,7 @@ impl ProofOfSynergy {
         if locked_vote.proposer != selected_validator.address {
             info!(
                 "consensus",
-                "Ignoring local same-height vote lock for leader selection",
+                "Honoring local same-height vote lock for leader retry",
                 "local_validator" => local_validator_address.to_string(),
                 "scheduled_leader" => selected_validator.address.clone(),
                 "locked_proposer" => locked_vote.proposer.clone(),
@@ -2483,7 +2436,11 @@ impl ProofOfSynergy {
             );
         }
 
-        selected_validator
+        active_validators
+            .iter()
+            .find(|validator| validator.address == locked_vote.proposer)
+            .cloned()
+            .unwrap_or(selected_validator)
     }
 
     fn create_block_proposal(
@@ -4181,7 +4138,7 @@ mod tests {
     }
 
     #[test]
-    fn leader_selection_does_not_pin_to_stale_local_same_height_vote_lock() {
+    fn leader_selection_retries_persisted_same_height_vote_lock_proposer() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -4233,7 +4190,7 @@ mod tests {
             810,
         );
 
-        assert_eq!(selected.address, scheduled.address);
+        assert_eq!(selected.address, locked.address);
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {

@@ -33,6 +33,8 @@ lazy_static::lazy_static! {
         Arc::new(Mutex::new(HashMap::new()));
     static ref COMMITTED_QC_STORE: Arc<Mutex<HashMap<String, QuorumCertificate>>> =
         Arc::new(Mutex::new(HashMap::new()));
+    static ref COMMITTED_QC_STORE_LOAD_ERROR: Arc<Mutex<Option<String>>> =
+        Arc::new(Mutex::new(None));
     static ref OBSERVED_VOTES: Arc<Mutex<HashMap<String, Vote>>> = Arc::new(Mutex::new(HashMap::new()));
     static ref EQUIVOCATION_EVIDENCE_LOG: Arc<Mutex<HashMap<String, VoteEquivocationEvidence>>> =
         Arc::new(Mutex::new(HashMap::new()));
@@ -317,6 +319,8 @@ impl DualQuorumConsensus {
                 local_validator_address
             ));
         }
+        Self::ensure_committed_qc_store_loaded();
+        Self::require_committed_qc_store_healthy()?;
 
         Self::recover_stale_conflicting_vote_lock_before_vote(
             &local_validator_address,
@@ -600,6 +604,8 @@ impl DualQuorumConsensus {
                 local_validator_address
             ));
         }
+        Self::ensure_committed_qc_store_loaded();
+        Self::require_committed_qc_store_healthy()?;
 
         Self::recover_stale_conflicting_vote_lock_before_vote(
             &local_validator_address,
@@ -680,12 +686,14 @@ impl DualQuorumConsensus {
 
     pub fn record_committed_qc_checked(qc: QuorumCertificate) -> Result<(), String> {
         Self::ensure_committed_qc_store_loaded();
+        Self::require_committed_qc_store_healthy()?;
         let mut store = COMMITTED_QC_STORE
             .lock()
             .map_err(|_| "failed to lock committed QC store".to_string())?;
         if store.contains_key(&qc.block_hash) {
             return Ok(());
         }
+        Self::reject_conflicting_same_height_committed_qc(&store, &qc)?;
 
         Self::append_committed_qc_to_log(&qc)?;
         store.insert(qc.block_hash.clone(), qc);
@@ -714,6 +722,9 @@ impl DualQuorumConsensus {
                 }
             }
             Err(error) => {
+                if let Ok(mut load_error) = COMMITTED_QC_STORE_LOAD_ERROR.lock() {
+                    *load_error = Some(error.clone());
+                }
                 warn!(
                     "consensus",
                     "Failed to load committed quorum certificate store",
@@ -721,6 +732,82 @@ impl DualQuorumConsensus {
                 );
             }
         });
+    }
+
+    fn require_committed_qc_store_healthy() -> Result<(), String> {
+        let load_error = COMMITTED_QC_STORE_LOAD_ERROR
+            .lock()
+            .map_err(|_| "failed to lock committed QC load error".to_string())?;
+        match load_error.as_ref() {
+            Some(error) => Err(format!(
+                "committed QC store failed closed during load: {error}"
+            )),
+            None => Ok(()),
+        }
+    }
+
+    fn committed_qc_height(qc: &QuorumCertificate) -> Result<Option<u64>, String> {
+        let Some(first_vote) = qc.votes.first() else {
+            return Ok(None);
+        };
+        if qc.votes.iter().any(|vote| {
+            vote.block_hash != qc.block_hash || vote.block_index != first_vote.block_index
+        }) {
+            return Err(format!(
+                "committed QC {} contains votes for inconsistent block hashes or heights",
+                qc.block_hash
+            ));
+        }
+        Ok(Some(first_vote.block_index))
+    }
+
+    fn reject_conflicting_same_height_committed_qc(
+        store: &HashMap<String, QuorumCertificate>,
+        qc: &QuorumCertificate,
+    ) -> Result<(), String> {
+        let Some(height) = Self::committed_qc_height(qc)? else {
+            return Ok(());
+        };
+        if let Some(canonical) = legacy_canonical_commit_record(height)? {
+            if canonical.block_hash != qc.block_hash {
+                return Err(format!(
+                    "canonical lock at height {height} binds {}; refusing conflicting committed QC {}",
+                    canonical.block_hash, qc.block_hash
+                ));
+            }
+        }
+        for existing in store.values() {
+            if existing.block_hash == qc.block_hash {
+                continue;
+            }
+            if Self::committed_qc_height(existing)? == Some(height) {
+                return Err(format!(
+                    "committed QC store already contains height {height} hash {}; refusing conflicting committed QC {}",
+                    existing.block_hash, qc.block_hash
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_committed_qc_store(
+        store: &HashMap<String, QuorumCertificate>,
+    ) -> Result<(), String> {
+        let mut by_height = HashMap::new();
+        for qc in store.values() {
+            let Some(height) = Self::committed_qc_height(qc)? else {
+                continue;
+            };
+            if let Some(existing_hash) = by_height.insert(height, qc.block_hash.clone()) {
+                if existing_hash != qc.block_hash {
+                    return Err(format!(
+                        "persisted committed QC store contains conflicting height {height} hashes {existing_hash} and {}",
+                        qc.block_hash
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
 
     fn committed_qc_store_path() -> PathBuf {
@@ -795,6 +882,7 @@ impl DualQuorumConsensus {
             }
         }
 
+        Self::validate_committed_qc_store(&loaded)?;
         Ok(loaded)
     }
 
@@ -1804,7 +1892,7 @@ impl DualQuorumConsensus {
             .lock()
             .map_err(|_| "local vote lock file mutex is poisoned".to_string())?;
         let path = Self::local_vote_lock_path();
-        let mut locks = Self::load_local_vote_locks_unlocked()?;
+        let locks = Self::load_local_vote_locks_unlocked()?;
         let now = Self::current_timestamp();
         let before_count = locks.len();
 
@@ -1862,68 +1950,11 @@ impl DualQuorumConsensus {
             });
         }
 
-        let evidence_root = crate::utils::resolve_data_path("data/consensus_recovery_evidence");
-        fs::create_dir_all(&evidence_root)
-            .map_err(|err| format!("failed to create vote-lock evidence directory: {err}"))?;
-        let evidence_nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_nanos();
-        let evidence_path = evidence_root.join(format!(
-            "{}-{}-transient-vote-locks-above-{}.json",
-            now, evidence_nonce, finalized_height
-        ));
-
-        let removed_locks = removed
-            .iter()
-            .map(|(_, lock)| lock.clone())
-            .collect::<Vec<_>>();
-        let evidence = serde_json::json!({
-            "action": "recover_transient_vote_locks_above_finalized_height",
-            "reason": reason,
-            "finalized_height": finalized_height,
-            "min_age_secs": min_age_secs,
-            "vote_lock_path": path.to_string_lossy(),
-            "before_count": before_count,
-            "removed_count": removed_locks.len(),
-            "removed": removed_locks,
-            "all_locks_before": locks,
-            "timestamp": now,
-        });
-        let serialized = serde_json::to_vec_pretty(&evidence)
-            .map_err(|err| format!("failed to encode vote-lock evidence: {err}"))?;
-        let mut options = OpenOptions::new();
-        options.create_new(true).write(true);
-        #[cfg(unix)]
-        options.mode(0o600);
-        let mut file = options
-            .open(&evidence_path)
-            .map_err(|err| format!("failed to create vote-lock evidence file: {err}"))?;
-        file.write_all(&serialized)
-            .map_err(|err| format!("failed to write vote-lock evidence file: {err}"))?;
-        file.sync_all()
-            .map_err(|err| format!("failed to sync vote-lock evidence file: {err}"))?;
-        drop(file);
-
-        for (key, _) in &removed {
-            locks.remove(key);
-        }
-        Self::persist_local_vote_locks_unlocked(&locks)?;
-
-        Ok(TransientVoteLockRecoveryReport {
-            action: "recover_transient_vote_locks_above_finalized_height".to_string(),
-            reason: reason.to_string(),
-            finalized_height,
-            min_age_secs,
-            vote_lock_path: path.to_string_lossy().to_string(),
-            evidence_path: evidence_path.to_string_lossy().to_string(),
-            before_count,
-            kept_count: locks.len(),
-            removed_count: removed.len(),
-            removed: removed.into_iter().map(|(_, lock)| lock).collect(),
-            mutated: before_count != locks.len(),
-            timestamp: now,
-        })
+        Err(format!(
+            "refusing to remove {} unfinalized signed vote lock(s) above finalized height {}: explicit proven-safe unlock certificate is required",
+            removed.len(),
+            finalized_height
+        ))
     }
 
     fn validate_same_height_vote_supersede(
@@ -2031,58 +2062,12 @@ impl DualQuorumConsensus {
             return Ok(());
         }
 
-        let now = Self::current_timestamp();
-        if now.saturating_sub(latest_lock.updated_at) < min_age_secs {
-            return Ok(());
-        }
-
-        let recovery_reason = format!(
-            "{reason}: validator={validator_address} height={} requested_hash={} requested_proposer={} requested_round={} stale_locked_hash={} stale_locked_proposer={} stale_latest_round={} canonical_parent_height={} canonical_parent_hash={}",
-            proposed_block.block_index,
-            proposed_block.hash,
-            proposed_block.validator_id,
+        let _ = (min_age_secs, reason, validator_address, epoch_number);
+        Self::validate_same_height_vote_supersede(
+            proposed_block,
             round_number,
-            latest_lock.block_hash,
-            latest_lock.proposer,
             latest_lock.latest_round_number,
-            canonical_parent.height,
-            canonical_parent.block_hash
-        );
-        let report = Self::recover_transient_vote_locks_above_finalized_height(
-            canonical_parent.height,
-            min_age_secs,
-            &recovery_reason,
-        )?;
-
-        if report.mutated {
-            timing_trace::emit(
-                "stale_transient_lock_recovery",
-                serde_json::json!({
-                    "height": proposed_block.block_index,
-                    "block_hash": proposed_block.hash.clone(),
-                    "previous_hash": proposed_block.previous_hash.clone(),
-                    "proposer": proposed_block.validator_id.clone(),
-                    "validator": validator_address,
-                    "epoch": epoch_number,
-                    "round": round_number,
-                    "removed_count": report.removed_count,
-                    "evidence_path": report.evidence_path.clone()
-                }),
-            );
-            warn!(
-                "consensus",
-                "Recovered stale transient vote locks before signing higher-round proposal",
-                "validator" => validator_address.to_string(),
-                "height" => proposed_block.block_index,
-                "requested_hash" => proposed_block.hash.clone(),
-                "requested_proposer" => proposed_block.validator_id.clone(),
-                "requested_round" => round_number,
-                "removed_count" => report.removed_count as u64,
-                "evidence_path" => report.evidence_path.clone()
-            );
-        }
-
-        Ok(())
+        )
     }
 
     fn register_local_vote_intent(
@@ -2471,6 +2456,9 @@ impl DualQuorumConsensus {
         if let Ok(mut qcs) = COMMITTED_QC_STORE.lock() {
             qcs.clear();
         }
+        if let Ok(mut load_error) = COMMITTED_QC_STORE_LOAD_ERROR.lock() {
+            *load_error = None;
+        }
         let qc_store_path = Self::committed_qc_store_path();
         let _ = fs::remove_file(qc_store_path.with_extension("json.tmp"));
         let _ = fs::remove_file(qc_store_path);
@@ -2565,6 +2553,27 @@ mod tests {
         }
     }
 
+    fn test_qc_at_height(block_hash: &str, block_index: u64) -> QuorumCertificate {
+        let mut qc = test_qc(block_hash);
+        qc.votes = vec![Vote {
+            validator_address: "validator1".to_string(),
+            block_hash: block_hash.to_string(),
+            block_index,
+            epoch_number: qc.epoch_number,
+            round_number: qc.round_number,
+            signature: PQCSignature {
+                algorithm: PQCAlgorithm::FNDSA,
+                signature_data: Vec::new(),
+                message_hash: Vec::new(),
+                public_key_id: String::new(),
+                created_at: 0,
+            },
+            signer_public_key: Vec::new(),
+            timestamp: 0,
+        }];
+        qc
+    }
+
     #[test]
     fn committed_qc_store_is_persisted_incrementally() {
         let _guard = DualQuorumConsensus::test_vote_tracking_guard();
@@ -2604,6 +2613,48 @@ mod tests {
         let raw =
             fs::read_to_string(DualQuorumConsensus::committed_qc_log_path()).unwrap_or_default();
         assert_eq!(raw.lines().count(), 1);
+    }
+
+    #[test]
+    fn committed_qc_store_rejects_conflicting_same_height_qc() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+        crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
+
+        DualQuorumConsensus::record_committed_qc_checked(test_qc_at_height("block-a", 77_777))
+            .expect("first committed QC at height should persist");
+        let error =
+            DualQuorumConsensus::record_committed_qc_checked(test_qc_at_height("block-b", 77_777))
+                .expect_err("conflicting committed QC at same height must fail closed");
+        assert!(error.contains("refusing conflicting committed QC"));
+    }
+
+    #[test]
+    fn committed_qc_disk_load_rejects_conflicting_same_height_qcs() {
+        let _guard = DualQuorumConsensus::test_vote_tracking_guard();
+        DualQuorumConsensus::reset_test_vote_tracking();
+
+        let path = DualQuorumConsensus::committed_qc_log_path();
+        let entries = [
+            CommittedQcLogEntry {
+                block_hash: "block-a".to_string(),
+                qc: test_qc_at_height("block-a", 88_888),
+            },
+            CommittedQcLogEntry {
+                block_hash: "block-b".to_string(),
+                qc: test_qc_at_height("block-b", 88_888),
+            },
+        ];
+        let payload = entries
+            .iter()
+            .map(|entry| serde_json::to_string(entry).expect("QC log entry should encode"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(path, format!("{payload}\n")).expect("conflicting QC journal should be written");
+
+        let error = DualQuorumConsensus::load_committed_qc_store_from_disk()
+            .expect_err("conflicting persisted QCs at one height must fail closed");
+        assert!(error.contains("persisted committed QC store contains conflicting height"));
     }
 
     fn signed_block(block_index: u64, nonce: u64, validator_id: &str) -> Block {
@@ -2948,7 +2999,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_unfinalized_vote_locks_are_pruned_after_evidence() {
+    fn stale_unfinalized_vote_locks_require_explicit_unlock_certificate() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
 
@@ -2962,17 +3013,13 @@ mod tests {
         DualQuorumConsensus::register_local_vote_intent("validator2", &transient, 40, 1)
             .expect("transient vote lock should persist");
 
-        let report = DualQuorumConsensus::recover_transient_vote_locks_above_finalized_height(
+        let error = DualQuorumConsensus::recover_transient_vote_locks_above_finalized_height(
             12,
             0,
             "test stale transient recovery",
         )
-        .expect("transient vote lock recovery should succeed");
-
-        assert!(report.mutated);
-        assert_eq!(report.removed_count, 1);
-        assert_eq!(report.removed[0].block_hash, transient.hash);
-        assert!(PathBuf::from(&report.evidence_path).exists());
+        .expect_err("signed unfinalized vote locks must not be removed automatically");
+        assert!(error.contains("explicit proven-safe unlock certificate"));
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
             .expect("remaining vote locks should load");
@@ -2981,13 +3028,12 @@ mod tests {
             .any(|lock| lock.block_hash == finalized.hash && lock.block_index == 12));
         assert!(locks
             .values()
-            .all(|lock| lock.block_index <= 12 && lock.block_hash != transient.hash));
+            .any(|lock| lock.block_index == 13 && lock.block_hash == transient.hash));
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
         if let Some(root) = path.parent().and_then(|data| data.parent()) {
             let _ = fs::remove_dir_all(root);
         }
-        let _ = fs::remove_file(report.evidence_path);
     }
 
     #[test]
@@ -3107,7 +3153,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_conflicting_vote_lock_is_recovered_before_higher_round_vote() {
+    fn stale_conflicting_vote_lock_is_not_removed_before_higher_round_vote() {
         let _vote_tracking_guard = DualQuorumConsensus::test_vote_tracking_guard();
         DualQuorumConsensus::reset_test_vote_tracking();
         crate::consensus::legacy_canonical_lock::clear_legacy_canonical_locks_for_tests();
@@ -3130,7 +3176,7 @@ mod tests {
         DualQuorumConsensus::register_local_vote_intent("validator2", &first_block, 40, 1)
             .expect("first local vote intent should persist");
 
-        DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
+        let error = DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
             "validator2",
             &recovery_block,
             40,
@@ -3138,23 +3184,21 @@ mod tests {
             0,
             "test higher-round transient recovery",
         )
-        .expect("stale conflicting lock should recover before signing");
-
-        DualQuorumConsensus::register_local_vote_intent("validator2", &recovery_block, 40, 2)
-            .expect("higher-round vote may proceed only after stale transient evidence recovery");
+        .expect_err("stale conflicting lock must remain fail closed without an unlock certificate");
+        assert!(error.contains("requires an explicit view-change certificate"));
 
         let locks = DualQuorumConsensus::load_local_vote_locks_unlocked()
             .expect("persisted vote locks should load");
         assert!(locks
             .values()
-            .any(|lock| lock.block_hash == recovery_block.hash
+            .any(|lock| lock.block_hash == first_block.hash
                 && lock.block_index == 13
-                && lock.latest_round_number == 2));
+                && lock.latest_round_number == 1));
         assert!(
             locks
                 .values()
-                .all(|lock| lock.block_hash != first_block.hash),
-            "stale lock must be archived as recovery evidence before replacement"
+                .all(|lock| lock.block_hash != recovery_block.hash),
+            "conflicting higher-round lock must not replace the original signed lock"
         );
 
         DualQuorumConsensus::set_test_local_vote_lock_path(None);
@@ -3188,7 +3232,7 @@ mod tests {
         DualQuorumConsensus::register_local_vote_intent("validator2", &first_block, 40, 1)
             .expect("first local vote intent should persist");
 
-        DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
+        let error = DualQuorumConsensus::recover_stale_conflicting_vote_lock_before_vote(
             "validator2",
             &recovery_block,
             40,
@@ -3196,7 +3240,8 @@ mod tests {
             u64::MAX - 1,
             "test fresh transient lock remains locked",
         )
-        .expect("fresh lock check should fail closed without mutation");
+        .expect_err("fresh conflicting lock must remain fail closed without mutation");
+        assert!(error.contains("requires an explicit view-change certificate"));
 
         let err =
             DualQuorumConsensus::register_local_vote_intent("validator2", &recovery_block, 40, 2)

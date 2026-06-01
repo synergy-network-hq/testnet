@@ -1681,7 +1681,7 @@ pub fn reconciliation_plan(chain: &Arc<Mutex<BlockChain>>) -> Value {
     let recommended_action = if quarantined {
         "self_heal_from_verified_quorum_or_archive_source"
     } else if locks_above > 0 {
-        "recover_transient_vote_locks_above_finalized_height"
+        "preserve_signed_vote_locks_and_retry_locked_proposal_or_require_explicit_unlock_certificate"
     } else {
         "observe_or_compare_quorum_peers"
     };
