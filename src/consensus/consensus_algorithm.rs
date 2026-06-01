@@ -1264,9 +1264,26 @@ impl ProofOfSynergy {
                                     let mut chain_guard = chain.lock().unwrap();
                                     match chain_guard.block_extends_tip_status(&new_block) {
                                         Ok(true) => {
+                                            let rollback_tip_height = chain_guard
+                                                .last()
+                                                .map(|block| block.block_index)
+                                                .unwrap_or(0);
+                                            if let Err(error) = chain_guard
+                                                .add_block_extending_tip(new_block.clone())
+                                            {
+                                                warn!(
+                                                    "consensus",
+                                                    "Committed block failed local materialization before durable commit gates",
+                                                    "height" => new_block.block_index,
+                                                    "hash" => new_block.hash.clone(),
+                                                    "error" => error
+                                                );
+                                                process::exit(1);
+                                            }
                                             if let Err(error) =
                                                 append_committed_block_body(&new_block)
                                             {
+                                                chain_guard.truncate_to_height(rollback_tip_height);
                                                 warn!(
                                                     "consensus",
                                                     "Durable committed block body write failed before canonical lock",
@@ -1281,6 +1298,7 @@ impl ProofOfSynergy {
                                                     qc.clone(),
                                                 )
                                             {
+                                                chain_guard.truncate_to_height(rollback_tip_height);
                                                 warn!(
                                                     "consensus",
                                                     "Durable committed QC write failed before canonical lock",
@@ -1293,21 +1311,10 @@ impl ProofOfSynergy {
                                             if let Err(error) =
                                                 write_legacy_canonical_lock(&new_block, &qc)
                                             {
+                                                chain_guard.truncate_to_height(rollback_tip_height);
                                                 warn!(
                                                     "consensus",
                                                     "Canonical lock write failed after local commit",
-                                                    "height" => new_block.block_index,
-                                                    "hash" => new_block.hash.clone(),
-                                                    "error" => error
-                                                );
-                                                process::exit(1);
-                                            }
-                                            if let Err(error) = chain_guard
-                                                .add_block_extending_tip(new_block.clone())
-                                            {
-                                                warn!(
-                                                    "consensus",
-                                                    "Committed block failed local materialization after durable commit gates",
                                                     "height" => new_block.block_index,
                                                     "hash" => new_block.hash.clone(),
                                                     "error" => error

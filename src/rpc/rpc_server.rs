@@ -1,14 +1,14 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
 use std::io::{Read, Write};
-use std::net::{IpAddr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Shutdown, SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, Once};
+use std::sync::{mpsc, Arc, Mutex, Once};
 use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use crate::address::generate_cluster_address;
-use crate::block::BlockChain;
+use crate::block::{Block, BlockChain};
 use crate::consensus::chain_durability::recover_chain_and_validate_canonical;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::synergy_score::SynergyScoreCalculator;
@@ -55,9 +55,66 @@ lazy_static! {
 
 static SUBSCRIPTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 static PENDING_TRANSACTION_REBROADCAST_WORKER: Once = Once::new();
+static RPC_HTTP_ACTIVE_WORKERS: AtomicU64 = AtomicU64::new(0);
+static RPC_HTTP_ACTIVE_REQUESTS: AtomicU64 = AtomicU64::new(0);
 const MAX_HTTP_HEADER_BYTES: usize = 32 * 1024;
 const MAX_HTTP_BODY_BYTES: usize = 4 * 1024 * 1024;
+const MAX_RPC_HTTP_ACTIVE_WORKERS: u64 = 128;
+const MAX_RPC_HTTP_ACTIVE_REQUESTS: u64 = 128;
+const RPC_HTTP_READ_TIMEOUT_SECS: u64 = 10;
+const RPC_HTTP_WRITE_TIMEOUT_SECS: u64 = 2;
+#[cfg(not(test))]
+const RPC_HTTP_REQUEST_TIMEOUT_MILLIS: u64 = 2_000;
+#[cfg(test)]
+const RPC_HTTP_REQUEST_TIMEOUT_MILLIS: u64 = 100;
 const PENDING_TRANSACTION_REBROADCAST_INTERVAL_SECS: u64 = 5;
+
+struct RpcHttpWorkerGuard {
+    shutdown_stream: Option<TcpStream>,
+}
+
+impl RpcHttpWorkerGuard {
+    fn try_new(stream: &TcpStream) -> Option<Self> {
+        let previous = RPC_HTTP_ACTIVE_WORKERS.fetch_add(1, Ordering::SeqCst);
+        if previous >= MAX_RPC_HTTP_ACTIVE_WORKERS {
+            RPC_HTTP_ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+            let _ = stream.shutdown(Shutdown::Both);
+            return None;
+        }
+
+        Some(Self {
+            shutdown_stream: stream.try_clone().ok(),
+        })
+    }
+}
+
+impl Drop for RpcHttpWorkerGuard {
+    fn drop(&mut self) {
+        if let Some(stream) = self.shutdown_stream.take() {
+            let _ = stream.shutdown(Shutdown::Both);
+        }
+        RPC_HTTP_ACTIVE_WORKERS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+struct RpcHttpRequestGuard;
+
+impl RpcHttpRequestGuard {
+    fn try_new() -> Option<Self> {
+        let previous = RPC_HTTP_ACTIVE_REQUESTS.fetch_add(1, Ordering::SeqCst);
+        if previous >= MAX_RPC_HTTP_ACTIVE_REQUESTS {
+            RPC_HTTP_ACTIVE_REQUESTS.fetch_sub(1, Ordering::SeqCst);
+            return None;
+        }
+        Some(Self)
+    }
+}
+
+impl Drop for RpcHttpRequestGuard {
+    fn drop(&mut self) {
+        RPC_HTTP_ACTIVE_REQUESTS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 
 fn find_http_header_end(bytes: &[u8]) -> Option<usize> {
     bytes.windows(4).position(|window| window == b"\r\n\r\n")
@@ -392,7 +449,13 @@ pub fn start_rpc_server(
         let cors_origins_for_conn = cors_origins.clone();
         thread::spawn(move || {
             if let Ok(mut stream) = stream {
-                let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+                let Some(_worker_guard) = RpcHttpWorkerGuard::try_new(&stream) else {
+                    return;
+                };
+                let _ =
+                    stream.set_read_timeout(Some(Duration::from_secs(RPC_HTTP_READ_TIMEOUT_SECS)));
+                let _ = stream
+                    .set_write_timeout(Some(Duration::from_secs(RPC_HTTP_WRITE_TIMEOUT_SECS)));
                 let mut buffer = [0; 16384];
                 if let Ok(bytes_read) = stream.read(&mut buffer) {
                     let mut request_bytes = buffer[..bytes_read].to_vec();
@@ -502,13 +565,12 @@ pub fn start_rpc_server(
                         }
 
                         match serde_json::from_slice::<Value>(&body) {
-                            Ok(parsed) => match process_json_rpc_payload(
-                                &parsed,
-                                &tx_pool,
-                                &chain,
-                                &validator_manager,
-                                None,
-                                &request_context,
+                            Ok(parsed) => match process_http_json_rpc_payload_with_deadline(
+                                parsed,
+                                Arc::clone(&tx_pool),
+                                Arc::clone(&chain),
+                                Arc::clone(&validator_manager),
+                                request_context.clone(),
                             ) {
                                 Ok(Some(response)) => {
                                     let response_str = format_response(
@@ -559,6 +621,51 @@ pub fn start_rpc_server(
             }
         });
     }
+}
+
+fn process_http_json_rpc_payload_with_deadline(
+    parsed: Value,
+    tx_pool: Arc<Mutex<Vec<Transaction>>>,
+    chain: Arc<Mutex<BlockChain>>,
+    validator_manager: Arc<ValidatorManager>,
+    request_context: RpcRequestContext,
+) -> Result<Option<Value>, RpcError> {
+    let Some(request_guard) = RpcHttpRequestGuard::try_new() else {
+        return Err(RpcError::with_data(
+            -32005,
+            "rpc_request_capacity_exhausted",
+            json!({
+                "fail_closed": true,
+                "active_request_limit": MAX_RPC_HTTP_ACTIVE_REQUESTS,
+            }),
+        ));
+    };
+    let (sender, receiver) = mpsc::sync_channel(1);
+    thread::spawn(move || {
+        let _request_guard = request_guard;
+        let result = process_json_rpc_payload(
+            &parsed,
+            &tx_pool,
+            &chain,
+            &validator_manager,
+            None,
+            &request_context,
+        );
+        let _ = sender.send(result);
+    });
+
+    receiver
+        .recv_timeout(Duration::from_millis(RPC_HTTP_REQUEST_TIMEOUT_MILLIS))
+        .map_err(|_| {
+            RpcError::with_data(
+                -32005,
+                "rpc_request_deadline_exceeded",
+                json!({
+                    "fail_closed": true,
+                    "deadline_millis": RPC_HTTP_REQUEST_TIMEOUT_MILLIS,
+                }),
+            )
+        })?
 }
 
 fn start_pending_transaction_rebroadcast_worker() {
@@ -1352,11 +1459,10 @@ fn handle_json_rpc(
 
         "synergy_getBlockByNumber" => {
             if let Some(block_num) = params.get(0).and_then(|v| v.as_u64()) {
-                let chain = chain.lock().unwrap();
-                if let Some(block) = chain.chain.iter().find(|b| b.block_index == block_num) {
-                    block_to_explorer_json(block)
-                } else {
-                    json!(null)
+                match rpc_block_by_number_snapshot(chain, block_num) {
+                    Ok(Some(block)) => block_to_explorer_json(&block),
+                    Ok(None) => json!(null),
+                    Err(error) => error,
                 }
             } else {
                 json!("Invalid block number")
@@ -1365,16 +1471,10 @@ fn handle_json_rpc(
 
         "synergy_getBlockByHash" => {
             if let Some(block_hash) = params.get(0).and_then(|v| v.as_str()) {
-                let normalized = block_hash.trim().to_lowercase();
-                let chain = chain.lock().unwrap();
-                if let Some(block) = chain
-                    .chain
-                    .iter()
-                    .find(|b| b.hash.trim().eq_ignore_ascii_case(&normalized))
-                {
-                    block_to_explorer_json(block)
-                } else {
-                    json!(null)
+                match rpc_block_by_hash_snapshot(chain, block_hash) {
+                    Ok(Some(block)) => block_to_explorer_json(&block),
+                    Ok(None) => json!(null),
+                    Err(error) => error,
                 }
             } else {
                 json!("Invalid block hash")
@@ -1382,11 +1482,10 @@ fn handle_json_rpc(
         }
 
         "synergy_getLatestBlock" => {
-            let chain = chain.lock().unwrap();
-            if let Some(block) = chain.last() {
-                block_to_explorer_json(block)
-            } else {
-                json!(null)
+            match rpc_latest_block_snapshot(chain) {
+                Ok(Some(block)) => block_to_explorer_json(&block),
+                Ok(None) => json!(null),
+                Err(error) => error,
             }
         }
 
@@ -2438,15 +2537,13 @@ fn handle_json_rpc(
                 params.get(0).and_then(|v| v.as_u64()),
                 params.get(1).and_then(|v| v.as_u64()),
             ) {
-                let chain = chain.lock().unwrap();
-                let blocks: Vec<_> = chain
-                    .chain
-                    .iter()
-                    .filter(|block| block.block_index >= start && block.block_index <= end)
-                    .map(block_to_explorer_json)
-                    .collect();
-
-                json!(blocks)
+                match rpc_block_range_snapshot(chain, start, end) {
+                    Ok(blocks) => json!(blocks
+                        .iter()
+                        .map(block_to_explorer_json)
+                        .collect::<Vec<_>>()),
+                    Err(error) => error,
+                }
             } else {
                 json!("Missing start or end parameter")
             }
@@ -2520,19 +2617,25 @@ fn handle_json_rpc(
 
         "synergy_getTransactionsInBlock" => {
             if let Some(block_number) = params.get(0).and_then(|v| v.as_u64()) {
-                let chain = chain.lock().unwrap();
-                if let Some(block) = chain.chain.iter().find(|b| b.block_index == block_number) {
-                    let txs: Vec<Value> = block
-                        .transactions
-                        .iter()
-                        .enumerate()
-                        .map(|(idx, tx)| {
-                            tx_to_explorer_json(tx, "confirmed", Some(block.block_index), Some(idx))
-                        })
-                        .collect();
-                    json!(txs)
-                } else {
-                    json!([])
+                match rpc_block_by_number_snapshot(chain, block_number) {
+                    Ok(Some(block)) => {
+                        let txs: Vec<Value> = block
+                            .transactions
+                            .iter()
+                            .enumerate()
+                            .map(|(idx, tx)| {
+                                tx_to_explorer_json(
+                                    tx,
+                                    "confirmed",
+                                    Some(block.block_index),
+                                    Some(idx),
+                                )
+                            })
+                            .collect();
+                        json!(txs)
+                    }
+                    Ok(None) => json!([]),
+                    Err(error) => error,
                 }
             } else {
                 json!("Missing block number parameter")
@@ -4885,6 +4988,73 @@ fn rpc_chain_tip_snapshot(chain: &Arc<Mutex<BlockChain>>) -> (ChainTipSnapshot, 
     }
 }
 
+fn rpc_chain_lock_busy_json() -> Value {
+    let tip = cached_rpc_chain_tip();
+    json!({
+        "error": "chain_lock_busy",
+        "fail_closed": true,
+        "chain_lock_status": "busy",
+        "block_height": tip.height,
+        "block_hash": tip.hash,
+        "chain_tip_cached_at": tip.cached_at,
+        "chain": chain_identity_json(),
+    })
+}
+
+fn try_read_rpc_chain<T>(
+    chain: &Arc<Mutex<BlockChain>>,
+    read: impl FnOnce(&BlockChain) -> T,
+) -> Result<T, Value> {
+    let chain = chain.try_lock().map_err(|_| rpc_chain_lock_busy_json())?;
+    Ok(read(&chain))
+}
+
+fn rpc_block_by_number_snapshot(
+    chain: &Arc<Mutex<BlockChain>>,
+    block_number: u64,
+) -> Result<Option<Block>, Value> {
+    try_read_rpc_chain(chain, |chain| {
+        chain
+            .chain
+            .iter()
+            .find(|block| block.block_index == block_number)
+            .cloned()
+    })
+}
+
+fn rpc_block_by_hash_snapshot(
+    chain: &Arc<Mutex<BlockChain>>,
+    block_hash: &str,
+) -> Result<Option<Block>, Value> {
+    let normalized = block_hash.trim().to_lowercase();
+    try_read_rpc_chain(chain, |chain| {
+        chain
+            .chain
+            .iter()
+            .find(|block| block.hash.trim().eq_ignore_ascii_case(&normalized))
+            .cloned()
+    })
+}
+
+fn rpc_latest_block_snapshot(chain: &Arc<Mutex<BlockChain>>) -> Result<Option<Block>, Value> {
+    try_read_rpc_chain(chain, |chain| chain.last().cloned())
+}
+
+fn rpc_block_range_snapshot(
+    chain: &Arc<Mutex<BlockChain>>,
+    start: u64,
+    end: u64,
+) -> Result<Vec<Block>, Value> {
+    try_read_rpc_chain(chain, |chain| {
+        chain
+            .chain
+            .iter()
+            .filter(|block| block.block_index >= start && block.block_index <= end)
+            .cloned()
+            .collect()
+    })
+}
+
 fn sync_status_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
     let (tip, chain_lock_busy) = rpc_chain_tip_snapshot(chain);
     if let Ok(manager) = SYNC_MANAGER.try_lock() {
@@ -4999,9 +5169,8 @@ fn latest_finalized_head_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
     if lock.get("found").and_then(Value::as_bool) == Some(true) {
         return lock;
     }
-    let chain_guard = chain.lock().unwrap();
-    if let Some(block) = chain_guard.last() {
-        json!({
+    match rpc_latest_block_snapshot(chain) {
+        Ok(Some(block)) => json!({
             "found": true,
             "height": block.block_index,
             "block_hash": block.hash,
@@ -5009,9 +5178,9 @@ fn latest_finalized_head_json(chain: &Arc<Mutex<BlockChain>>) -> Value {
             "timestamp": block.timestamp,
             "source": "chain_tip_without_canonical_lock_file",
             "chain": chain_identity_json(),
-        })
-    } else {
-        json!({"found": false, "chain": chain_identity_json()})
+        }),
+        Ok(None) => json!({"found": false, "chain": chain_identity_json()}),
+        Err(error) => error,
     }
 }
 
@@ -6409,6 +6578,7 @@ mod tests {
     use crate::block::{Block, BlockChain};
     use crate::consensus::consensus_algorithm::ProofOfSynergy;
     use crate::crypto::pqc::{PQCAlgorithm, PQCManager};
+    use std::time::Instant;
 
     fn admission_valid_but_runtime_invalid_transaction() -> Transaction {
         let mut manager = PQCManager::new();
@@ -6723,6 +6893,110 @@ mod tests {
         assert_eq!(determinism["error"], "chain_lock_busy");
         assert_eq!(determinism["fail_closed"], true);
         assert_eq!(determinism["block_height"], 42);
+    }
+
+    #[test]
+    fn public_block_reads_fail_closed_without_waiting_for_busy_chain_mutex() {
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+        let _held_chain_lock = chain.lock().unwrap();
+
+        for (method, params) in [
+            ("synergy_getBlockByNumber", json!([42])),
+            ("synergy_getBlockByHash", json!(["block-hash"])),
+            ("synergy_getLatestBlock", json!([])),
+            ("synergy_getBlockRange", json!([40, 42])),
+            ("synergy_getTransactionsInBlock", json!([42])),
+        ] {
+            let started = Instant::now();
+            let response = handle_json_rpc(method, params, &tx_pool, &chain, &validator_manager);
+            assert_eq!(response["error"], "chain_lock_busy", "{method}");
+            assert_eq!(response["fail_closed"], true, "{method}");
+            assert_eq!(response["chain_lock_status"], "busy", "{method}");
+            let rpc_error = translate_legacy_rpc_result(response)
+                .expect_err("busy block reads should surface as JSON-RPC errors");
+            assert_eq!(rpc_error.message, "chain_lock_busy", "{method}");
+            let rpc_error_data = rpc_error
+                .data
+                .expect("busy block reads should preserve fail-closed metadata");
+            assert_eq!(rpc_error_data["fail_closed"], true, "{method}");
+            assert_eq!(rpc_error_data["chain_lock_status"], "busy", "{method}");
+            assert!(
+                started.elapsed() < Duration::from_millis(250),
+                "{method} should fail closed without waiting for the chain mutex"
+            );
+        }
+    }
+
+    #[test]
+    fn block_lookup_serializes_cloned_snapshot_after_releasing_chain_mutex() {
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let block = Block::new_with_timestamp(
+            42,
+            Vec::new(),
+            "parent".to_string(),
+            "validator".to_string(),
+            42,
+            1_700_000_000,
+        );
+        {
+            let mut chain_guard = chain.lock().unwrap();
+            chain_guard.add_block(block.clone());
+        }
+
+        let snapshot = rpc_block_by_number_snapshot(&chain, 42)
+            .expect("snapshot lookup should acquire an available chain mutex")
+            .expect("snapshot lookup should clone the requested block");
+        let _held_chain_lock = chain.lock().unwrap();
+
+        let response = block_to_explorer_json(&snapshot);
+        assert_eq!(response["block_index"], 42);
+        assert_eq!(response["hash"], block.hash);
+    }
+
+    #[test]
+    fn rpc_http_worker_guard_shutdowns_socket_on_drop() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let mut client = TcpStream::connect(address).unwrap();
+        let (server, _) = listener.accept().unwrap();
+        client
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+
+        let guard = RpcHttpWorkerGuard::try_new(&server).expect("worker slot should be available");
+        drop(guard);
+
+        let mut byte = [0u8; 1];
+        assert_eq!(client.read(&mut byte).unwrap(), 0);
+    }
+
+    #[test]
+    fn rpc_http_method_execution_fails_closed_at_deadline() {
+        let tx_pool = Arc::new(Mutex::new(Vec::<Transaction>::new()));
+        let chain = Arc::new(Mutex::new(BlockChain::new()));
+        let validator_manager = Arc::new(ValidatorManager::new());
+        let held_chain_lock = chain.lock().unwrap();
+        let started = Instant::now();
+
+        let error = process_http_json_rpc_payload_with_deadline(
+            json!({
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "synergy_getValidatorSet",
+                "params": [],
+            }),
+            tx_pool,
+            Arc::clone(&chain),
+            validator_manager,
+            RpcRequestContext::new(RpcTransport::Http, None, HashMap::new()),
+        )
+        .expect_err("HTTP execution must fail closed instead of retaining a socket indefinitely");
+
+        assert_eq!(error.message, "rpc_request_deadline_exceeded");
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(held_chain_lock);
     }
 
     #[test]

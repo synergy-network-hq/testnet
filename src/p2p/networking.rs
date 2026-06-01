@@ -5,7 +5,8 @@ use crate::consensus::chain_durability::append_committed_block_body;
 use crate::consensus::consensus_algorithm::ProofOfSynergy;
 use crate::consensus::dual_quorum::{DualQuorumConsensus, QuorumCertificate};
 use crate::consensus::legacy_canonical_lock::{
-    legacy_canonical_commit_record, verify_legacy_canonical_lock, write_legacy_canonical_lock,
+    latest_legacy_canonical_commit_record, legacy_canonical_commit_record,
+    verify_legacy_canonical_lock, write_legacy_canonical_lock,
 };
 use crate::consensus::timing_trace;
 use crate::crypto::aegis_pqvm::{
@@ -226,9 +227,13 @@ fn queued_peer_message_session_is_current(
 
 fn insert_peer_entry(peers: &mut PeerMap, peer_address: String, peer: PeerConnection) {
     if let Some(mut replaced) = peers.insert(peer_address, peer) {
-        if let Some(stream) = replaced.stream.take() {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
+        shutdown_peer_stream(&mut replaced);
+    }
+}
+
+fn shutdown_peer_stream(peer: &mut PeerConnection) {
+    if let Some(stream) = peer.stream.take() {
+        let _ = stream.shutdown(Shutdown::Both);
     }
 }
 
@@ -1394,9 +1399,7 @@ fn disconnect_peer_entry(
 ) {
     if let Some(mut peer) = peers.remove(peer_key) {
         cache_peer_state(peer_state_cache, &peer);
-        if let Some(stream) = peer.stream.take() {
-            let _ = stream.shutdown(Shutdown::Both);
-        }
+        shutdown_peer_stream(&mut peer);
     }
 }
 
@@ -2834,6 +2837,15 @@ impl P2PNetwork {
     /// - requests missing blocks
     /// - pings peers
     pub fn start_bootstrap(self: &Arc<Self>) {
+        let peer_maintenance = Arc::clone(self);
+        let _ = spawn_named_thread("p2p-peer-maintenance", move || loop {
+            prune_stale_peers(
+                &peer_maintenance.peer_state_cache,
+                &peer_maintenance.connected_peers,
+            );
+            thread::sleep(Duration::from_secs(1));
+        });
+
         let network = Arc::clone(self);
         let _ = spawn_named_thread("p2p-bootstrap", move || {
             let heartbeat =
@@ -2916,9 +2928,12 @@ impl P2PNetwork {
                         }
                         .saturating_sub(1)
                         .max(1);
-                    let (local_height, best_peer_height) = {
-                        let chain = network.blockchain.lock().unwrap();
-                        let local = chain.last().map(|b| b.block_index).unwrap_or(0);
+                    let local_height = network
+                        .blockchain
+                        .try_lock()
+                        .ok()
+                        .map(|chain| chain.last().map(|b| b.block_index).unwrap_or(0));
+                    if let Some(local_height) = local_height {
                         let supported_best = network.get_best_validator_peer_height_with_support(
                             required_validator_support,
                         );
@@ -2932,22 +2947,42 @@ impl P2PNetwork {
                                 .max()
                                 .unwrap_or(0)
                         };
-                        (local, best)
-                    };
-                    let behind = best_peer_height.saturating_sub(local_height);
-                    // Keep background catch-up batches small so a syncing node cannot
-                    // monopolize validator peer locks while consensus is active.
-                    let batch = if behind > 5000 {
-                        MAX_STATUS_SYNC_BATCH
-                    } else if behind > 1000 {
-                        96
+                        let canonical_height = latest_legacy_canonical_commit_record()
+                            .ok()
+                            .flatten()
+                            .map(|record| record.height)
+                            .unwrap_or(0);
+                        let best_peer_height = best.max(canonical_height);
+                        if canonical_height > local_height {
+                            warn!(
+                                "p2p",
+                                "CHAIN_BODY_BEHIND_CANONICAL_LOCK_RETRY",
+                                "chain_tip_height" => local_height,
+                                "canonical_lock_height" => canonical_height,
+                                "missing_from_height" => local_height.saturating_add(1),
+                                "missing_to_height" => canonical_height
+                            );
+                        }
+                        let behind = best_peer_height.saturating_sub(local_height);
+                        // Keep background catch-up batches small so a syncing node cannot
+                        // monopolize validator peer locks while consensus is active.
+                        let batch = if behind > 5000 {
+                            MAX_STATUS_SYNC_BATCH
+                        } else if behind > 1000 {
+                            96
+                        } else {
+                            IMMEDIATE_STATUS_SYNC_BATCH
+                        };
+                        if let Some((request_start, request_count)) =
+                            block_sync_request_range(local_height, best_peer_height, batch)
+                        {
+                            network.request_blocks(request_start, request_count);
+                        }
                     } else {
-                        IMMEDIATE_STATUS_SYNC_BATCH
-                    };
-                    if let Some((request_start, request_count)) =
-                        block_sync_request_range(local_height, best_peer_height, batch)
-                    {
-                        network.request_blocks(request_start, request_count);
+                        debug!(
+                            "p2p",
+                            "Skipping background block sync request because chain lock is busy"
+                        );
                     }
                 }
 
@@ -2956,17 +2991,23 @@ impl P2PNetwork {
 
                 // When catching up, loop immediately without sleeping.
                 // When synced, use normal heartbeat interval.
-                let (local_height, best_peer_height) = {
-                    let chain = network.blockchain.lock().unwrap();
-                    let local = chain.last().map(|b| b.block_index).unwrap_or(0);
-                    let peers = network.connected_peers.lock().unwrap();
-                    let best = peers
-                        .values()
-                        .map(|p| p.last_known_height)
-                        .max()
-                        .unwrap_or(0);
-                    (local, best)
-                };
+                let local_height = network
+                    .blockchain
+                    .try_lock()
+                    .ok()
+                    .and_then(|chain| chain.last().map(|b| b.block_index))
+                    .unwrap_or(0);
+                let best_peer_height = network
+                    .connected_peers
+                    .lock()
+                    .map(|peers| {
+                        peers
+                            .values()
+                            .map(|p| p.last_known_height)
+                            .max()
+                            .unwrap_or(0)
+                    })
+                    .unwrap_or(0);
                 let behind = best_peer_height.saturating_sub(local_height);
                 thread::sleep(background_poll_interval(behind, heartbeat, sync_active));
             }
@@ -4175,9 +4216,17 @@ fn resolve_announced_validator_for_vote(
     }
 }
 
-fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -> NetworkMessage {
+fn build_local_status_message(
+    blockchain: &BlockchainArc,
+    config: &NodeConfig,
+) -> io::Result<NetworkMessage> {
     let (block_height, best_block_hash, genesis_hash) = {
-        let chain = blockchain.lock().unwrap();
+        let chain = blockchain.try_lock().map_err(|_| {
+            io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "chain lock busy while building peer status",
+            )
+        })?;
         (
             if config.node.bootstrap_only {
                 0
@@ -4199,14 +4248,14 @@ fn build_local_status_message(blockchain: &BlockchainArc, config: &NodeConfig) -
     let quarantined = quarantine_block.is_some();
     let recovery_state = quarantine_block.map(|block| block.source);
 
-    NetworkMessage::Status {
+    Ok(NetworkMessage::Status {
         block_height,
         best_block_hash,
         genesis_hash,
         quarantined,
         consensus_duties_disabled: quarantined,
         recovery_state,
-    }
+    })
 }
 
 fn handle_incoming_connection(
@@ -4278,7 +4327,7 @@ fn handle_incoming_connection(
     writer.flush()?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
-    let status = build_local_status_message(&blockchain, &config);
+    let status = build_local_status_message(&blockchain, &config)?;
     if let Err(error) = send_message_with_write_timeout(
         writer.get_mut(),
         &status,
@@ -4430,7 +4479,7 @@ fn handle_outgoing_connection(
     let initial_handshake = receive_initial_peer_handshake(&mut reader)?;
     writer.get_mut().set_write_timeout(previous_write_timeout)?;
 
-    let status = build_local_status_message(&blockchain, &config);
+    let status = build_local_status_message(&blockchain, &config)?;
     if let Err(error) = send_message_with_write_timeout(
         writer.get_mut(),
         &status,
@@ -5153,7 +5202,20 @@ fn handle_messages(
                         );
                     }
                     NetworkMessage::GetStatus => {
-                        let status = build_local_status_message(&blockchain, &config);
+                        let status = match build_local_status_message(&blockchain, &config) {
+                            Ok(status) => status,
+                            Err(error) => {
+                                warn!(
+                                    "p2p",
+                                    "Closing peer because bounded status response could not acquire chain lock",
+                                    "peer" => peer_address.clone(),
+                                    "error" => error.to_string()
+                                );
+                                let mut peers = connected_peers.lock().unwrap();
+                                disconnect_peer_entry(&peer_state_cache, &mut peers, &peer_address);
+                                continue;
+                            }
+                        };
 
                         let mut peers = connected_peers.lock().unwrap();
                         send_peer_control_message_or_disconnect(
@@ -5965,7 +6027,23 @@ fn apply_block_if_new(
                     );
                     break;
                 }
+            }
+
+            let rollback_tip_height = tip.block_index;
+            if let Err(error) = chain.add_block_extending_tip(next_block.clone()) {
+                warn!(
+                    "p2p",
+                    "Rejecting block because it could not be materialized before durable commit gates",
+                    "height" => next_block.block_index,
+                    "hash" => next_block.hash.clone(),
+                    "error" => error
+                );
+                break;
+            }
+
+            if next_block.block_index > 0 {
                 if let Err(error) = append_committed_block_body(&next_block) {
+                    chain.truncate_to_height(rollback_tip_height);
                     warn!(
                         "p2p",
                         "Rejecting block because durable committed block body could not be written",
@@ -5981,6 +6059,7 @@ fn apply_block_if_new(
                 if let Err(error) =
                     DualQuorumConsensus::record_committed_qc_checked(next_qc.clone())
                 {
+                    chain.truncate_to_height(rollback_tip_height);
                     warn!(
                         "p2p",
                         "Rejecting block because durable committed QC could not be written",
@@ -5991,6 +6070,7 @@ fn apply_block_if_new(
                     break;
                 }
                 if let Err(error) = write_legacy_canonical_lock(&next_block, &next_qc) {
+                    chain.truncate_to_height(rollback_tip_height);
                     record_canonical_lock_conflict_from_peer(blockchain, &next_block, &error);
                     warn!(
                         "p2p",
@@ -6003,16 +6083,6 @@ fn apply_block_if_new(
                 }
             }
 
-            if let Err(error) = chain.add_block_extending_tip(next_block.clone()) {
-                warn!(
-                    "p2p",
-                    "Rejecting block because it could not be materialized on the local chain tip after durable commit gates",
-                    "height" => next_block.block_index,
-                    "hash" => next_block.hash.clone(),
-                    "error" => error
-                );
-                break;
-            }
             confirmed_hashes.extend(transaction_hashes(&next_block.transactions));
 
             final_tip_height = next_block.block_index;
@@ -6213,9 +6283,22 @@ fn apply_block_batch(
                 }
             }
 
+            let rollback_tip_height = tip.block_index;
+            if let Err(error) = chain.add_block_extending_tip(block.clone()) {
+                warn!(
+                    "p2p",
+                    "Rejecting block batch entry because it could not be materialized before durable commit gates",
+                    "height" => block.block_index,
+                    "hash" => block.hash.clone(),
+                    "error" => error
+                );
+                break;
+            }
+
             if block.block_index > 0 {
                 if qc_by_hash.contains_key(&block.hash) {
                     if let Err(error) = append_committed_block_body(&block) {
+                        chain.truncate_to_height(rollback_tip_height);
                         warn!(
                             "p2p",
                             "Rejecting block batch because durable committed block body could not be written",
@@ -6232,6 +6315,7 @@ fn apply_block_batch(
                 if let Some(qc) = qc_by_hash.get(&block.hash) {
                     if let Err(error) = DualQuorumConsensus::record_committed_qc_checked(qc.clone())
                     {
+                        chain.truncate_to_height(rollback_tip_height);
                         warn!(
                             "p2p",
                             "Rejecting block batch because durable committed QC could not be written",
@@ -6242,6 +6326,7 @@ fn apply_block_batch(
                         break;
                     }
                     if let Err(error) = write_legacy_canonical_lock(&block, qc) {
+                        chain.truncate_to_height(rollback_tip_height);
                         record_canonical_lock_conflict_from_peer(blockchain, &block, &error);
                         warn!(
                             "p2p",
@@ -6254,20 +6339,13 @@ fn apply_block_batch(
                     }
                 }
             }
-            if let Err(error) = chain.add_block_extending_tip(block.clone()) {
-                warn!(
-                    "p2p",
-                    "Rejecting block batch entry because it could not be materialized on the local chain tip after durable commit gates",
-                    "height" => block.block_index,
-                    "hash" => block.hash.clone(),
-                    "error" => error
-                );
-                break;
-            }
             applied_blocks.push(block.clone());
             applied += 1;
         }
 
+        if applied == 0 {
+            rollback_height = None;
+        }
         let tip_height = chain.last().map(|entry| entry.block_index).unwrap_or(0);
         let should_snapshot = rollback_height.is_some() || should_persist_chain_tip(tip_height);
         let snapshot = if should_snapshot {
@@ -7906,6 +7984,14 @@ mod tests {
     }
 
     #[test]
+    fn h_plus_one_materialization_retry_requests_missing_body_with_overlap() {
+        assert_eq!(
+            block_sync_request_range(175_512, 175_513, IMMEDIATE_STATUS_SYNC_BATCH),
+            Some((175_510, 4))
+        );
+    }
+
+    #[test]
     fn block_sync_request_range_progresses_with_support_response_cap() {
         let local_height = 3;
         let (from_height, count) =
@@ -9359,6 +9445,18 @@ mod tests {
             &peer,
             100 + STALE_UNIDENTIFIED_PEER_SECS
         ));
+    }
+
+    #[test]
+    fn local_status_generation_fails_closed_while_chain_lock_is_busy() {
+        let blockchain = Arc::new(Mutex::new(BlockChain::new()));
+        let _chain_guard = blockchain.lock().unwrap();
+
+        let error = super::build_local_status_message(&blockchain, &NodeConfig::default())
+            .expect_err("status generation must not block behind consensus materialization");
+
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(error.to_string().contains("chain lock busy"));
     }
 
     #[test]
